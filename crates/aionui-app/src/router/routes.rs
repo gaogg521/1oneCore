@@ -78,6 +78,11 @@ pub async fn create_router(services: &AppServices) -> Result<Router, RouterBuild
         .map_err(|e| {
             RouterBuildError::new("router.one_sso.migrate", "failed to run one-sso migrations").with_source(e)
         })?;
+    one_devops::run_one_devops_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new("router.one_devops.migrate", "failed to run one-devops migrations").with_source(e)
+        })?;
 
     // Start channel orchestrator (message loop)
     tokio::spawn(
@@ -269,6 +274,14 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let one_sso_admin = one_sso::one_sso_admin_routes(one_sso_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // one-devops routes (/api/one/devops/*) — requirements board +
+    // collaboration registries, member-writable behind auth.
+    let one_devops_state = one_devops::OneDevopsRouterState::new(std::sync::Arc::new(one_devops::DevopsService::new(
+        services.database.pool().clone(),
+    )));
+    let one_devops_authenticated = one_devops::one_devops_routes(one_devops_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // Office proxy routes — exempt from auth (serve iframe content)
     let office_proxy = office_proxy_routes(states.office);
     let public_assets = asset_routes(AssetRouterState::default());
@@ -300,6 +313,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(assistant_authenticated)
         .merge(one_org_authenticated)
         .merge(one_employee_authenticated)
+        .merge(one_devops_authenticated)
         .merge(one_sso_public)
         .merge(one_sso_admin);
 

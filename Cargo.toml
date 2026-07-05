@@ -25,6 +25,7 @@ members = [
     "crates/one-org",
     "crates/one-employee",
     "crates/one-sso",
+    "crates/one-devops",
 ]
 
 [workspace.package]
@@ -58,6 +59,7 @@ aionui-app = { path = "crates/aionui-app" }
 one-org = { path = "crates/one-org" }
 one-employee = { path = "crates/one-employee" }
 one-sso = { path = "crates/one-sso" }
+one-devops = { path = "crates/one-devops" }
 
 aion-agent = { git = "https://github.com/iOfficeAI/aionrs.git", tag = "v0.1.38" }
 aion-providers = { git = "https://github.com/iOfficeAI/aionrs.git", tag = "v0.1.38" }
