@@ -99,6 +99,11 @@ pub(crate) enum Command {
     Doctor,
     /// Prepare current-platform managed runtime resources under a bundle output root.
     PrepareManagedResources(PrepareManagedResourcesArgs),
+    /// Reset a user's password directly in the on-disk database. Intended
+    /// for non-local (server) deployments where the local-only
+    /// `/api/webui/reset-password` endpoint is unavailable; prints the
+    /// generated password to stdout.
+    Resetpass(ResetpassArgs),
 }
 
 impl Command {
@@ -109,12 +114,20 @@ impl Command {
             Self::McpTeamStdio => "mcp-team-stdio",
             Self::Doctor => "doctor",
             Self::PrepareManagedResources(_) => "prepare-managed-resources",
+            Self::Resetpass(_) => "resetpass",
         }
     }
 
     pub(crate) fn need_runtime(&self) -> bool {
         matches!(self, Self::Doctor | Self::PrepareManagedResources(_))
     }
+}
+
+#[derive(Args, Debug, Clone)]
+pub(crate) struct ResetpassArgs {
+    /// Username to reset; defaults to the primary WebUI user.
+    #[arg(long)]
+    pub username: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]

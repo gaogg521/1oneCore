@@ -23,6 +23,9 @@ pub enum SsoError {
     #[error("SSO identity missing external id")]
     IdentityMissing,
 
+    #[error("Invalid username or password")]
+    InvalidCredentials,
+
     #[error("Bad request: {0}")]
     BadRequest(String),
 
@@ -41,6 +44,7 @@ impl SsoError {
             Self::InvalidState => "SSO_INVALID_STATE",
             Self::MissingCode => "SSO_MISSING_CODE",
             Self::IdentityMissing => "SSO_IDENTITY_MISSING",
+            Self::InvalidCredentials => "SSO_INVALID_CREDENTIALS",
             Self::BadRequest(_) => "BAD_REQUEST",
             Self::Forbidden(_) => "FORBIDDEN",
             Self::Internal(_) => "INTERNAL_ERROR",
@@ -53,6 +57,7 @@ impl SsoError {
             Self::InvalidState | Self::MissingCode | Self::IdentityMissing | Self::BadRequest(_) => {
                 StatusCode::BAD_REQUEST
             }
+            Self::InvalidCredentials => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }

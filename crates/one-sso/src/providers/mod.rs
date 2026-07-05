@@ -11,10 +11,12 @@
 
 pub mod feishu;
 pub mod dingtalk;
+pub mod ldap;
 pub mod wecom;
 
 pub use feishu::FeishuProvider;
 pub use dingtalk::DingtalkProvider;
+pub use ldap::LdapProvider;
 pub use wecom::WecomProvider;
 
 /// Normalized user info across OAuth providers.

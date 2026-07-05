@@ -78,8 +78,30 @@ async fn runtime_ensure_requires_auth() {
     assert_eq!(json["code"], "UNAUTHORIZED");
 }
 
+// Bearer requests carry no ambient credential a cross-site form could ride
+// on, so the CSRF middleware exempts them (remote-desktop clients depend on
+// this). Cookie-authenticated requests still require the CSRF token pair.
 #[tokio::test]
-async fn runtime_ensure_requires_csrf() {
+async fn runtime_ensure_requires_csrf_for_cookie_auth() {
+    let (mut app, services) = build_app_with_mock_agents().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let id = create_conversation(&mut app, &token, &csrf).await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/conversations/{id}/runtime/ensure"))
+        .header("cookie", format!("aionui-session={token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let json = body_json(resp).await;
+    assert_eq!(json["code"], "CSRF_INVALID");
+}
+
+#[tokio::test]
+async fn runtime_ensure_allows_bearer_without_csrf() {
     let (mut app, services) = build_app_with_mock_agents().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
     let id = create_conversation(&mut app, &token, &csrf).await;
@@ -92,9 +114,7 @@ async fn runtime_ensure_requires_csrf() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
 
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let json = body_json(resp).await;
-    assert_eq!(json["code"], "CSRF_INVALID");
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -161,8 +181,32 @@ async fn runtime_ensure_uses_existing_agent_without_recovery() {
     assert_eq!(json["data"]["config_options"][0]["id"], "model");
 }
 
+// Same CSRF contract as the runtime-ensure pair above: cookie auth still
+// requires the token pair, Bearer auth is exempt.
 #[tokio::test]
-async fn set_config_option_requires_csrf() {
+async fn set_config_option_requires_csrf_for_cookie_auth() {
+    let (mut app, services) = build_app_with_mock_agents().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let id = create_and_ensure_runtime_conversation(&mut app, &token, &csrf).await;
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/api/conversations/{id}/config-options/model"))
+        .header("content-type", "application/json")
+        .header("cookie", format!("aionui-session={token}"))
+        .body(Body::from(
+            serde_json::to_vec(&json!({ "value": "mock-model-updated" })).unwrap(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let json = body_json(resp).await;
+    assert_eq!(json["code"], "CSRF_INVALID");
+}
+
+#[tokio::test]
+async fn set_config_option_allows_bearer_without_csrf() {
     let (mut app, services) = build_app_with_mock_agents().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
     let id = create_and_ensure_runtime_conversation(&mut app, &token, &csrf).await;
@@ -178,9 +222,7 @@ async fn set_config_option_requires_csrf() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
 
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let json = body_json(resp).await;
-    assert_eq!(json["code"], "CSRF_INVALID");
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]

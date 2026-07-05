@@ -8,7 +8,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +17,6 @@ use aionui_auth::CurrentUser;
 
 use crate::error::SsoError;
 use crate::models::{SsoProviderKind, SsoProviderStatusDto, UpdateProviderBody};
-use crate::service::SsoSession;
 use crate::state::OneSsoRouterState;
 
 pub fn one_sso_public_routes(state: OneSsoRouterState) -> Router {
@@ -25,6 +24,7 @@ pub fn one_sso_public_routes(state: OneSsoRouterState) -> Router {
         .route("/api/one/sso/providers", get(list_providers))
         .route("/api/one/sso/{provider}/authorize", get(authorize))
         .route("/api/one/sso/{provider}/callback", get(callback))
+        .route("/api/one/sso/ldap/login", post(ldap_login))
         .with_state(state)
 }
 
@@ -269,6 +269,70 @@ async fn run_provider_oauth(
         }
         SsoProviderKind::Ldap => Err(SsoError::BadRequest("LDAP has no OAuth callback".into())),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LdapLoginBody {
+    username: String,
+    password: String,
+    #[serde(default)]
+    redirect: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LdapLoginDto {
+    user_id: String,
+    username: String,
+    token: String,
+}
+
+/// LDAP is password-based (no OAuth dance): authenticate against the
+/// directory, JIT-provision the local user, and answer like the upstream
+/// `/login` handler — Set-Cookie for browsers plus the token in the body so
+/// desktop remote-mode clients can go straight to Bearer auth.
+async fn ldap_login(
+    State(state): State<OneSsoRouterState>,
+    Json(body): Json<LdapLoginBody>,
+) -> Result<Response, SsoError> {
+    let provider = SsoProviderKind::Ldap;
+    let row = state
+        .service
+        .get_provider_row(provider)
+        .await?
+        .ok_or_else(|| SsoError::ProviderNotConfigured("ldap".into()))?;
+    if !row.enabled {
+        return Err(SsoError::ProviderDisabled("ldap".into()));
+    }
+    let cfg: crate::providers::ldap::LdapProviderConfig = serde_json::from_str(&row.config)
+        .map_err(|e| SsoError::Internal(format!("parse ldap config: {e}")))?;
+
+    let auth = crate::providers::LdapProvider::authenticate(&cfg, &body.username, &body.password).await?;
+    let profile = crate::providers::ProviderUserInfo {
+        external_id: auth.external_id,
+        preferred_username: body.username.trim().to_owned(),
+        org_unit_path: auth.org_unit_path,
+    };
+    let (user_id, username, _created) = state.service.resolve_or_provision_user(provider, profile).await?;
+
+    let redirect_target = body
+        .redirect
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let session = state.service.issue_session(&user_id, &username, redirect_target, false)?;
+
+    Ok((
+        [(header::SET_COOKIE, session.cookie.clone())],
+        Json(ApiResponse::ok(LdapLoginDto {
+            user_id: session.user_id,
+            username: session.username,
+            token: session.token,
+        })),
+    )
+        .into_response())
 }
 
 async fn upsert_provider(
