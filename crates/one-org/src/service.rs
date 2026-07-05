@@ -18,8 +18,9 @@ use aionui_db::IUserRepository;
 
 use crate::error::OrgError;
 use crate::models::{
-    DEFAULT_TENANT_ID, InviteDto, InviteRow, OrgContextDto, ROLE_MEMBER, ROLE_SYSTEM_ADMIN, SYSTEM_DEFAULT_USER_ID,
-    TenantRow, UserOrgRow, is_enterprise_tenant_id, is_system_admin_role,
+    AdminUserDto, AuditLogRow, DEFAULT_TENANT_ID, InviteDto, InviteRow, OrgContextDto, ROLE_MEMBER,
+    ROLE_SYSTEM_ADMIN, RuntimeNodeDto, RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, TenantRow, UserOrgRow,
+    is_enterprise_tenant_id, is_system_admin_role,
 };
 
 pub struct OrgService {
@@ -420,6 +421,150 @@ impl OrgService {
         if let Err(e) = result {
             tracing::warn!(error = %e, action, "one-org audit write failed");
         }
+    }
+
+    pub async fn list_audit_logs(&self, tenant_id: &str, limit: i64) -> Result<Vec<AuditLogRow>, OrgError> {
+        let limit = limit.clamp(1, 500);
+        let rows = sqlx::query_as::<_, AuditLogRow>(
+            "SELECT id, tenant_id, user_id, username, action, resource, ip_address, user_agent, created_at \
+             FROM one_audit_logs WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(tenant_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    // --- admin: users ---
+
+    pub async fn list_users(&self, tenant_id: &str) -> Result<Vec<AdminUserDto>, OrgError> {
+        let rows = sqlx::query_as::<_, AdminUserDto>(
+            "SELECT uo.user_id, u.username, uo.tenant_id, uo.role, uo.org_unit_path, \
+                    u.last_login, uo.created_at \
+             FROM one_user_org uo \
+             JOIN users u ON u.id = uo.user_id \
+             WHERE uo.tenant_id = ? \
+             ORDER BY uo.created_at DESC",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Promote/demote a user's role within a tenant. `role` must be one of
+    /// `member`/`org_admin`/`system_admin` — validated by the caller (route
+    /// handler) so we keep the service free of string validation.
+    pub async fn set_user_role(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        role: &str,
+    ) -> Result<(), OrgError> {
+        let result = sqlx::query(
+            "UPDATE one_user_org SET role = ?, updated_at = ? WHERE tenant_id = ? AND user_id = ?",
+        )
+        .bind(role)
+        .bind(now_ms() as i64)
+        .bind(tenant_id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(OrgError::BadRequest(format!(
+                "user {user_id} not in tenant {tenant_id}"
+            )));
+        }
+        // Note: upstream `users` table has no role column — role lives
+        // exclusively in `one_user_org`. The auth middleware's role check
+        // reads from `CurrentUser`, which is populated from the JWT payload
+        // (no role). RBAC for `/api/one/*` is handled by the `RequireOrgAdmin`
+        // extractor reading `one_user_org` directly.
+        self.audit(tenant_id, Some(user_id), "set_role", Some(role)).await;
+        Ok(())
+    }
+
+    // --- admin: runtime nodes ---
+
+    pub async fn list_runtime_nodes(&self, tenant_id: &str) -> Result<Vec<RuntimeNodeDto>, OrgError> {
+        let rows = sqlx::query_as::<_, RuntimeNodeRow>(
+            "SELECT id, tenant_id, user_id, machine_id, display_name, hostnames, ip_addresses, \
+                    installed_agents, last_seen_at, updated_at \
+             FROM one_runtime_nodes WHERE tenant_id = ? ORDER BY last_seen_at DESC",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Upsert a runtime node heartbeat by (tenant_id, machine_id).
+    pub async fn heartbeat_runtime_node(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        machine_id: &str,
+        display_name: &str,
+        hostnames: &serde_json::Value,
+        ip_addresses: &serde_json::Value,
+        installed_agents: &serde_json::Value,
+    ) -> Result<String, OrgError> {
+        let now = now_ms() as i64;
+        let hostnames_str = hostnames.to_string();
+        let ip_str = ip_addresses.to_string();
+        let agents_str = installed_agents.to_string();
+
+        // Try UPDATE first; if no row affected, INSERT.
+        let updated = sqlx::query(
+            "UPDATE one_runtime_nodes SET user_id = ?, display_name = ?, hostnames = ?, \
+                    ip_addresses = ?, installed_agents = ?, last_seen_at = ?, updated_at = ? \
+             WHERE tenant_id = ? AND machine_id = ?",
+        )
+        .bind(user_id)
+        .bind(display_name)
+        .bind(&hostnames_str)
+        .bind(&ip_str)
+        .bind(&agents_str)
+        .bind(now)
+        .bind(now)
+        .bind(tenant_id)
+        .bind(machine_id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        if updated > 0 {
+            let id: String = sqlx::query_scalar(
+                "SELECT id FROM one_runtime_nodes WHERE tenant_id = ? AND machine_id = ?",
+            )
+            .bind(tenant_id)
+            .bind(machine_id)
+            .fetch_one(&self.pool)
+            .await?;
+            return Ok(id);
+        }
+
+        let id = short_id("node");
+        sqlx::query(
+            "INSERT INTO one_runtime_nodes \
+             (id, tenant_id, user_id, machine_id, display_name, hostnames, ip_addresses, \
+              installed_agents, last_seen_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(machine_id)
+        .bind(display_name)
+        .bind(&hostnames_str)
+        .bind(&ip_str)
+        .bind(&agents_str)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
     }
 }
 

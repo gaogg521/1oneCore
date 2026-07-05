@@ -122,3 +122,78 @@ pub struct OrgContextDto {
     pub is_enterprise: bool,
     pub member_count: i64,
 }
+
+/// Admin view of a user — joins upstream `users` (id/username) with
+/// `one_user_org` (tenant/role/org_unit_path).
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminUserDto {
+    pub user_id: String,
+    pub username: String,
+    pub tenant_id: String,
+    pub role: String,
+    pub org_unit_path: Option<String>,
+    pub last_login: Option<i64>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct RuntimeNodeRow {
+    pub id: String,
+    pub tenant_id: String,
+    pub user_id: String,
+    pub machine_id: String,
+    pub display_name: String,
+    pub hostnames: String,
+    pub ip_addresses: String,
+    pub installed_agents: String,
+    pub last_seen_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeNodeDto {
+    pub id: String,
+    pub tenant_id: String,
+    pub user_id: String,
+    pub machine_id: String,
+    pub display_name: String,
+    pub hostnames: serde_json::Value,
+    pub ip_addresses: serde_json::Value,
+    pub installed_agents: serde_json::Value,
+    pub last_seen_at: i64,
+    pub updated_at: i64,
+}
+
+impl From<RuntimeNodeRow> for RuntimeNodeDto {
+    fn from(row: RuntimeNodeRow) -> Self {
+        let parse = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap_or(serde_json::json!([]));
+        Self {
+            id: row.id,
+            tenant_id: row.tenant_id,
+            user_id: row.user_id,
+            machine_id: row.machine_id,
+            display_name: row.display_name,
+            hostnames: parse(&row.hostnames),
+            ip_addresses: parse(&row.ip_addresses),
+            installed_agents: parse(&row.installed_agents),
+            last_seen_at: row.last_seen_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditLogRow {
+    pub id: String,
+    pub tenant_id: String,
+    pub user_id: Option<String>,
+    pub username: Option<String>,
+    pub action: String,
+    pub resource: Option<String>,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub created_at: i64,
+}

@@ -73,6 +73,11 @@ pub async fn create_router(services: &AppServices) -> Result<Router, RouterBuild
         .map_err(|e| {
             RouterBuildError::new("router.one_employee.migrate", "failed to run one-employee migrations").with_source(e)
         })?;
+    one_sso::run_one_sso_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new("router.one_sso.migrate", "failed to run one-sso migrations").with_source(e)
+        })?;
 
     // Start channel orchestrator (message loop)
     tokio::spawn(
@@ -249,6 +254,21 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let one_employee_authenticated = one_employee::one_employee_routes(one_employee_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // one-sso routes. Public half (providers/authorize/callback) is
+    // unauthenticated so OAuth can run before the user has a session;
+    // admin half (upsert provider) sits behind the auth middleware.
+    let one_sso_state = one_sso::OneSsoRouterState::new(std::sync::Arc::new(
+        one_sso::SsoService::new(
+            services.database.pool().clone(),
+            services.user_repo.clone(),
+            services.jwt_service.clone(),
+            services.cookie_config.clone(),
+        ),
+    ));
+    let one_sso_public = one_sso::one_sso_public_routes(one_sso_state.clone());
+    let one_sso_admin = one_sso::one_sso_admin_routes(one_sso_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // Office proxy routes — exempt from auth (serve iframe content)
     let office_proxy = office_proxy_routes(states.office);
     let public_assets = asset_routes(AssetRouterState::default());
@@ -279,7 +299,9 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(shell_authenticated)
         .merge(assistant_authenticated)
         .merge(one_org_authenticated)
-        .merge(one_employee_authenticated);
+        .merge(one_employee_authenticated)
+        .merge(one_sso_public)
+        .merge(one_sso_admin);
 
     // Conditionally merge WeChat login SSE route (feature-gated)
     #[cfg(feature = "weixin")]

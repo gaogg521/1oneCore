@@ -4,15 +4,15 @@
 //! (it relies on `CurrentUser` in request extensions). The `/api/one/*`
 //! prefix keeps our namespace disjoint from upstream `/api/*` routes.
 
-use axum::extract::{Path, State};
-use axum::routing::{get, post};
+use axum::extract::{Path, Query, State};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use aionui_api_types::ApiResponse;
 
 use crate::error::OrgError;
-use crate::models::{InviteDto, OrgContextDto};
+use crate::models::{AdminUserDto, AuditLogRow, InviteDto, OrgContextDto, RuntimeNodeDto, is_system_admin_role};
 use crate::rbac::{OrgActor, RequireOrgAdmin};
 use crate::state::OneOrgRouterState;
 
@@ -32,6 +32,12 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
                 .put(admin_set_exit_password)
                 .delete(admin_clear_exit_password),
         )
+        // M2e: user management + audit + runtime nodes
+        .route("/api/one/admin/users", get(admin_list_users))
+        .route("/api/one/admin/users/{user_id}/role", put(admin_set_user_role))
+        .route("/api/one/admin/audit", get(admin_list_audit))
+        .route("/api/one/admin/runtime/nodes", get(admin_list_runtime_nodes))
+        .route("/api/one/admin/runtime/heartbeat", post(admin_runtime_heartbeat))
         .with_state(state)
 }
 
@@ -218,4 +224,112 @@ async fn admin_clear_exit_password(
         .audit(&actor.tenant_id, Some(&actor.user_id), "org.exit_password.clear", None)
         .await;
     Ok(Json(ApiResponse::ok(())))
+}
+
+// --- M2e: admin users / audit / runtime nodes ---
+
+async fn admin_list_users(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+) -> Result<Json<ApiResponse<Vec<AdminUserDto>>>, OrgError> {
+    let users = state.service.list_users(&actor.tenant_id).await?;
+    Ok(Json(ApiResponse::ok(users)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetRoleBody {
+    role: String,
+}
+
+async fn admin_set_user_role(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Path(user_id): Path<String>,
+    Json(body): Json<SetRoleBody>,
+) -> Result<Json<ApiResponse<()>>, OrgError> {
+    let role = body.role.trim();
+    if !matches!(role, "member" | "org_admin" | "system_admin") {
+        return Err(OrgError::BadRequest(format!("invalid role: {role}")));
+    }
+    // system_admin can only be set by an existing system_admin.
+    if role == "system_admin" && !is_system_admin_role(&actor.role) {
+        return Err(OrgError::Forbidden("only system_admin can promote to system_admin".into()));
+    }
+    state
+        .service
+        .set_user_role(&actor.tenant_id, &user_id, role)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListAuditQuery {
+    #[serde(default = "default_audit_limit")]
+    limit: i64,
+}
+
+fn default_audit_limit() -> i64 {
+    100
+}
+
+async fn admin_list_audit(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Query(query): Query<ListAuditQuery>,
+) -> Result<Json<ApiResponse<Vec<AuditLogRow>>>, OrgError> {
+    let logs = state.service.list_audit_logs(&actor.tenant_id, query.limit).await?;
+    Ok(Json(ApiResponse::ok(logs)))
+}
+
+async fn admin_list_runtime_nodes(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+) -> Result<Json<ApiResponse<Vec<RuntimeNodeDto>>>, OrgError> {
+    let nodes = state.service.list_runtime_nodes(&actor.tenant_id).await?;
+    Ok(Json(ApiResponse::ok(nodes)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeartbeatBody {
+    machine_id: String,
+    display_name: String,
+    #[serde(default)]
+    hostnames: serde_json::Value,
+    #[serde(default)]
+    ip_addresses: serde_json::Value,
+    #[serde(default)]
+    installed_agents: serde_json::Value,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HeartbeatDto {
+    node_id: String,
+}
+
+async fn admin_runtime_heartbeat(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Json(body): Json<HeartbeatBody>,
+) -> Result<Json<ApiResponse<HeartbeatDto>>, OrgError> {
+    let machine_id = body.machine_id.trim();
+    if machine_id.is_empty() {
+        return Err(OrgError::BadRequest("machineId is required".into()));
+    }
+    let node_id = state
+        .service
+        .heartbeat_runtime_node(
+            &actor.tenant_id,
+            &actor.user_id,
+            machine_id,
+            &body.display_name,
+            &body.hostnames,
+            &body.ip_addresses,
+            &body.installed_agents,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(HeartbeatDto { node_id })))
 }

@@ -1,0 +1,21 @@
+[package]
+name = "one-sso"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aionui-api-types.workspace = true
+aionui-auth.workspace = true
+aionui-common.workspace = true
+aionui-db.workspace = true
+axum.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+http-body-util.workspace = true
+tower = { workspace = true, features = ["util"] }
