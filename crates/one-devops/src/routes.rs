@@ -11,7 +11,9 @@ use aionui_api_types::ApiResponse;
 use aionui_auth::CurrentUser;
 
 use crate::error::DevopsError;
-use crate::models::{McpRegistryDto, RagDocumentDto, RequirementCommentDto, RequirementDto, SkillRegistryDto};
+use crate::models::{
+    McpRegistryDto, MilestoneDto, RagDocumentDto, RequirementCommentDto, RequirementDto, SkillRegistryDto,
+};
 use crate::service::{CreateRequirementInput, UpdateRequirementInput};
 use crate::state::OneDevopsRouterState;
 
@@ -34,6 +36,11 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         .route("/api/one/devops/mcp-registry/{id}", axum::routing::delete(delete_mcp))
         .route("/api/one/devops/rag/documents", get(list_rag).post(register_rag))
         .route("/api/one/devops/rag/documents/{id}", axum::routing::delete(delete_rag))
+        .route("/api/one/devops/milestones", get(list_milestones).post(create_milestone))
+        .route(
+            "/api/one/devops/milestones/{id}",
+            patch(update_milestone).delete(delete_milestone),
+        )
         .with_state(state)
 }
 
@@ -393,5 +400,75 @@ async fn delete_rag(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     state.service.delete_rag_document(&id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+// -- milestones -----------------------------------------------------------
+
+async fn list_milestones(
+    State(state): State<OneDevopsRouterState>,
+) -> Result<Json<ApiResponse<Vec<MilestoneDto>>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(state.service.list_milestones().await?)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateMilestoneBody {
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    due_at: Option<i64>,
+}
+
+async fn create_milestone(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<CreateMilestoneBody>,
+) -> Result<Json<ApiResponse<MilestoneDto>>, DevopsError> {
+    let dto = state
+        .service
+        .create_milestone(&user.id, Some(user.username.as_str()), &body.title, body.description.as_deref(), body.due_at)
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+/// PATCH body: absent field = keep, `null` = clear (for nullable columns).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateMilestoneBody {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default, with = "double_option")]
+    description: Option<Option<String>>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default, with = "double_option")]
+    due_at: Option<Option<i64>>,
+}
+
+async fn update_milestone(
+    State(state): State<OneDevopsRouterState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateMilestoneBody>,
+) -> Result<Json<ApiResponse<MilestoneDto>>, DevopsError> {
+    let dto = state
+        .service
+        .update_milestone(
+            &id,
+            body.title.as_deref(),
+            body.description.as_ref().map(|d| d.as_deref()),
+            body.status.as_deref(),
+            body.due_at,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_milestone(
+    State(state): State<OneDevopsRouterState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    state.service.delete_milestone(&id).await?;
     Ok(Json(ApiResponse::ok(())))
 }

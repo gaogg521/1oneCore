@@ -8,8 +8,8 @@ use aionui_common::now_ms;
 
 use crate::error::DevopsError;
 use crate::models::{
-    McpRegistryDto, RagDocumentDto, REQUIREMENT_PRIORITIES, REQUIREMENT_STATUSES, REQUIREMENT_TYPES,
-    RequirementCommentDto, RequirementDto, RequirementRow, SkillRegistryDto,
+    McpRegistryDto, MILESTONE_STATUSES, MilestoneDto, RagDocumentDto, REQUIREMENT_PRIORITIES, REQUIREMENT_STATUSES,
+    REQUIREMENT_TYPES, RequirementCommentDto, RequirementDto, RequirementRow, SkillRegistryDto,
 };
 
 pub struct DevopsService {
@@ -569,6 +569,117 @@ impl DevopsService {
         }
         Ok(())
     }
+
+    // -- milestones -------------------------------------------------------
+
+    pub async fn list_milestones(&self) -> Result<Vec<MilestoneDto>, DevopsError> {
+        Ok(sqlx::query_as::<_, MilestoneDto>(
+            "SELECT id, title, description, status, due_at, creator_id, creator_name, created_at, updated_at \
+             FROM one_milestones ORDER BY \
+                CASE status WHEN 'active' THEN 0 WHEN 'completed' THEN 1 ELSE 2 END, updated_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_milestone(
+        &self,
+        creator_id: &str,
+        creator_name: Option<&str>,
+        title: &str,
+        description: Option<&str>,
+        due_at: Option<i64>,
+    ) -> Result<MilestoneDto, DevopsError> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(DevopsError::BadRequest("title is required".into()));
+        }
+        let id = new_id("mile");
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO one_milestones \
+                (id, title, description, status, due_at, creator_id, creator_name, created_at, updated_at) \
+             VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(title)
+        .bind(description)
+        .bind(due_at)
+        .bind(creator_id)
+        .bind(creator_name)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        self.fetch_milestone(&id).await
+    }
+
+    pub async fn update_milestone(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        description: Option<Option<&str>>,
+        status: Option<&str>,
+        due_at: Option<Option<i64>>,
+    ) -> Result<MilestoneDto, DevopsError> {
+        if let Some(status) = status {
+            validate_one_of(status, MILESTONE_STATUSES, "milestone status")?;
+        }
+        let now = now_ms();
+        // CASE WHEN ? guards mirror update_requirement: absent field = keep,
+        // present = overwrite (Option<Option<_>> distinguishes null-clear).
+        sqlx::query(
+            "UPDATE one_milestones SET \
+                title = CASE WHEN ? THEN ? ELSE title END, \
+                description = CASE WHEN ? THEN ? ELSE description END, \
+                status = CASE WHEN ? THEN ? ELSE status END, \
+                due_at = CASE WHEN ? THEN ? ELSE due_at END, \
+                updated_at = ? \
+             WHERE id = ?",
+        )
+        .bind(title.is_some())
+        .bind(title)
+        .bind(description.is_some())
+        .bind(description.flatten())
+        .bind(status.is_some())
+        .bind(status)
+        .bind(due_at.is_some())
+        .bind(due_at.flatten())
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        self.fetch_milestone(id).await
+    }
+
+    pub async fn delete_milestone(&self, id: &str) -> Result<(), DevopsError> {
+        let mut tx = self.pool.begin().await?;
+        let deleted = sqlx::query("DELETE FROM one_milestones WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(DevopsError::NotFound(format!("milestone {id}")));
+        }
+        // Clear the soft link on requirements that pointed here.
+        sqlx::query("UPDATE one_requirements SET milestone_id = NULL WHERE milestone_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn fetch_milestone(&self, id: &str) -> Result<MilestoneDto, DevopsError> {
+        sqlx::query_as::<_, MilestoneDto>(
+            "SELECT id, title, description, status, due_at, creator_id, creator_name, created_at, updated_at \
+             FROM one_milestones WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| DevopsError::NotFound(format!("milestone {id}")))
+    }
 }
 
 #[cfg(test)]
@@ -727,5 +838,46 @@ mod tests {
         assert_eq!(svc.list_rag_documents().await.unwrap().len(), 1);
         svc.delete_rag_document(&doc.id).await.unwrap();
         assert!(svc.list_rag_documents().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn milestone_crud_and_requirement_link_clearing() {
+        let svc = service().await;
+        let m = svc
+            .create_milestone("u1", Some("Alice"), "v1.0 发布", Some("首个灰度"), Some(1_800_000_000_000))
+            .await
+            .unwrap();
+        assert_eq!(m.status, "active");
+
+        let m = svc
+            .update_milestone(&m.id, Some("v1.0 GA"), Some(None), Some("completed"), None)
+            .await
+            .unwrap();
+        assert_eq!(m.title, "v1.0 GA");
+        assert_eq!(m.status, "completed");
+        assert!(m.description.is_none());
+        assert_eq!(m.due_at, Some(1_800_000_000_000));
+
+        let err = svc.update_milestone(&m.id, None, None, Some("bogus"), None).await.unwrap_err();
+        assert!(matches!(err, DevopsError::BadRequest(_)));
+
+        // A requirement pointing at the milestone gets its link cleared on delete.
+        let req = svc
+            .create_requirement("u1", Some("Alice"), CreateRequirementInput {
+                subject: "linked".into(),
+                milestone_id: Some(m.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(req.milestone_id.as_deref(), Some(m.id.as_str()));
+
+        svc.delete_milestone(&m.id).await.unwrap();
+        assert!(svc.list_milestones().await.unwrap().is_empty());
+        let tree = svc.requirements_tree().await.unwrap();
+        assert_eq!(tree[0].milestone_id, None);
+
+        let err = svc.delete_milestone("missing").await.unwrap_err();
+        assert!(matches!(err, DevopsError::NotFound(_)));
     }
 }

@@ -7,6 +7,7 @@ use sqlx::FromRow;
 pub const REQUIREMENT_TYPES: &[&str] = &["epic", "feature", "story", "bug", "task"];
 pub const REQUIREMENT_STATUSES: &[&str] = &["backlog", "planning", "developing", "testing", "completed"];
 pub const REQUIREMENT_PRIORITIES: &[&str] = &["low", "medium", "high", "urgent"];
+pub const MILESTONE_STATUSES: &[&str] = &["active", "completed", "archived"];
 
 #[derive(Debug, Clone, FromRow)]
 pub struct RequirementRow {
@@ -126,4 +127,18 @@ pub struct RagDocumentDto {
     pub team_id: Option<String>,
     pub created_by: String,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MilestoneDto {
+    pub id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub due_at: Option<i64>,
+    pub creator_id: String,
+    pub creator_name: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }

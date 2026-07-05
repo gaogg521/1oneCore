@@ -10,7 +10,10 @@ use crate::error::DevopsError;
 
 /// Embedded migrations, applied in array order. Append-only: never edit or
 /// reorder shipped entries — add a new file instead.
-const MIGRATIONS: &[(&str, &str)] = &[("001_init", include_str!("../migrations/001_init.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("001_init", include_str!("../migrations/001_init.sql")),
+    ("002_milestones", include_str!("../migrations/002_milestones.sql")),
+];
 
 /// Run all pending one-devops migrations. Idempotent; call once at startup
 /// after the upstream database (and its migrator) has been initialized.
@@ -72,5 +75,6 @@ mod tests {
         assert!(tables.contains(&"one_skill_registry".to_owned()));
         assert!(tables.contains(&"one_mcp_registry".to_owned()));
         assert!(tables.contains(&"one_rag_documents".to_owned()));
+        assert!(tables.contains(&"one_milestones".to_owned()));
     }
 }
