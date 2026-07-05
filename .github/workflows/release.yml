@@ -81,10 +81,9 @@ jobs:
             target: x86_64-pc-windows-msvc
             binary_name: aioncore.exe
             rustflags: "-C target-feature=+crt-static"
-          - os: windows-latest
-            target: aarch64-pc-windows-msvc
-            binary_name: aioncore.exe
-            rustflags: "-C target-feature=+crt-static"
+          # aarch64-pc-windows-msvc dropped in this fork: the ring 0.16
+          # transitive dep fails to cross-compile for arm64 windows
+          # (BN_ULLONG undeclared) and the 1ONE rollout only ships x64.
 
     steps:
       - uses: actions/checkout@v6
