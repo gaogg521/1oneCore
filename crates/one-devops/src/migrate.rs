@@ -13,6 +13,7 @@ use crate::error::DevopsError;
 const MIGRATIONS: &[(&str, &str)] = &[
     ("001_init", include_str!("../migrations/001_init.sql")),
     ("002_milestones", include_str!("../migrations/002_milestones.sql")),
+    ("003_rag_pipeline", include_str!("../migrations/003_rag_pipeline.sql")),
 ];
 
 /// Run all pending one-devops migrations. Idempotent; call once at startup
@@ -76,5 +77,7 @@ mod tests {
         assert!(tables.contains(&"one_mcp_registry".to_owned()));
         assert!(tables.contains(&"one_rag_documents".to_owned()));
         assert!(tables.contains(&"one_milestones".to_owned()));
+        assert!(tables.contains(&"one_rag_config".to_owned()));
+        assert!(tables.contains(&"one_rag_chunks".to_owned()));
     }
 }

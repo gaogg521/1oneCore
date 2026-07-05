@@ -12,7 +12,8 @@ use aionui_auth::CurrentUser;
 
 use crate::error::DevopsError;
 use crate::models::{
-    McpRegistryDto, MilestoneDto, RagDocumentDto, RequirementCommentDto, RequirementDto, SkillRegistryDto,
+    McpRegistryDto, MilestoneDto, RagConfigDto, RagDocumentDto, RagSearchHit, RequirementCommentDto, RequirementDto,
+    SkillRegistryDto,
 };
 use crate::service::{CreateRequirementInput, UpdateRequirementInput};
 use crate::state::OneDevopsRouterState;
@@ -36,6 +37,10 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         .route("/api/one/devops/mcp-registry/{id}", axum::routing::delete(delete_mcp))
         .route("/api/one/devops/rag/documents", get(list_rag).post(register_rag))
         .route("/api/one/devops/rag/documents/{id}", axum::routing::delete(delete_rag))
+        .route("/api/one/devops/rag/documents/{id}/content", axum::routing::put(set_rag_content))
+        .route("/api/one/devops/rag/documents/{id}/process", axum::routing::post(process_rag))
+        .route("/api/one/devops/rag/config", get(get_rag_config).put(set_rag_config))
+        .route("/api/one/devops/rag/search", axum::routing::post(search_rag))
         .route("/api/one/devops/milestones", get(list_milestones).post(create_milestone))
         .route(
             "/api/one/devops/milestones/{id}",
@@ -401,6 +406,77 @@ async fn delete_rag(
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     state.service.delete_rag_document(&id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+struct SetRagContentBody {
+    content: String,
+}
+
+async fn set_rag_content(
+    State(state): State<OneDevopsRouterState>,
+    Path(id): Path<String>,
+    Json(body): Json<SetRagContentBody>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    state.service.set_document_content(&id, &body.content).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessResult {
+    chunk_count: i64,
+}
+
+async fn process_rag(
+    State(state): State<OneDevopsRouterState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<ProcessResult>>, DevopsError> {
+    let chunk_count = state.service.process_rag_document(&id).await?;
+    Ok(Json(ApiResponse::ok(ProcessResult { chunk_count })))
+}
+
+async fn get_rag_config(
+    State(state): State<OneDevopsRouterState>,
+) -> Result<Json<ApiResponse<RagConfigDto>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(state.service.get_rag_config().await?)))
+}
+
+/// `apiKey` absent = keep stored key; present = replace.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetRagConfigBody {
+    base_url: String,
+    model: String,
+    #[serde(default)]
+    api_key: Option<String>,
+}
+
+async fn set_rag_config(
+    State(state): State<OneDevopsRouterState>,
+    Json(body): Json<SetRagConfigBody>,
+) -> Result<Json<ApiResponse<RagConfigDto>>, DevopsError> {
+    let dto = state
+        .service
+        .set_rag_config(&body.base_url, &body.model, body.api_key.as_deref())
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchRagBody {
+    query: String,
+    #[serde(default)]
+    top_k: Option<usize>,
+}
+
+async fn search_rag(
+    State(state): State<OneDevopsRouterState>,
+    Json(body): Json<SearchRagBody>,
+) -> Result<Json<ApiResponse<Vec<RagSearchHit>>>, DevopsError> {
+    let hits = state.service.search_rag(&body.query, body.top_k.unwrap_or(5)).await?;
+    Ok(Json(ApiResponse::ok(hits)))
 }
 
 // -- milestones -----------------------------------------------------------

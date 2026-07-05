@@ -129,6 +129,28 @@ pub struct RagDocumentDto {
     pub created_at: i64,
 }
 
+/// RAG embedding config as returned to the UI. The api_key is never echoed;
+/// `has_key` reports whether one is stored.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagConfigDto {
+    pub base_url: String,
+    pub model: String,
+    pub has_key: bool,
+    pub dimensions: Option<i64>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagSearchHit {
+    pub document_id: String,
+    pub document_title: String,
+    pub chunk_index: i64,
+    pub content: String,
+    pub score: f32,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MilestoneDto {

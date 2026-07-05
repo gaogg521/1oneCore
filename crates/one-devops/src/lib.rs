@@ -10,10 +10,11 @@
 //! tables managed by our own migrator; the only upstream touch point is a
 //! route merge in aionui-app.
 //!
-//! Scope note: `one_rag_documents` is a metadata registry only — the
-//! chunking / embedding / search pipeline is a separate work item (it
-//! needs an embedding-provider decision first).
+//! RAG (A2): `one_rag_documents` + `one_rag_chunks` + `one_rag_config` back a
+//! chunk → embed → store → cosine-search pipeline over an OpenAI-compatible
+//! embedding endpoint (see `embedding` module).
 
+pub mod embedding;
 pub mod error;
 pub mod migrate;
 pub mod models;

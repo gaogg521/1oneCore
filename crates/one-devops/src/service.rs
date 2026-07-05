@@ -7,9 +7,10 @@ use sqlx::SqlitePool;
 use aionui_common::now_ms;
 
 use crate::error::DevopsError;
+use crate::embedding::EmbeddingConfig;
 use crate::models::{
-    McpRegistryDto, MILESTONE_STATUSES, MilestoneDto, RagDocumentDto, REQUIREMENT_PRIORITIES, REQUIREMENT_STATUSES,
-    REQUIREMENT_TYPES, RequirementCommentDto, RequirementDto, RequirementRow, SkillRegistryDto,
+    McpRegistryDto, MILESTONE_STATUSES, MilestoneDto, RagConfigDto, RagDocumentDto, RagSearchHit, REQUIREMENT_PRIORITIES,
+    REQUIREMENT_STATUSES, REQUIREMENT_TYPES, RequirementCommentDto, RequirementDto, RequirementRow, SkillRegistryDto,
 };
 
 pub struct DevopsService {
@@ -560,13 +561,19 @@ impl DevopsService {
     }
 
     pub async fn delete_rag_document(&self, id: &str) -> Result<(), DevopsError> {
+        let mut tx = self.pool.begin().await?;
         let deleted = sqlx::query("DELETE FROM one_rag_documents WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         if deleted.rows_affected() == 0 {
             return Err(DevopsError::NotFound(format!("rag document {id}")));
         }
+        sqlx::query("DELETE FROM one_rag_chunks WHERE document_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -679,6 +686,180 @@ impl DevopsService {
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| DevopsError::NotFound(format!("milestone {id}")))
+    }
+
+    // -- RAG pipeline (A2) ------------------------------------------------
+
+    pub async fn get_rag_config(&self) -> Result<RagConfigDto, DevopsError> {
+        let row: Option<(String, String, String, Option<i64>, i64)> = sqlx::query_as(
+            "SELECT base_url, api_key, model, dimensions, updated_at FROM one_rag_config WHERE id = 'default'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(match row {
+            Some((base_url, api_key, model, dimensions, updated_at)) => RagConfigDto {
+                base_url,
+                model,
+                has_key: !api_key.trim().is_empty(),
+                dimensions,
+                updated_at,
+            },
+            None => RagConfigDto { base_url: String::new(), model: String::new(), has_key: false, dimensions: None, updated_at: 0 },
+        })
+    }
+
+    /// Upsert the embedding config. `api_key = None` keeps the stored key
+    /// (so the UI can save base_url/model without re-entering the secret).
+    pub async fn set_rag_config(
+        &self,
+        base_url: &str,
+        model: &str,
+        api_key: Option<&str>,
+    ) -> Result<RagConfigDto, DevopsError> {
+        let now = now_ms();
+        // Preserve the existing key when the caller omits it.
+        let key = match api_key {
+            Some(k) => k.to_owned(),
+            None => sqlx::query_scalar::<_, String>("SELECT api_key FROM one_rag_config WHERE id = 'default'")
+                .fetch_optional(&self.pool)
+                .await?
+                .unwrap_or_default(),
+        };
+        sqlx::query(
+            "INSERT INTO one_rag_config (id, base_url, api_key, model, updated_at) \
+             VALUES ('default', ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET base_url = excluded.base_url, api_key = excluded.api_key, \
+                model = excluded.model, updated_at = excluded.updated_at",
+        )
+        .bind(base_url.trim())
+        .bind(&key)
+        .bind(model.trim())
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        self.get_rag_config().await
+    }
+
+    async fn load_embedding_config(&self) -> Result<EmbeddingConfig, DevopsError> {
+        let row: Option<(String, String, String)> =
+            sqlx::query_as("SELECT base_url, api_key, model FROM one_rag_config WHERE id = 'default'")
+                .fetch_optional(&self.pool)
+                .await?;
+        let (base_url, api_key, model) = row.ok_or_else(|| {
+            DevopsError::BadRequest("RAG embedding endpoint not configured".into())
+        })?;
+        Ok(EmbeddingConfig { base_url, api_key, model })
+    }
+
+    /// Set a document's inline content (the text to embed on process).
+    pub async fn set_document_content(&self, id: &str, content: &str) -> Result<(), DevopsError> {
+        let updated = sqlx::query("UPDATE one_rag_documents SET content = ? WHERE id = ?")
+            .bind(content)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if updated.rows_affected() == 0 {
+            return Err(DevopsError::NotFound(format!("rag document {id}")));
+        }
+        Ok(())
+    }
+
+    /// Process a document: chunk its content, embed each chunk, replace its
+    /// chunk rows, and update status/chunk_count. Records the dimension on
+    /// first success. Returns the chunk count.
+    pub async fn process_rag_document(&self, id: &str) -> Result<i64, DevopsError> {
+        let content: Option<String> = sqlx::query_scalar("SELECT content FROM one_rag_documents WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
+        let content = content.unwrap_or_default();
+        let chunks = crate::embedding::chunk_text(&content, 800, 100);
+        if chunks.is_empty() {
+            return Err(DevopsError::BadRequest("document has no content to process".into()));
+        }
+
+        let config = self.load_embedding_config().await?;
+        let vectors = match crate::embedding::embed(&config, &chunks).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = sqlx::query("UPDATE one_rag_documents SET status = 'error', last_error = ? WHERE id = ?")
+                    .bind(e.to_string())
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await;
+                return Err(e);
+            }
+        };
+        let dims = vectors.first().map(|v| v.len() as i64);
+
+        let now = now_ms();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM one_rag_chunks WHERE document_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        for (idx, (chunk, vector)) in chunks.iter().zip(vectors.iter()).enumerate() {
+            sqlx::query(
+                "INSERT INTO one_rag_chunks (id, document_id, chunk_index, content, embedding, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(new_id("ragc"))
+            .bind(id)
+            .bind(idx as i64)
+            .bind(chunk)
+            .bind(crate::embedding::pack_embedding(vector))
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        let count = chunks.len() as i64;
+        sqlx::query("UPDATE one_rag_documents SET status = 'ready', last_error = NULL, chunk_count = ? WHERE id = ?")
+            .bind(count)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+
+        if let Some(dims) = dims {
+            let _ = sqlx::query("UPDATE one_rag_config SET dimensions = ? WHERE id = 'default'")
+                .bind(dims)
+                .execute(&self.pool)
+                .await;
+        }
+        Ok(count)
+    }
+
+    /// Embed the query and return the top-k chunks by cosine similarity.
+    pub async fn search_rag(&self, query: &str, top_k: usize) -> Result<Vec<RagSearchHit>, DevopsError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(DevopsError::BadRequest("query is required".into()));
+        }
+        let config = self.load_embedding_config().await?;
+        let query_vec = crate::embedding::embed(&config, &[query.to_owned()])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| DevopsError::Internal("empty query embedding".into()))?;
+
+        let rows: Vec<(String, i64, String, Vec<u8>, String)> = sqlx::query_as(
+            "SELECT c.document_id, c.chunk_index, c.content, c.embedding, d.title \
+             FROM one_rag_chunks c JOIN one_rag_documents d ON d.id = c.document_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut hits: Vec<RagSearchHit> = rows
+            .into_iter()
+            .map(|(document_id, chunk_index, content, blob, document_title)| {
+                let score = crate::embedding::cosine_similarity(&query_vec, &crate::embedding::unpack_embedding(&blob));
+                RagSearchHit { document_id, document_title, chunk_index, content, score }
+            })
+            .collect();
+        hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        hits.truncate(top_k.max(1));
+        Ok(hits)
     }
 }
 

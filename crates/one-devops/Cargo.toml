@@ -9,6 +9,7 @@ aionui-auth.workspace = true
 aionui-common.workspace = true
 one-employee = { path = "../one-employee" }
 axum.workspace = true
+reqwest = { workspace = true, features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
