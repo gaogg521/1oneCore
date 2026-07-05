@@ -27,6 +27,7 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             "/api/one/devops/requirements/{id}/comments",
             get(list_comments).post(create_comment),
         )
+        .route("/api/one/devops/requirements/{id}/dispatch", axum::routing::post(dispatch_requirement))
         .route("/api/one/devops/skills", get(list_skills).post(upsert_skill))
         .route("/api/one/devops/skills/{id}", axum::routing::delete(delete_skill))
         .route("/api/one/devops/mcp-registry", get(list_mcp).post(upsert_mcp))
@@ -163,6 +164,85 @@ async fn create_comment(
         .create_comment(&id, &user.id, &user.username, &body.body)
         .await?;
     Ok(Json(ApiResponse::ok(created)))
+}
+
+// -- orchestration (A1 dispatch) ------------------------------------------
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DispatchResult {
+    conversation_id: String,
+    run_id: String,
+}
+
+/// Dispatch a requirement to its assigned digital employee: run the employee
+/// with the requirement as task context, record the run linkage as an
+/// agent-authored comment, and advance the status to `developing`.
+///
+/// L1 constraint: `assigned_to` must be one of the caller's own personal
+/// digital employees (one-employee enforces owner isolation inside
+/// `run_now_with_context`). Team-shared employees are a later layer.
+async fn dispatch_requirement(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<DispatchResult>>, DevopsError> {
+    let employee = state
+        .employee
+        .as_ref()
+        .ok_or_else(|| DevopsError::Internal("employee runtime not wired".into()))?;
+
+    let req = state.service.get_requirement_row(&id).await?;
+    let assigned_to = req
+        .assigned_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| DevopsError::BadRequest("requirement has no assigned digital employee".into()))?;
+
+    let task_context = build_task_context(&req);
+
+    let (run_id, conversation_id) = employee
+        .run_now_with_context(&user.id, assigned_to, task_context)
+        .await
+        .map_err(|e| match e {
+            one_employee::EmployeeError::NotFound => DevopsError::BadRequest(
+                "assigned digital employee not found among your employees (team-shared employees are not supported yet)".into(),
+            ),
+            other => DevopsError::Internal(format!("dispatch run: {other}")),
+        })?;
+
+    let metadata = serde_json::json!({ "conversationId": conversation_id, "runId": run_id }).to_string();
+    let body = format!("已派发给数字员工，运行中（会话 {conversation_id}）");
+    state
+        .service
+        .insert_agent_comment(&id, "agent", Some(assigned_to), "数字员工", &body, Some(metadata))
+        .await?;
+
+    if req.status == "backlog" || req.status == "planning" {
+        state
+            .service
+            .update_requirement(&id, UpdateRequirementInput {
+                status: Some("developing".into()),
+                ..Default::default()
+            })
+            .await?;
+    }
+
+    Ok(Json(ApiResponse::ok(DispatchResult { conversation_id, run_id })))
+}
+
+/// Compose the requirement into a task prompt appended to the employee's own
+/// run prompt. Kept plain-text so any agent backend can consume it.
+fn build_task_context(req: &crate::models::RequirementRow) -> String {
+    let mut out = String::new();
+    out.push_str("你收到一条协作看板需求，请完成它并输出可交付摘要。\n\n");
+    out.push_str(&format!("标题：{}\n", req.subject));
+    out.push_str(&format!("类型：{} · 优先级：{}\n", req.r#type, req.priority));
+    if let Some(desc) = req.description.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        out.push_str(&format!("\n描述：\n{desc}\n"));
+    }
+    out
 }
 
 // -- registries -----------------------------------------------------------

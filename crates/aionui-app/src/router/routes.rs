@@ -255,7 +255,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .with_team_session(team_session_service),
     );
     one_employee_service.spawn_scheduler();
-    let one_employee_state = one_employee::OneEmployeeRouterState::new(one_employee_service);
+    let one_employee_state = one_employee::OneEmployeeRouterState::new(one_employee_service.clone());
     let one_employee_authenticated = one_employee::one_employee_routes(one_employee_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -278,7 +278,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // collaboration registries, member-writable behind auth.
     let one_devops_state = one_devops::OneDevopsRouterState::new(std::sync::Arc::new(one_devops::DevopsService::new(
         services.database.pool().clone(),
-    )));
+    )))
+    .with_employee(one_employee_service.clone());
     let one_devops_authenticated = one_devops::one_devops_routes(one_devops_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 

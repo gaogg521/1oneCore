@@ -270,6 +270,53 @@ impl DevopsService {
         })
     }
 
+    /// Public requirement fetch for orchestration (dispatch). Errors NotFound
+    /// when the id is unknown.
+    pub async fn get_requirement_row(&self, id: &str) -> Result<RequirementRow, DevopsError> {
+        self.fetch_requirement(id).await
+    }
+
+    /// Insert an agent/autopilot-authored comment carrying optional metadata
+    /// JSON. Used by dispatch to record the run linkage on the requirement.
+    pub async fn insert_agent_comment(
+        &self,
+        requirement_id: &str,
+        author_type: &str,
+        author_id: Option<&str>,
+        author_name: &str,
+        body: &str,
+        metadata: Option<String>,
+    ) -> Result<RequirementCommentDto, DevopsError> {
+        self.require_requirement(requirement_id).await?;
+        let id = new_id("reqc");
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO one_requirement_comments \
+                (id, requirement_id, author_type, author_id, author_name, body, metadata, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(requirement_id)
+        .bind(author_type)
+        .bind(author_id)
+        .bind(author_name)
+        .bind(body)
+        .bind(metadata.as_deref())
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(RequirementCommentDto {
+            id,
+            requirement_id: requirement_id.to_owned(),
+            author_type: author_type.to_owned(),
+            author_id: author_id.map(str::to_owned),
+            author_name: author_name.to_owned(),
+            body: body.to_owned(),
+            metadata,
+            created_at: now,
+        })
+    }
+
     async fn fetch_requirement(&self, id: &str) -> Result<RequirementRow, DevopsError> {
         sqlx::query_as::<_, RequirementRow>(
             "SELECT id, parent_id, type, subject, description, status, priority, assigned_to, \

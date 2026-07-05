@@ -7,6 +7,7 @@ edition.workspace = true
 aionui-api-types.workspace = true
 aionui-auth.workspace = true
 aionui-common.workspace = true
+one-employee = { path = "../one-employee" }
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -130,6 +130,16 @@ fn build_run_prompt(agent: &PersonalAgentRow) -> String {
     format!("你是「{}」。请立即执行你的日常职责，完成后输出可交付摘要。", agent.name)
 }
 
+/// Append an optional task context (e.g. a dispatched requirement) under the
+/// employee's base run prompt. Empty/whitespace context is a no-op.
+fn append_task_context(mut prompt: String, task_context: Option<&str>) -> String {
+    if let Some(context) = task_context.map(str::trim).filter(|s| !s.is_empty()) {
+        prompt.push_str("\n\n## 本次任务\n");
+        prompt.push_str(context);
+    }
+    prompt
+}
+
 impl EmployeeService {
     pub fn new(
         pool: SqlitePool,
@@ -376,7 +386,22 @@ impl EmployeeService {
         agent_id: &str,
     ) -> Result<(String, String), EmployeeError> {
         let agent = self.get(owner_user_id, agent_id).await?;
-        self.start_personal_run(owner_user_id, &agent, TRIGGER_MANUAL).await
+        self.start_personal_run(owner_user_id, &agent, TRIGGER_MANUAL, None).await
+    }
+
+    /// Manual run carrying an extra task context (e.g. a devops requirement
+    /// dispatched to this employee). The context is appended to the agent's
+    /// own run prompt so the turn works the requirement, not just the daily
+    /// routine. Ownership is enforced by `get` (personal-agent isolation).
+    pub async fn run_now_with_context(
+        self: &Arc<Self>,
+        owner_user_id: &str,
+        agent_id: &str,
+        task_context: String,
+    ) -> Result<(String, String), EmployeeError> {
+        let agent = self.get(owner_user_id, agent_id).await?;
+        self.start_personal_run(owner_user_id, &agent, TRIGGER_MANUAL, Some(task_context))
+            .await
     }
 
     /// Shared personal-run path for manual and cron triggers. Creates the
@@ -387,6 +412,7 @@ impl EmployeeService {
         owner_user_id: &str,
         agent: &PersonalAgentRow,
         trigger_source: &str,
+        task_context: Option<String>,
     ) -> Result<(String, String), EmployeeError> {
         let mut extra = serde_json::Map::new();
         extra.insert("one_employee_id".into(), serde_json::Value::String(agent.id.clone()));
@@ -444,7 +470,7 @@ impl EmployeeService {
         let agent_clone = agent.clone();
         tokio::spawn(async move {
             service
-                .execute_run(&owner, &agent_clone, &run_id_bg, &conversation_id_bg, &trigger)
+                .execute_run(&owner, &agent_clone, &run_id_bg, &conversation_id_bg, &trigger, task_context)
                 .await;
         });
 
@@ -568,8 +594,9 @@ impl EmployeeService {
         run_id: &str,
         conversation_id: &str,
         trigger_source: &str,
+        task_context: Option<String>,
     ) {
-        let prompt = build_run_prompt(agent);
+        let prompt = append_task_context(build_run_prompt(agent), task_context.as_deref());
         let turn_req = ConversationAgentTurnRequest {
             user_id: owner_user_id.to_owned(),
             conversation_id: conversation_id.to_owned(),
@@ -783,7 +810,7 @@ impl EmployeeService {
                 .execute(&self.pool)
                 .await;
 
-            if let Err(e) = self.start_personal_run(&owner_user_id, &agent, TRIGGER_CRON).await {
+            if let Err(e) = self.start_personal_run(&owner_user_id, &agent, TRIGGER_CRON, None).await {
                 tracing::error!(agent_id, error = %e, "one-employee scanner: start_personal_run failed");
                 // Restore next_run_at so we retry on the next tick.
                 let _ = self.recompute_next_run(&agent_id).await;
@@ -796,6 +823,16 @@ impl EmployeeService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn append_task_context_appends_and_noops() {
+        assert_eq!(append_task_context("base".into(), None), "base");
+        assert_eq!(append_task_context("base".into(), Some("   ")), "base");
+        assert_eq!(
+            append_task_context("base".into(), Some("做需求 X")),
+            "base\n\n## 本次任务\n做需求 X"
+        );
+    }
 
     #[test]
     fn run_prompt_prefers_instructions() {
