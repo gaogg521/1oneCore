@@ -3853,6 +3853,8 @@ dependencies = [
  "aionui-auth",
  "aionui-common",
  "axum",
+ "one-employee",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",
