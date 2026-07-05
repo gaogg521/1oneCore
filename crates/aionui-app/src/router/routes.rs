@@ -63,6 +63,12 @@ pub async fn create_router(services: &AppServices) -> Result<Router, RouterBuild
     let (states, channel_components) = build_module_states(services).await?;
     tracing::info!(elapsed_ms = boot.elapsed().as_millis(), "startup: module states built");
 
+    // one-org keeps its own migration ledger (`_one_migrations`), fully
+    // decoupled from the upstream sqlx migrator — see crates/one-org.
+    one_org::run_one_migrations(services.database.pool())
+        .await
+        .map_err(|e| RouterBuildError::new("router.one_org.migrate", "failed to run one-org migrations").with_source(e))?;
+
     // Start channel orchestrator (message loop)
     tokio::spawn(
         channel_components
@@ -206,6 +212,15 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let assistant_authenticated =
         assistant_routes(states.assistant).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // one-org enterprise routes (/api/one/*) — RBAC extractors depend on the
+    // upstream auth middleware injecting CurrentUser.
+    let one_org_state = one_org::OneOrgRouterState::new(std::sync::Arc::new(one_org::OrgService::new(
+        services.database.pool().clone(),
+        services.user_repo.clone(),
+    )));
+    let one_org_authenticated =
+        one_org::one_org_routes(one_org_state).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // Office proxy routes — exempt from auth (serve iframe content)
     let office_proxy = office_proxy_routes(states.office);
     let public_assets = asset_routes(AssetRouterState::default());
@@ -234,7 +249,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(cron_authenticated)
         .merge(office_authenticated)
         .merge(shell_authenticated)
-        .merge(assistant_authenticated);
+        .merge(assistant_authenticated)
+        .merge(one_org_authenticated);
 
     // Conditionally merge WeChat login SSE route (feature-gated)
     #[cfg(feature = "weixin")]
