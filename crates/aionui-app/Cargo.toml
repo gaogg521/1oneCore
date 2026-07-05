@@ -36,6 +36,7 @@ aionui-cron.workspace = true
 aionui-assistant.workspace = true
 aionui-runtime.workspace = true
 one-org.workspace = true
+one-employee.workspace = true
 aion-config.workspace = true
 axum.workspace = true
 chrono.workspace = true

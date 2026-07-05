@@ -68,6 +68,11 @@ pub async fn create_router(services: &AppServices) -> Result<Router, RouterBuild
     one_org::run_one_migrations(services.database.pool())
         .await
         .map_err(|e| RouterBuildError::new("router.one_org.migrate", "failed to run one-org migrations").with_source(e))?;
+    one_employee::run_one_employee_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new("router.one_employee.migrate", "failed to run one-employee migrations").with_source(e)
+        })?;
 
     // Start channel orchestrator (message loop)
     tokio::spawn(
@@ -221,6 +226,21 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let one_org_authenticated =
         one_org::one_org_routes(one_org_state).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // one-employee digital employee routes (/api/one/employee/*).
+    let one_employee_state = one_employee::OneEmployeeRouterState::new(std::sync::Arc::new(
+        one_employee::EmployeeService::new(
+            services.database.pool().clone(),
+            std::sync::Arc::new(services.conversation_service.clone()),
+            std::sync::Arc::new(aionui_db::SqliteConversationRepository::new(
+                services.database.pool().clone(),
+            )),
+            services.agent_registry.clone(),
+            services.work_dir.clone(),
+        ),
+    ));
+    let one_employee_authenticated = one_employee::one_employee_routes(one_employee_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // Office proxy routes — exempt from auth (serve iframe content)
     let office_proxy = office_proxy_routes(states.office);
     let public_assets = asset_routes(AssetRouterState::default());
@@ -250,7 +270,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(office_authenticated)
         .merge(shell_authenticated)
         .merge(assistant_authenticated)
-        .merge(one_org_authenticated);
+        .merge(one_org_authenticated)
+        .merge(one_employee_authenticated);
 
     // Conditionally merge WeChat login SSE route (feature-gated)
     #[cfg(feature = "weixin")]
