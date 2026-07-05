@@ -3,16 +3,16 @@
 //! strictly owner-scoped in M3a).
 
 use axum::extract::{Path, State};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 
-use aionui_api_types::ApiResponse;
+use aionui_api_types::{ApiResponse, CronScheduleDto};
 use aionui_auth::CurrentUser;
 
 use crate::error::EmployeeError;
 use crate::models::{EmployeeRunRow, PersonalAgentDto};
-use crate::service::{CreateEmployeeInput, UpdateEmployeeInput};
+use crate::service::{CreateEmployeeInput, ScheduleInput, UpdateEmployeeInput};
 use crate::state::OneEmployeeRouterState;
 
 pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
@@ -23,6 +23,8 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
             get(get_agent).put(update_agent).delete(delete_agent),
         )
         .route("/api/one/employee/agents/{agent_id}/run", post(run_agent))
+        .route("/api/one/employee/agents/{agent_id}/run-team", post(run_agent_team))
+        .route("/api/one/employee/agents/{agent_id}/schedule", put(set_schedule))
         .route("/api/one/employee/agents/{agent_id}/runs", get(list_runs))
         .route("/api/one/employee/runs/{run_id}", get(get_run))
         .with_state(state)
@@ -123,6 +125,50 @@ async fn run_agent(
 ) -> Result<Json<ApiResponse<RunNowDto>>, EmployeeError> {
     let (run_id, conversation_id) = state.service.run_now(&user.id, &agent_id).await?;
     Ok(Json(ApiResponse::ok(RunNowDto { run_id, conversation_id })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunTeamBody {
+    team_id: String,
+    slot_id: String,
+}
+
+async fn run_agent_team(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<RunTeamBody>,
+) -> Result<Json<ApiResponse<RunNowDto>>, EmployeeError> {
+    let (run_id, conversation_id) = state
+        .service
+        .run_now_team(&user.id, &agent_id, &body.team_id, &body.slot_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(RunNowDto { run_id, conversation_id })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetScheduleBody {
+    schedule: Option<CronScheduleDto>,
+    #[serde(default)]
+    enabled: Option<bool>,
+}
+
+async fn set_schedule(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<SetScheduleBody>,
+) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
+    let agent = state
+        .service
+        .set_schedule(&user.id, &agent_id, ScheduleInput {
+            schedule: body.schedule,
+            enabled: body.enabled,
+        })
+        .await?;
+    Ok(Json(ApiResponse::ok(agent)))
 }
 
 async fn list_runs(

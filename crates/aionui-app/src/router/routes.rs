@@ -196,7 +196,10 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let channel_authenticated =
         channel_routes(states.channel).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
-    // Team routes protected by auth middleware
+    // Team routes protected by auth middleware. Clone the team session
+    // service out before moving the state into team_routes — one-employee
+    // needs it for /run-team.
+    let team_session_service = states.team.service.clone();
     let team_authenticated =
         team_routes(states.team).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -227,7 +230,9 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         one_org::one_org_routes(one_org_state).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // one-employee digital employee routes (/api/one/employee/*).
-    let one_employee_state = one_employee::OneEmployeeRouterState::new(std::sync::Arc::new(
+    // Wire the team session service so /run-team can drive existing team
+    // slots; spawn the 30s schedule scanner for cron-driven runs.
+    let one_employee_service = std::sync::Arc::new(
         one_employee::EmployeeService::new(
             services.database.pool().clone(),
             std::sync::Arc::new(services.conversation_service.clone()),
@@ -236,8 +241,11 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             )),
             services.agent_registry.clone(),
             services.work_dir.clone(),
-        ),
-    ));
+        )
+        .with_team_session(team_session_service),
+    );
+    one_employee_service.spawn_scheduler();
+    let one_employee_state = one_employee::OneEmployeeRouterState::new(one_employee_service);
     let one_employee_authenticated = one_employee::one_employee_routes(one_employee_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 

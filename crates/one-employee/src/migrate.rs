@@ -8,7 +8,10 @@ use sqlx::SqlitePool;
 
 use crate::error::EmployeeError;
 
-const MIGRATIONS: &[(&str, &str)] = &[("employee_001_init", include_str!("../migrations/001_init.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("employee_001_init", include_str!("../migrations/001_init.sql")),
+    ("employee_002_schedule", include_str!("../migrations/002_schedule.sql")),
+];
 
 /// Run all pending one-employee migrations. Idempotent.
 pub async fn run_one_employee_migrations(pool: &SqlitePool) -> Result<(), EmployeeError> {
@@ -63,5 +66,28 @@ mod tests {
                     .unwrap();
             assert!(exists, "table {table} should exist");
         }
+
+        // 002 added schedule columns to one_personal_agents.
+        let has_schedule: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('one_personal_agents') WHERE name='schedule'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert!(has_schedule, "one_personal_agents.schedule column should exist");
+        let has_enabled: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('one_personal_agents') WHERE name='schedule_enabled'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert!(has_enabled, "one_personal_agents.schedule_enabled column should exist");
+        let has_next_run: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('one_personal_agents') WHERE name='next_run_at'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert!(has_next_run, "one_personal_agents.next_run_at column should exist");
     }
 }

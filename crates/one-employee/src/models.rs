@@ -21,6 +21,9 @@ pub struct PersonalAgentRow {
     pub custom_agent_id: Option<String>,
     pub cli_path: Option<String>,
     pub automation_config: String,
+    pub schedule: Option<String>,
+    pub schedule_enabled: i64,
+    pub next_run_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -37,6 +40,9 @@ pub struct PersonalAgentDto {
     pub custom_agent_id: Option<String>,
     pub cli_path: Option<String>,
     pub automation_config: serde_json::Value,
+    pub schedule: Option<serde_json::Value>,
+    pub schedule_enabled: bool,
+    pub next_run_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -45,6 +51,10 @@ impl From<PersonalAgentRow> for PersonalAgentDto {
     fn from(row: PersonalAgentRow) -> Self {
         let automation_config =
             serde_json::from_str(&row.automation_config).unwrap_or_else(|_| serde_json::json!({}));
+        let schedule = row
+            .schedule
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
         Self {
             id: row.id,
             owner_user_id: row.owner_user_id,
@@ -55,6 +65,9 @@ impl From<PersonalAgentRow> for PersonalAgentDto {
             custom_agent_id: row.custom_agent_id,
             cli_path: row.cli_path,
             automation_config,
+            schedule,
+            schedule_enabled: row.schedule_enabled != 0,
+            next_run_at: row.next_run_at,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
