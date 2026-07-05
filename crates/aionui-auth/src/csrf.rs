@@ -37,7 +37,19 @@ pub async fn csrf_middleware(
     let needs_validation = matches!(method, Method::POST | Method::PUT | Method::DELETE | Method::PATCH);
     let is_exempt = path == "/login" || path == "/api/auth/qr-login";
 
-    if needs_validation && !is_exempt {
+    // Requests authenticated via `Authorization: Bearer <token>` carry no
+    // ambient credential a cross-site attacker could ride (the header cannot
+    // be set cross-origin without a CORS preflight), so the Double Submit
+    // Cookie check does not apply. This is what lets the desktop client talk
+    // to a remote enterprise server without a cookie jar.
+    let has_bearer_auth = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .is_some_and(|token| !token.trim().is_empty());
+
+    if needs_validation && !is_exempt && !has_bearer_auth {
         let header_token = request
             .headers()
             .get(CSRF_HEADER_NAME)

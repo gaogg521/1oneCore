@@ -332,22 +332,23 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         "startup: route tree build with states completed"
     );
 
-    if services.local {
-        let cors = CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods([
-                Method::GET,
-                Method::POST,
-                Method::PUT,
-                Method::PATCH,
-                Method::DELETE,
-                Method::OPTIONS,
-            ])
-            .allow_headers(Any);
-        router.layer(cors)
-    } else {
-        router
-    }
+    // CORS applies in both modes. Wildcard origin without allow_credentials
+    // means cross-origin requests never carry the session cookie, so the
+    // cookie path stays CSRF-protected; cross-origin callers must present a
+    // Bearer token explicitly. This is what lets the desktop client (file://
+    // or localhost origin) talk to a remote enterprise server.
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers(Any);
+    router.layer(cors)
 }
 
 async fn normalize_boundary_error_response(request: Request, next: Next) -> Response {
