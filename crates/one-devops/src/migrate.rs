@@ -14,6 +14,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("001_init", include_str!("../migrations/001_init.sql")),
     ("002_milestones", include_str!("../migrations/002_milestones.sql")),
     ("003_rag_pipeline", include_str!("../migrations/003_rag_pipeline.sql")),
+    ("004_autopilot", include_str!("../migrations/004_autopilot.sql")),
 ];
 
 /// Run all pending one-devops migrations. Idempotent; call once at startup

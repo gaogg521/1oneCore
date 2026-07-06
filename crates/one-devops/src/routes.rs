@@ -72,6 +72,8 @@ struct CreateRequirementBody {
     priority: Option<String>,
     #[serde(default)]
     milestone_id: Option<String>,
+    #[serde(default)]
+    autopilot: Option<bool>,
 }
 
 async fn create_requirement(
@@ -88,8 +90,10 @@ async fn create_requirement(
             description: body.description,
             priority: body.priority,
             milestone_id: body.milestone_id,
+            autopilot: body.autopilot,
         })
         .await?;
+    maybe_autopilot(&state, &user.id, &created.id).await;
     Ok(Json(ApiResponse::ok(created)))
 }
 
@@ -111,6 +115,8 @@ struct UpdateRequirementBody {
     parent_id: Option<Option<String>>,
     #[serde(default, with = "double_option")]
     milestone_id: Option<Option<String>>,
+    #[serde(default)]
+    autopilot: Option<bool>,
 }
 
 /// serde helper distinguishing "absent" from "null".
@@ -128,6 +134,7 @@ mod double_option {
 
 async fn update_requirement(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
     Json(body): Json<UpdateRequirementBody>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
@@ -141,8 +148,10 @@ async fn update_requirement(
             assigned_to: body.assigned_to,
             parent_id: body.parent_id,
             milestone_id: body.milestone_id,
+            autopilot: body.autopilot,
         })
         .await?;
+    maybe_autopilot(&state, &user.id, &id).await;
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -200,12 +209,26 @@ async fn dispatch_requirement(
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<DispatchResult>>, DevopsError> {
+    let result = dispatch_core(&state, &user.id, &id).await?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+/// Core dispatch: run the requirement's assigned digital employee with the
+/// requirement as task context, record the run linkage as an agent comment,
+/// and advance a pre-dev status to `developing`. Shared by the manual
+/// dispatch endpoint and autopilot. Errors with `BadRequest` when the
+/// requirement has no assigned employee.
+async fn dispatch_core(
+    state: &OneDevopsRouterState,
+    user_id: &str,
+    id: &str,
+) -> Result<DispatchResult, DevopsError> {
     let employee = state
         .employee
         .as_ref()
         .ok_or_else(|| DevopsError::Internal("employee runtime not wired".into()))?;
 
-    let req = state.service.get_requirement_row(&id).await?;
+    let req = state.service.get_requirement_row(id).await?;
     let assigned_to = req
         .assigned_to
         .as_deref()
@@ -216,7 +239,7 @@ async fn dispatch_requirement(
     let task_context = build_task_context(&req);
 
     let (run_id, conversation_id) = employee
-        .run_now_with_context(&user.id, assigned_to, task_context)
+        .run_now_with_context(user_id, assigned_to, task_context)
         .await
         .map_err(|e| match e {
             one_employee::EmployeeError::NotFound => DevopsError::BadRequest(
@@ -229,20 +252,49 @@ async fn dispatch_requirement(
     let body = format!("已派发给数字员工，运行中（会话 {conversation_id}）");
     state
         .service
-        .insert_agent_comment(&id, "agent", Some(assigned_to), "数字员工", &body, Some(metadata))
+        .insert_agent_comment(id, "agent", Some(assigned_to), "数字员工", &body, Some(metadata))
         .await?;
 
     if req.status == "backlog" || req.status == "planning" {
         state
             .service
-            .update_requirement(&id, UpdateRequirementInput {
+            .update_requirement(id, UpdateRequirementInput {
                 status: Some("developing".into()),
                 ..Default::default()
             })
             .await?;
     }
 
-    Ok(Json(ApiResponse::ok(DispatchResult { conversation_id, run_id })))
+    Ok(DispatchResult { conversation_id, run_id })
+}
+
+/// Best-effort autopilot (A1 L3): after a create/update, if the requirement
+/// has autopilot on, an assigned employee, and is still in a pre-dev status,
+/// auto-dispatch it. Silent no-op when conditions aren't met; failures are
+/// logged, never surfaced — autopilot must not fail the originating request.
+///
+/// Re-entrancy is self-guarding: a successful dispatch advances the status to
+/// `developing`, so the `backlog`/`planning` gate stops it from firing again
+/// until the user deliberately moves the requirement back.
+async fn maybe_autopilot(state: &OneDevopsRouterState, user_id: &str, id: &str) {
+    if state.employee.is_none() {
+        return;
+    }
+    let Ok(req) = state.service.get_requirement_row(id).await else {
+        return;
+    };
+    if !req.autopilot {
+        return;
+    }
+    if req.assigned_to.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_none() {
+        return;
+    }
+    if req.status != "backlog" && req.status != "planning" {
+        return;
+    }
+    if let Err(e) = dispatch_core(state, user_id, id).await {
+        tracing::warn!(requirement = id, error = %e, "autopilot dispatch failed");
+    }
 }
 
 #[derive(serde::Serialize)]

@@ -25,6 +25,7 @@ pub struct CreateRequirementInput {
     pub description: Option<String>,
     pub priority: Option<String>,
     pub milestone_id: Option<String>,
+    pub autopilot: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -36,6 +37,7 @@ pub struct UpdateRequirementInput {
     pub assigned_to: Option<Option<String>>,
     pub parent_id: Option<Option<String>>,
     pub milestone_id: Option<Option<String>>,
+    pub autopilot: Option<bool>,
 }
 
 fn new_id(prefix: &str) -> String {
@@ -65,7 +67,7 @@ impl DevopsService {
     pub async fn requirements_tree(&self) -> Result<Vec<RequirementDto>, DevopsError> {
         let rows = sqlx::query_as::<_, RequirementRow>(
             "SELECT id, parent_id, type, subject, description, status, priority, assigned_to, \
-                    milestone_id, creator_id, creator_name, created_at, updated_at \
+                    milestone_id, autopilot, creator_id, creator_name, created_at, updated_at \
              FROM one_requirements ORDER BY updated_at DESC",
         )
         .fetch_all(&self.pool)
@@ -120,8 +122,8 @@ impl DevopsService {
         sqlx::query(
             "INSERT INTO one_requirements \
                 (id, parent_id, type, subject, description, status, priority, assigned_to, \
-                 milestone_id, creator_id, creator_name, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, 'backlog', ?, NULL, ?, ?, ?, ?, ?)",
+                 milestone_id, autopilot, creator_id, creator_name, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, 'backlog', ?, NULL, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&input.parent_id)
@@ -130,6 +132,7 @@ impl DevopsService {
         .bind(&input.description)
         .bind(priority)
         .bind(&input.milestone_id)
+        .bind(input.autopilot.unwrap_or(false))
         .bind(creator_id)
         .bind(creator_name)
         .bind(now)
@@ -162,6 +165,7 @@ impl DevopsService {
                     description: item.description.clone(),
                     priority: Some(item.priority.clone()),
                     milestone_id: None,
+                    autopilot: None,
                 })
                 .await?;
             created.push(child);
@@ -199,6 +203,7 @@ impl DevopsService {
                 assigned_to = CASE WHEN ? THEN ? ELSE assigned_to END, \
                 parent_id = CASE WHEN ? THEN ? ELSE parent_id END, \
                 milestone_id = CASE WHEN ? THEN ? ELSE milestone_id END, \
+                autopilot = COALESCE(?, autopilot), \
                 updated_at = ? \
              WHERE id = ?",
         )
@@ -213,6 +218,7 @@ impl DevopsService {
         .bind(input.parent_id.clone().flatten())
         .bind(input.milestone_id.is_some())
         .bind(input.milestone_id.clone().flatten())
+        .bind(input.autopilot)
         .bind(now_ms())
         .bind(&row.id)
         .execute(&self.pool)
@@ -350,7 +356,7 @@ impl DevopsService {
     async fn fetch_requirement(&self, id: &str) -> Result<RequirementRow, DevopsError> {
         sqlx::query_as::<_, RequirementRow>(
             "SELECT id, parent_id, type, subject, description, status, priority, assigned_to, \
-                    milestone_id, creator_id, creator_name, created_at, updated_at \
+                    milestone_id, autopilot, creator_id, creator_name, created_at, updated_at \
              FROM one_requirements WHERE id = ?",
         )
         .bind(id)
@@ -952,6 +958,41 @@ mod tests {
         // Deleting the epic removes the subtree.
         svc.delete_requirement(&epic.id).await.unwrap();
         assert!(svc.requirements_tree().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn autopilot_flag_persists_and_toggles() {
+        let svc = service().await;
+        let req = svc
+            .create_requirement("u1", Some("Alice"), CreateRequirementInput {
+                subject: "auto".into(),
+                autopilot: Some(true),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(req.autopilot);
+        // Default is off.
+        let plain = svc
+            .create_requirement("u1", None, CreateRequirementInput { subject: "manual".into(), ..Default::default() })
+            .await
+            .unwrap();
+        assert!(!plain.autopilot);
+
+        // Toggling other fields leaves autopilot untouched; explicit toggle flips it.
+        svc.update_requirement(&req.id, UpdateRequirementInput {
+            priority: Some("high".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        svc.update_requirement(&req.id, UpdateRequirementInput { autopilot: Some(false), ..Default::default() })
+            .await
+            .unwrap();
+        let tree = svc.requirements_tree().await.unwrap();
+        let refreshed = tree.iter().find(|r| r.id == req.id).unwrap();
+        assert!(!refreshed.autopilot);
+        assert_eq!(refreshed.priority, "high");
     }
 
     #[tokio::test]
