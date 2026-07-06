@@ -2596,10 +2596,23 @@ fn normalize_json_array_string(raw: Option<&str>, field: &str) -> Result<String,
 // Filesystem helpers
 // ---------------------------------------------------------------------------
 
+/// Map an assistant id to a filesystem-safe file stem.
+///
+/// Generated CLI agents use `bare:<agent>` ids (see `AssistantSource::Generated`).
+/// The colon is reserved on Windows: `std::fs::write` on `bare:agent.md` silently
+/// targets an NTFS Alternate Data Stream of a base file named `bare`, which
+/// `read_dir` never enumerates — so directory-scan deletion/fallback-read could
+/// not find the file. Replacing the Windows-reserved set keeps write, read, and
+/// scan consistent across platforms.
+fn assistant_file_stem(id: &str) -> String {
+    id.replace(['<', '>', ':', '"', '/', '\\', '|', '?', '*'], "_")
+}
+
 fn assistant_md_path(dir: &Path, id: &str, locale: Option<&str>) -> PathBuf {
+    let stem = assistant_file_stem(id);
     let filename = match locale {
-        Some(loc) if !loc.is_empty() => format!("{id}.{loc}.md"),
-        _ => format!("{id}.md"),
+        Some(loc) if !loc.is_empty() => format!("{stem}.{loc}.md"),
+        _ => format!("{stem}.md"),
     };
     dir.join(filename)
 }
@@ -2617,8 +2630,9 @@ fn read_first_assistant_md(dir: &Path, id: &str) -> String {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return String::new();
     };
-    let prefix = format!("{id}.");
-    let exact = format!("{id}.md");
+    let stem = assistant_file_stem(id);
+    let prefix = format!("{stem}.");
+    let exact = format!("{stem}.md");
     let mut fallback: Option<PathBuf> = None;
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -2640,8 +2654,9 @@ fn remove_assistant_md_files(dir: &Path, id: &str) -> bool {
         return false;
     };
     let mut deleted = false;
-    let prefix = format!("{id}.");
-    let exact = format!("{id}.md");
+    let stem = assistant_file_stem(id);
+    let prefix = format!("{stem}.");
+    let exact = format!("{stem}.md");
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
