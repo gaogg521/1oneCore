@@ -31,6 +31,7 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             get(list_comments).post(create_comment),
         )
         .route("/api/one/devops/requirements/{id}/dispatch", axum::routing::post(dispatch_requirement))
+        .route("/api/one/devops/requirements/{id}/breakdown", axum::routing::post(breakdown_requirement))
         .route("/api/one/devops/skills", get(list_skills).post(upsert_skill))
         .route("/api/one/devops/skills/{id}", axum::routing::delete(delete_skill))
         .route("/api/one/devops/mcp-registry", get(list_mcp).post(upsert_mcp))
@@ -242,6 +243,93 @@ async fn dispatch_requirement(
     }
 
     Ok(Json(ApiResponse::ok(DispatchResult { conversation_id, run_id })))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BreakdownResult {
+    conversation_id: String,
+    run_id: String,
+    created: Vec<RequirementDto>,
+}
+
+/// Break a requirement down into child requirements (A1 L2): run the assigned
+/// digital employee with a structured breakdown prompt, parse its reply into
+/// child items, batch-create them under this requirement, and record the run
+/// linkage as an agent-authored comment.
+///
+/// Same L1 ownership constraint as dispatch: `assigned_to` must be one of the
+/// caller's own personal digital employees.
+async fn breakdown_requirement(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<BreakdownResult>>, DevopsError> {
+    let employee = state
+        .employee
+        .as_ref()
+        .ok_or_else(|| DevopsError::Internal("employee runtime not wired".into()))?;
+
+    let req = state.service.get_requirement_row(&id).await?;
+    let assigned_to = req
+        .assigned_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| DevopsError::BadRequest("requirement has no assigned digital employee".into()))?;
+
+    let prompt = crate::breakdown::build_breakdown_prompt(&req);
+    let run = employee
+        .run_prompt_blocking(&user.id, assigned_to, prompt)
+        .await
+        .map_err(|e| match e {
+            one_employee::EmployeeError::NotFound => DevopsError::BadRequest(
+                "assigned digital employee not found among your employees (team-shared employees are not supported yet)".into(),
+            ),
+            other => DevopsError::Internal(format!("breakdown run: {other}")),
+        })?;
+
+    let items = crate::breakdown::parse_breakdown_items(&run.reply);
+    if items.is_empty() {
+        // Record the failure so the run linkage is not lost, then surface it.
+        let metadata = serde_json::json!({ "conversationId": run.conversation_id, "runId": run.run_id }).to_string();
+        state
+            .service
+            .insert_agent_comment(
+                &id,
+                "agent",
+                Some(assigned_to),
+                "数字员工",
+                "自动拆解未能从回复中解析出子需求，请重试或手动拆解。",
+                Some(metadata),
+            )
+            .await?;
+        return Err(DevopsError::BadRequest("未能从数字员工回复中解析出子需求".into()));
+    }
+
+    let created = state
+        .service
+        .create_breakdown_children(&id, &user.id, Some(user.username.as_str()), &items)
+        .await?;
+
+    let child_ids: Vec<&str> = created.iter().map(|c| c.id.as_str()).collect();
+    let metadata = serde_json::json!({
+        "conversationId": run.conversation_id,
+        "runId": run.run_id,
+        "childIds": child_ids,
+    })
+    .to_string();
+    let body = format!("已自动拆解为 {} 条子需求（会话 {}）", created.len(), run.conversation_id);
+    state
+        .service
+        .insert_agent_comment(&id, "agent", Some(assigned_to), "数字员工", &body, Some(metadata))
+        .await?;
+
+    Ok(Json(ApiResponse::ok(BreakdownResult {
+        conversation_id: run.conversation_id,
+        run_id: run.run_id,
+        created,
+    })))
 }
 
 /// Compose the requirement into a task prompt appended to the employee's own

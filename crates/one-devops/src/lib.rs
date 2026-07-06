@@ -14,6 +14,7 @@
 //! chunk → embed → store → cosine-search pipeline over an OpenAI-compatible
 //! embedding endpoint (see `embedding` module).
 
+pub mod breakdown;
 pub mod embedding;
 pub mod error;
 pub mod migrate;

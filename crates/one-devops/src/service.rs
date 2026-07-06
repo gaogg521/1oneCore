@@ -140,6 +140,35 @@ impl DevopsService {
         Ok(RequirementDto::from_row(self.fetch_requirement(&id).await?))
     }
 
+    /// Create the parsed breakdown children under `parent_id` (A1 L2). Each
+    /// item's kind/priority is already clamped to a valid enum. Returns the
+    /// created rows. Fields already validated upstream, so a per-child failure
+    /// is unexpected and aborts the batch.
+    pub async fn create_breakdown_children(
+        &self,
+        parent_id: &str,
+        creator_id: &str,
+        creator_name: Option<&str>,
+        items: &[crate::breakdown::BreakdownItem],
+    ) -> Result<Vec<RequirementDto>, DevopsError> {
+        self.require_requirement(parent_id).await?;
+        let mut created = Vec::with_capacity(items.len());
+        for item in items {
+            let child = self
+                .create_requirement(creator_id, creator_name, CreateRequirementInput {
+                    parent_id: Some(parent_id.to_owned()),
+                    kind: Some(item.kind.clone()),
+                    subject: item.subject.clone(),
+                    description: item.description.clone(),
+                    priority: Some(item.priority.clone()),
+                    milestone_id: None,
+                })
+                .await?;
+            created.push(child);
+        }
+        Ok(created)
+    }
+
     pub async fn update_requirement(&self, id: &str, input: UpdateRequirementInput) -> Result<(), DevopsError> {
         let row = self.require_requirement(id).await?;
 

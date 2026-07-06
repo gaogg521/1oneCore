@@ -32,9 +32,18 @@ use aionui_team::TeamSessionService;
 
 use crate::error::EmployeeError;
 use crate::models::{
-    EmployeeRunRow, PersonalAgentDto, PersonalAgentRow, RUN_FAILED, RUN_RUNNING, RUN_SUCCESS, TRIGGER_CRON,
-    TRIGGER_MANUAL,
+    EmployeeRunRow, PersonalAgentDto, PersonalAgentRow, RUN_FAILED, RUN_RUNNING, RUN_SUCCESS, TRIGGER_BREAKDOWN,
+    TRIGGER_CRON, TRIGGER_MANUAL,
 };
+
+/// Outcome of a blocking run: the run/conversation linkage plus the agent's
+/// full (untruncated) text reply, so callers can parse structured output.
+#[derive(Debug, Clone)]
+pub struct RunReply {
+    pub run_id: String,
+    pub conversation_id: String,
+    pub reply: String,
+}
 
 /// 30s scanner tick — same cadence the TS cron driver used.
 const SCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
@@ -128,6 +137,16 @@ fn build_run_prompt(agent: &PersonalAgentRow) -> String {
         return format!("你是「{}」。你的职责：{}\n\n请立即执行你的日常职责，完成后输出可交付摘要。", agent.name, description);
     }
     format!("你是「{}」。请立即执行你的日常职责，完成后输出可交付摘要。", agent.name)
+}
+
+/// Truncate a reply to a 240-char run summary (matches the TS reference).
+fn truncate_summary(reply: &str) -> String {
+    if reply.chars().count() > 240 {
+        let truncated: String = reply.chars().take(237).collect();
+        format!("{truncated}…")
+    } else {
+        reply.to_owned()
+    }
 }
 
 /// Append an optional task context (e.g. a dispatched requirement) under the
@@ -404,15 +423,16 @@ impl EmployeeService {
             .await
     }
 
-    /// Shared personal-run path for manual and cron triggers. Creates the
-    /// conversation, inserts the run row, spawns `execute_run` to await the
-    /// agent turn and persist the outcome.
-    async fn start_personal_run(
-        self: &Arc<Self>,
+    /// Provision a fresh personal run: create the conversation (with the
+    /// agent identity injected into `extra`), ensure a workspace, and insert
+    /// the `one_employee_runs` row in `running` state. Returns
+    /// `(run_id, conversation_id)`. Shared by the fire-and-forget
+    /// (`start_personal_run`) and blocking (`run_prompt_blocking`) paths.
+    async fn provision_run(
+        &self,
         owner_user_id: &str,
         agent: &PersonalAgentRow,
         trigger_source: &str,
-        task_context: Option<String>,
     ) -> Result<(String, String), EmployeeError> {
         let mut extra = serde_json::Map::new();
         extra.insert("one_employee_id".into(), serde_json::Value::String(agent.id.clone()));
@@ -462,6 +482,21 @@ impl EmployeeService {
         .execute(&self.pool)
         .await?;
 
+        Ok((run_id, conversation_id))
+    }
+
+    /// Shared personal-run path for manual and cron triggers. Provisions the
+    /// run, then spawns `execute_run` to await the agent turn and persist the
+    /// outcome. Returns immediately.
+    async fn start_personal_run(
+        self: &Arc<Self>,
+        owner_user_id: &str,
+        agent: &PersonalAgentRow,
+        trigger_source: &str,
+        task_context: Option<String>,
+    ) -> Result<(String, String), EmployeeError> {
+        let (run_id, conversation_id) = self.provision_run(owner_user_id, agent, trigger_source).await?;
+
         let service = Arc::clone(self);
         let owner = owner_user_id.to_owned();
         let run_id_bg = run_id.clone();
@@ -475,6 +510,52 @@ impl EmployeeService {
         });
 
         Ok((run_id, conversation_id))
+    }
+
+    /// Blocking run with a fully-supplied prompt: provision the run, await the
+    /// agent turn inline (no `build_run_prompt` prepend, no background spawn),
+    /// persist the outcome, and return the agent's full text reply so callers
+    /// can parse structured output (e.g. devops breakdown → child requirements).
+    ///
+    /// Ownership is enforced by `get` (personal-agent isolation), same L1
+    /// constraint as `run_now_with_context`.
+    pub async fn run_prompt_blocking(
+        self: &Arc<Self>,
+        owner_user_id: &str,
+        agent_id: &str,
+        prompt: String,
+    ) -> Result<RunReply, EmployeeError> {
+        let agent = self.get(owner_user_id, agent_id).await?;
+        let (run_id, conversation_id) = self.provision_run(owner_user_id, &agent, TRIGGER_BREAKDOWN).await?;
+
+        let turn_req = ConversationAgentTurnRequest {
+            user_id: owner_user_id.to_owned(),
+            conversation_id: conversation_id.clone(),
+            content: prompt,
+            files: vec![],
+            inject_skills: vec![],
+            persist_user_message: true,
+            user_message_hidden: true,
+            on_started: None,
+        };
+
+        match self.conversation_service.run_agent_turn(turn_req).await {
+            Ok(outcome) if outcome.status == ConversationAgentTurnStatus::Completed => {
+                let reply = self.extract_latest_reply(&conversation_id).await.unwrap_or_default();
+                let summary = truncate_summary(&reply);
+                self.persist_run_outcome(&run_id, RUN_SUCCESS, Some(&outcome.turn_id), Some(&summary), None).await;
+                Ok(RunReply { run_id, conversation_id, reply })
+            }
+            Ok(outcome) => {
+                let error = outcome.error_message.unwrap_or_else(|| "agent turn failed".into());
+                self.persist_run_outcome(&run_id, RUN_FAILED, Some(&outcome.turn_id), None, Some(&error)).await;
+                Err(EmployeeError::Internal(error))
+            }
+            Err(e) => {
+                self.persist_run_outcome(&run_id, RUN_FAILED, None, None, Some(&e.to_string())).await;
+                Err(EmployeeError::Internal(e.to_string()))
+            }
+        }
     }
 
     /// Manual "run now" against an existing team slot. Reads the slot's
@@ -722,8 +803,14 @@ impl EmployeeService {
     }
 
     /// Latest visible assistant text reply, truncated to 240 chars — same
-    /// summary rule as the TS reference.
+    /// summary rule as the TS reference. Used to fill the run row `summary`.
     async fn extract_summary(&self, conversation_id: &str) -> Option<String> {
+        self.extract_latest_reply(conversation_id).await.map(|r| truncate_summary(&r))
+    }
+
+    /// Latest visible assistant text reply, untruncated. Callers that parse
+    /// structured output (breakdown) need the whole thing.
+    async fn extract_latest_reply(&self, conversation_id: &str) -> Option<String> {
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT content FROM messages \
              WHERE conversation_id = ? AND type = 'text' AND position = 'left' \
@@ -734,7 +821,7 @@ impl EmployeeService {
         .await
         .ok()?;
 
-        let reply = rows.into_iter().find_map(|(content,)| {
+        rows.into_iter().find_map(|(content,)| {
             let text = serde_json::from_str::<serde_json::Value>(&content)
                 .ok()
                 .and_then(|v| {
@@ -746,13 +833,6 @@ impl EmployeeService {
                 .unwrap_or(content);
             let trimmed = text.trim().to_owned();
             (!trimmed.is_empty()).then_some(trimmed)
-        })?;
-
-        Some(if reply.chars().count() > 240 {
-            let truncated: String = reply.chars().take(237).collect();
-            format!("{truncated}…")
-        } else {
-            reply
         })
     }
 

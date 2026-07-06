@@ -19,5 +19,5 @@ pub mod state;
 pub use error::EmployeeError;
 pub use migrate::run_one_employee_migrations;
 pub use routes::one_employee_routes;
-pub use service::EmployeeService;
+pub use service::{EmployeeService, RunReply};
 pub use state::OneEmployeeRouterState;

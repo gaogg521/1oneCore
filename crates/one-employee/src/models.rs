@@ -4,6 +4,9 @@ use serde::Serialize;
 
 pub const TRIGGER_MANUAL: &str = "manual";
 pub const TRIGGER_CRON: &str = "cron";
+/// A blocking run driven by devops breakdown (agent asked to split an
+/// epic/feature into child requirements). Distinguished in run history.
+pub const TRIGGER_BREAKDOWN: &str = "breakdown";
 
 pub const RUN_RUNNING: &str = "running";
 pub const RUN_SUCCESS: &str = "success";
