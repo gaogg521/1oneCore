@@ -9,8 +9,10 @@ use aionui_common::now_ms;
 use crate::error::DevopsError;
 use crate::embedding::EmbeddingConfig;
 use crate::models::{
-    McpRegistryDto, MILESTONE_STATUSES, MilestoneDto, RagConfigDto, RagDocumentDto, RagSearchHit, REQUIREMENT_PRIORITIES,
-    REQUIREMENT_STATUSES, REQUIREMENT_TYPES, RequirementCommentDto, RequirementDto, RequirementRow, SkillRegistryDto,
+    McpRegistryDto, MILESTONE_STATUSES, MilestoneDto, PIPELINE_RUN_STATUSES, PIPELINE_STATUSES, PIPELINE_TRIGGERS,
+    PipelineDto, PipelineRunDto, RagConfigDto, RagDocumentDto, RagSearchHit, REQUIREMENT_PRIORITIES, REQUIREMENT_STATUSES,
+    REQUIREMENT_TYPES, RequirementCommentDto, RequirementDto, RequirementRow, SkillRegistryDto, TEST_CASE_STATUSES,
+    TEST_PLAN_STATUSES, TestCaseDto, TestPlanDto,
 };
 
 pub struct DevopsService {
@@ -896,6 +898,456 @@ impl DevopsService {
         hits.truncate(top_k.max(1));
         Ok(hits)
     }
+
+    // -- test plans (A4) --------------------------------------------------
+
+    pub async fn list_test_plans(&self) -> Result<Vec<TestPlanDto>, DevopsError> {
+        Ok(sqlx::query_as::<_, TestPlanDto>(
+            "SELECT id, title, description, status, requirement_id, creator_id, creator_name, \
+                    created_at, updated_at \
+             FROM one_test_plans ORDER BY \
+                CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 WHEN 'completed' THEN 2 ELSE 3 END, \
+                updated_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_test_plan(
+        &self,
+        creator_id: &str,
+        creator_name: Option<&str>,
+        title: &str,
+        description: Option<&str>,
+        requirement_id: Option<&str>,
+    ) -> Result<TestPlanDto, DevopsError> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(DevopsError::BadRequest("title is required".into()));
+        }
+        let id = new_id("tplan");
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO one_test_plans \
+                (id, title, description, status, requirement_id, creator_id, creator_name, created_at, updated_at) \
+             VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(title)
+        .bind(description)
+        .bind(requirement_id)
+        .bind(creator_id)
+        .bind(creator_name)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        self.fetch_test_plan(&id).await
+    }
+
+    pub async fn update_test_plan(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        description: Option<Option<&str>>,
+        status: Option<&str>,
+        requirement_id: Option<Option<&str>>,
+    ) -> Result<TestPlanDto, DevopsError> {
+        if let Some(status) = status {
+            validate_one_of(status, TEST_PLAN_STATUSES, "test plan status")?;
+        }
+        let now = now_ms();
+        sqlx::query(
+            "UPDATE one_test_plans SET \
+                title = CASE WHEN ? THEN ? ELSE title END, \
+                description = CASE WHEN ? THEN ? ELSE description END, \
+                status = CASE WHEN ? THEN ? ELSE status END, \
+                requirement_id = CASE WHEN ? THEN ? ELSE requirement_id END, \
+                updated_at = ? \
+             WHERE id = ?",
+        )
+        .bind(title.is_some())
+        .bind(title)
+        .bind(description.is_some())
+        .bind(description.flatten())
+        .bind(status.is_some())
+        .bind(status)
+        .bind(requirement_id.is_some())
+        .bind(requirement_id.flatten())
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        self.fetch_test_plan(id).await
+    }
+
+    pub async fn delete_test_plan(&self, id: &str) -> Result<(), DevopsError> {
+        let mut tx = self.pool.begin().await?;
+        let deleted = sqlx::query("DELETE FROM one_test_plans WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(DevopsError::NotFound(format!("test plan {id}")));
+        }
+        sqlx::query("DELETE FROM one_test_cases WHERE plan_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn fetch_test_plan(&self, id: &str) -> Result<TestPlanDto, DevopsError> {
+        sqlx::query_as::<_, TestPlanDto>(
+            "SELECT id, title, description, status, requirement_id, creator_id, creator_name, \
+                    created_at, updated_at \
+             FROM one_test_plans WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| DevopsError::NotFound(format!("test plan {id}")))
+    }
+
+    // -- test cases ---------------------------------------------------------
+
+    pub async fn list_test_cases(&self, plan_id: &str) -> Result<Vec<TestCaseDto>, DevopsError> {
+        // Verify plan exists first.
+        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ?")
+            .bind(plan_id)
+            .fetch_one(&self.pool)
+            .await?;
+        if !exists {
+            return Err(DevopsError::NotFound(format!("test plan {plan_id}")));
+        }
+        Ok(sqlx::query_as::<_, TestCaseDto>(
+            "SELECT id, plan_id, title, description, steps, expected, status, creator_id, creator_name, \
+                    created_at, updated_at \
+             FROM one_test_cases WHERE plan_id = ? ORDER BY created_at ASC",
+        )
+        .bind(plan_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_test_case(
+        &self,
+        plan_id: &str,
+        creator_id: &str,
+        creator_name: Option<&str>,
+        title: &str,
+        description: Option<&str>,
+        steps: Option<&str>,
+        expected: Option<&str>,
+    ) -> Result<TestCaseDto, DevopsError> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(DevopsError::BadRequest("title is required".into()));
+        }
+        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ?")
+            .bind(plan_id)
+            .fetch_one(&self.pool)
+            .await?;
+        if !exists {
+            return Err(DevopsError::NotFound(format!("test plan {plan_id}")));
+        }
+        let id = new_id("tcase");
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO one_test_cases \
+                (id, plan_id, title, description, steps, expected, status, creator_id, creator_name, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(plan_id)
+        .bind(title)
+        .bind(description)
+        .bind(steps)
+        .bind(expected)
+        .bind(creator_id)
+        .bind(creator_name)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        self.fetch_test_case(&id).await
+    }
+
+    pub async fn update_test_case(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        status: Option<&str>,
+        description: Option<Option<&str>>,
+        steps: Option<Option<&str>>,
+        expected: Option<Option<&str>>,
+    ) -> Result<TestCaseDto, DevopsError> {
+        if let Some(status) = status {
+            validate_one_of(status, TEST_CASE_STATUSES, "test case status")?;
+        }
+        let now = now_ms();
+        sqlx::query(
+            "UPDATE one_test_cases SET \
+                title = CASE WHEN ? THEN ? ELSE title END, \
+                status = CASE WHEN ? THEN ? ELSE status END, \
+                description = CASE WHEN ? THEN ? ELSE description END, \
+                steps = CASE WHEN ? THEN ? ELSE steps END, \
+                expected = CASE WHEN ? THEN ? ELSE expected END, \
+                updated_at = ? \
+             WHERE id = ?",
+        )
+        .bind(title.is_some())
+        .bind(title)
+        .bind(status.is_some())
+        .bind(status)
+        .bind(description.is_some())
+        .bind(description.flatten())
+        .bind(steps.is_some())
+        .bind(steps.flatten())
+        .bind(expected.is_some())
+        .bind(expected.flatten())
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        self.fetch_test_case(id).await
+    }
+
+    pub async fn delete_test_case(&self, id: &str) -> Result<(), DevopsError> {
+        let deleted = sqlx::query("DELETE FROM one_test_cases WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(DevopsError::NotFound(format!("test case {id}")));
+        }
+        Ok(())
+    }
+
+    async fn fetch_test_case(&self, id: &str) -> Result<TestCaseDto, DevopsError> {
+        sqlx::query_as::<_, TestCaseDto>(
+            "SELECT id, plan_id, title, description, steps, expected, status, creator_id, creator_name, \
+                    created_at, updated_at \
+             FROM one_test_cases WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| DevopsError::NotFound(format!("test case {id}")))
+    }
+
+    // -- pipelines (A4) ---------------------------------------------------
+
+    pub async fn list_pipelines(&self) -> Result<Vec<PipelineDto>, DevopsError> {
+        Ok(sqlx::query_as::<_, PipelineDto>(
+            "SELECT id, name, description, status, trigger, creator_id, creator_name, \
+                    created_at, updated_at \
+             FROM one_pipelines ORDER BY \
+                CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_pipeline(
+        &self,
+        creator_id: &str,
+        creator_name: Option<&str>,
+        name: &str,
+        description: Option<&str>,
+        trigger: Option<&str>,
+    ) -> Result<PipelineDto, DevopsError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(DevopsError::BadRequest("name is required".into()));
+        }
+        let trigger = trigger.unwrap_or("manual");
+        validate_one_of(trigger, PIPELINE_TRIGGERS, "pipeline trigger")?;
+        let id = new_id("pipe");
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO one_pipelines \
+                (id, name, description, status, trigger, creator_id, creator_name, created_at, updated_at) \
+             VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(name)
+        .bind(description)
+        .bind(trigger)
+        .bind(creator_id)
+        .bind(creator_name)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        self.fetch_pipeline(&id).await
+    }
+
+    pub async fn update_pipeline(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        description: Option<Option<&str>>,
+        status: Option<&str>,
+        trigger: Option<&str>,
+    ) -> Result<PipelineDto, DevopsError> {
+        if let Some(status) = status {
+            validate_one_of(status, PIPELINE_STATUSES, "pipeline status")?;
+        }
+        if let Some(trigger) = trigger {
+            validate_one_of(trigger, PIPELINE_TRIGGERS, "pipeline trigger")?;
+        }
+        let now = now_ms();
+        sqlx::query(
+            "UPDATE one_pipelines SET \
+                name = CASE WHEN ? THEN ? ELSE name END, \
+                description = CASE WHEN ? THEN ? ELSE description END, \
+                status = CASE WHEN ? THEN ? ELSE status END, \
+                trigger = CASE WHEN ? THEN ? ELSE trigger END, \
+                updated_at = ? \
+             WHERE id = ?",
+        )
+        .bind(name.is_some())
+        .bind(name)
+        .bind(description.is_some())
+        .bind(description.flatten())
+        .bind(status.is_some())
+        .bind(status)
+        .bind(trigger.is_some())
+        .bind(trigger)
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        self.fetch_pipeline(id).await
+    }
+
+    pub async fn delete_pipeline(&self, id: &str) -> Result<(), DevopsError> {
+        let mut tx = self.pool.begin().await?;
+        let deleted = sqlx::query("DELETE FROM one_pipelines WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(DevopsError::NotFound(format!("pipeline {id}")));
+        }
+        sqlx::query("DELETE FROM one_pipeline_runs WHERE pipeline_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn fetch_pipeline(&self, id: &str) -> Result<PipelineDto, DevopsError> {
+        sqlx::query_as::<_, PipelineDto>(
+            "SELECT id, name, description, status, trigger, creator_id, creator_name, \
+                    created_at, updated_at \
+             FROM one_pipelines WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| DevopsError::NotFound(format!("pipeline {id}")))
+    }
+
+    // -- pipeline runs ------------------------------------------------------
+
+    pub async fn list_pipeline_runs(&self, pipeline_id: &str) -> Result<Vec<PipelineRunDto>, DevopsError> {
+        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ?")
+            .bind(pipeline_id)
+            .fetch_one(&self.pool)
+            .await?;
+        if !exists {
+            return Err(DevopsError::NotFound(format!("pipeline {pipeline_id}")));
+        }
+        Ok(sqlx::query_as::<_, PipelineRunDto>(
+            "SELECT id, pipeline_id, status, triggered_by, started_at, finished_at, log, \
+                    created_at, updated_at \
+             FROM one_pipeline_runs WHERE pipeline_id = ? ORDER BY created_at DESC LIMIT 100",
+        )
+        .bind(pipeline_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_pipeline_run(
+        &self,
+        pipeline_id: &str,
+        triggered_by: Option<&str>,
+    ) -> Result<PipelineRunDto, DevopsError> {
+        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ?")
+            .bind(pipeline_id)
+            .fetch_one(&self.pool)
+            .await?;
+        if !exists {
+            return Err(DevopsError::NotFound(format!("pipeline {pipeline_id}")));
+        }
+        let id = new_id("run");
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO one_pipeline_runs \
+                (id, pipeline_id, status, triggered_by, started_at, finished_at, log, created_at, updated_at) \
+             VALUES (?, ?, 'pending', ?, NULL, NULL, NULL, ?, ?)",
+        )
+        .bind(&id)
+        .bind(pipeline_id)
+        .bind(triggered_by)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        self.fetch_pipeline_run(&id).await
+    }
+
+    pub async fn update_pipeline_run(
+        &self,
+        id: &str,
+        status: Option<&str>,
+        started_at: Option<Option<i64>>,
+        finished_at: Option<Option<i64>>,
+        log: Option<Option<&str>>,
+    ) -> Result<PipelineRunDto, DevopsError> {
+        if let Some(status) = status {
+            validate_one_of(status, PIPELINE_RUN_STATUSES, "pipeline run status")?;
+        }
+        let now = now_ms();
+        sqlx::query(
+            "UPDATE one_pipeline_runs SET \
+                status = CASE WHEN ? THEN ? ELSE status END, \
+                started_at = CASE WHEN ? THEN ? ELSE started_at END, \
+                finished_at = CASE WHEN ? THEN ? ELSE finished_at END, \
+                log = CASE WHEN ? THEN ? ELSE log END, \
+                updated_at = ? \
+             WHERE id = ?",
+        )
+        .bind(status.is_some())
+        .bind(status)
+        .bind(started_at.is_some())
+        .bind(started_at.flatten())
+        .bind(finished_at.is_some())
+        .bind(finished_at.flatten())
+        .bind(log.is_some())
+        .bind(log.flatten())
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        self.fetch_pipeline_run(id).await
+    }
+
+    async fn fetch_pipeline_run(&self, id: &str) -> Result<PipelineRunDto, DevopsError> {
+        sqlx::query_as::<_, PipelineRunDto>(
+            "SELECT id, pipeline_id, status, triggered_by, started_at, finished_at, log, \
+                    created_at, updated_at \
+             FROM one_pipeline_runs WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| DevopsError::NotFound(format!("pipeline run {id}")))
+    }
 }
 
 #[cfg(test)]
@@ -1130,5 +1582,103 @@ mod tests {
 
         let err = svc.delete_milestone("missing").await.unwrap_err();
         assert!(matches!(err, DevopsError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_plan_and_case_crud() {
+        let svc = service().await;
+
+        // Create plan
+        let plan = svc
+            .create_test_plan("u1", Some("Alice"), "登录冒烟测试", Some("覆盖 SSO 和密码登录"), None)
+            .await
+            .unwrap();
+        assert_eq!(plan.status, "draft");
+        assert_eq!(svc.list_test_plans().await.unwrap().len(), 1);
+
+        // Update plan
+        let plan = svc.update_test_plan(&plan.id, Some("登录回归测试"), None, Some("active"), None).await.unwrap();
+        assert_eq!(plan.status, "active");
+
+        // Create cases
+        let c1 = svc
+            .create_test_case(&plan.id, "u1", Some("Alice"), "密码登录成功", None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(c1.status, "pending");
+        let c2 = svc
+            .create_test_case(&plan.id, "u1", Some("Alice"), "错误密码被拒", None, None, None)
+            .await
+            .unwrap();
+
+        let cases = svc.list_test_cases(&plan.id).await.unwrap();
+        assert_eq!(cases.len(), 2);
+
+        // Update case status
+        let c1 = svc.update_test_case(&c1.id, None, Some("passed"), None, None, None).await.unwrap();
+        assert_eq!(c1.status, "passed");
+
+        let err = svc.update_test_case(&c2.id, None, Some("bogus"), None, None, None).await.unwrap_err();
+        assert!(matches!(err, DevopsError::BadRequest(_)));
+
+        // Delete case
+        svc.delete_test_case(&c2.id).await.unwrap();
+        assert_eq!(svc.list_test_cases(&plan.id).await.unwrap().len(), 1);
+
+        // Delete plan cascades to remaining cases
+        svc.delete_test_plan(&plan.id).await.unwrap();
+        assert!(svc.list_test_plans().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pipeline_and_run_crud() {
+        let svc = service().await;
+
+        // Create pipeline
+        let pipe = svc
+            .create_pipeline("u1", Some("Alice"), "CI 主流水线", Some("main 分支推送触发"), Some("push"))
+            .await
+            .unwrap();
+        assert_eq!(pipe.status, "active");
+        assert_eq!(pipe.trigger, "push");
+        assert_eq!(svc.list_pipelines().await.unwrap().len(), 1);
+
+        // Update pipeline
+        let pipe = svc.update_pipeline(&pipe.id, None, None, Some("disabled"), None).await.unwrap();
+        assert_eq!(pipe.status, "disabled");
+
+        let err = svc.update_pipeline(&pipe.id, None, None, Some("bad"), None).await.unwrap_err();
+        assert!(matches!(err, DevopsError::BadRequest(_)));
+
+        // Create run
+        let run = svc.create_pipeline_run(&pipe.id, Some("u1")).await.unwrap();
+        assert_eq!(run.status, "pending");
+
+        let run = svc
+            .update_pipeline_run(&run.id, Some("running"), Some(Some(1_800_000_000_000)), None, None)
+            .await
+            .unwrap();
+        assert_eq!(run.status, "running");
+        assert_eq!(run.started_at, Some(1_800_000_000_000));
+
+        let run = svc
+            .update_pipeline_run(
+                &run.id,
+                Some("success"),
+                None,
+                Some(Some(1_800_001_000_000)),
+                Some(Some("Build OK")),
+            )
+            .await
+            .unwrap();
+        assert_eq!(run.status, "success");
+        assert!(run.log.as_deref() == Some("Build OK"));
+
+        let runs = svc.list_pipeline_runs(&pipe.id).await.unwrap();
+        assert_eq!(runs.len(), 1);
+
+        // Delete pipeline cascades to runs
+        svc.delete_pipeline(&pipe.id).await.unwrap();
+        assert!(svc.list_pipelines().await.unwrap().is_empty());
     }
 }

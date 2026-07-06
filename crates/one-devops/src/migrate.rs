@@ -15,6 +15,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("002_milestones", include_str!("../migrations/002_milestones.sql")),
     ("003_rag_pipeline", include_str!("../migrations/003_rag_pipeline.sql")),
     ("004_autopilot", include_str!("../migrations/004_autopilot.sql")),
+    ("005_test_plans", include_str!("../migrations/005_test_plans.sql")),
+    ("006_pipelines", include_str!("../migrations/006_pipelines.sql")),
 ];
 
 /// Run all pending one-devops migrations. Idempotent; call once at startup
@@ -80,5 +82,9 @@ mod tests {
         assert!(tables.contains(&"one_milestones".to_owned()));
         assert!(tables.contains(&"one_rag_config".to_owned()));
         assert!(tables.contains(&"one_rag_chunks".to_owned()));
+        assert!(tables.contains(&"one_test_plans".to_owned()));
+        assert!(tables.contains(&"one_test_cases".to_owned()));
+        assert!(tables.contains(&"one_pipelines".to_owned()));
+        assert!(tables.contains(&"one_pipeline_runs".to_owned()));
     }
 }

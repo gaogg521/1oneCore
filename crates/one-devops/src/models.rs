@@ -8,6 +8,11 @@ pub const REQUIREMENT_TYPES: &[&str] = &["epic", "feature", "story", "bug", "tas
 pub const REQUIREMENT_STATUSES: &[&str] = &["backlog", "planning", "developing", "testing", "completed"];
 pub const REQUIREMENT_PRIORITIES: &[&str] = &["low", "medium", "high", "urgent"];
 pub const MILESTONE_STATUSES: &[&str] = &["active", "completed", "archived"];
+pub const TEST_PLAN_STATUSES: &[&str] = &["draft", "active", "completed", "archived"];
+pub const TEST_CASE_STATUSES: &[&str] = &["pending", "passed", "failed", "blocked", "skipped"];
+pub const PIPELINE_STATUSES: &[&str] = &["active", "disabled"];
+pub const PIPELINE_TRIGGERS: &[&str] = &["manual", "push", "schedule"];
+pub const PIPELINE_RUN_STATUSES: &[&str] = &["pending", "running", "success", "failed", "cancelled"];
 
 #[derive(Debug, Clone, FromRow)]
 pub struct RequirementRow {
@@ -130,6 +135,68 @@ pub struct RagDocumentDto {
     pub team_id: Option<String>,
     pub created_by: String,
     pub created_at: i64,
+}
+
+// -- test plans -----------------------------------------------------------
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestPlanDto {
+    pub id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub requirement_id: Option<String>,
+    pub creator_id: String,
+    pub creator_name: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestCaseDto {
+    pub id: String,
+    pub plan_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub steps: Option<String>,
+    pub expected: Option<String>,
+    pub status: String,
+    pub creator_id: String,
+    pub creator_name: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+// -- pipelines ------------------------------------------------------------
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineDto {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub trigger: String,
+    pub creator_id: String,
+    pub creator_name: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineRunDto {
+    pub id: String,
+    pub pipeline_id: String,
+    pub status: String,
+    pub triggered_by: Option<String>,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub log: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 /// RAG embedding config as returned to the UI. The api_key is never echoed;

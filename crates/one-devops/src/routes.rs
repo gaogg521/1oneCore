@@ -12,8 +12,8 @@ use aionui_auth::CurrentUser;
 
 use crate::error::DevopsError;
 use crate::models::{
-    McpRegistryDto, MilestoneDto, RagConfigDto, RagDocumentDto, RagSearchHit, RequirementCommentDto, RequirementDto,
-    SkillRegistryDto,
+    McpRegistryDto, MilestoneDto, PipelineDto, PipelineRunDto, RagConfigDto, RagDocumentDto, RagSearchHit,
+    RequirementCommentDto, RequirementDto, SkillRegistryDto, TestCaseDto, TestPlanDto,
 };
 use crate::service::{CreateRequirementInput, UpdateRequirementInput};
 use crate::state::OneDevopsRouterState;
@@ -46,6 +46,34 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         .route(
             "/api/one/devops/milestones/{id}",
             patch(update_milestone).delete(delete_milestone),
+        )
+        // test plans (A4)
+        .route("/api/one/devops/test-plans", get(list_test_plans).post(create_test_plan))
+        .route(
+            "/api/one/devops/test-plans/{id}",
+            patch(update_test_plan).delete(delete_test_plan),
+        )
+        .route(
+            "/api/one/devops/test-plans/{id}/cases",
+            get(list_test_cases).post(create_test_case),
+        )
+        .route(
+            "/api/one/devops/test-plans/{plan_id}/cases/{id}",
+            patch(update_test_case).delete(delete_test_case),
+        )
+        // pipelines (A4)
+        .route("/api/one/devops/pipelines", get(list_pipelines).post(create_pipeline))
+        .route(
+            "/api/one/devops/pipelines/{id}",
+            patch(update_pipeline).delete(delete_pipeline),
+        )
+        .route(
+            "/api/one/devops/pipelines/{id}/runs",
+            get(list_pipeline_runs).post(create_pipeline_run),
+        )
+        .route(
+            "/api/one/devops/pipelines/{pipeline_id}/runs/{id}",
+            patch(update_pipeline_run),
         )
         .with_state(state)
 }
@@ -689,4 +717,290 @@ async fn delete_milestone(
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     state.service.delete_milestone(&id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+// -- test plans -----------------------------------------------------------
+
+async fn list_test_plans(
+    State(state): State<OneDevopsRouterState>,
+) -> Result<Json<ApiResponse<Vec<TestPlanDto>>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(state.service.list_test_plans().await?)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateTestPlanBody {
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    requirement_id: Option<String>,
+}
+
+async fn create_test_plan(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<CreateTestPlanBody>,
+) -> Result<Json<ApiResponse<TestPlanDto>>, DevopsError> {
+    let dto = state
+        .service
+        .create_test_plan(
+            &user.id,
+            Some(user.username.as_str()),
+            &body.title,
+            body.description.as_deref(),
+            body.requirement_id.as_deref(),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateTestPlanBody {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default, with = "double_option")]
+    description: Option<Option<String>>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default, with = "double_option")]
+    requirement_id: Option<Option<String>>,
+}
+
+async fn update_test_plan(
+    State(state): State<OneDevopsRouterState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateTestPlanBody>,
+) -> Result<Json<ApiResponse<TestPlanDto>>, DevopsError> {
+    let dto = state
+        .service
+        .update_test_plan(
+            &id,
+            body.title.as_deref(),
+            body.description.as_ref().map(|d| d.as_deref()),
+            body.status.as_deref(),
+            body.requirement_id.as_ref().map(|r| r.as_deref()),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_test_plan(
+    State(state): State<OneDevopsRouterState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    state.service.delete_test_plan(&id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+// -- test cases -----------------------------------------------------------
+
+async fn list_test_cases(
+    State(state): State<OneDevopsRouterState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<TestCaseDto>>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(state.service.list_test_cases(&id).await?)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateTestCaseBody {
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    steps: Option<String>,
+    #[serde(default)]
+    expected: Option<String>,
+}
+
+async fn create_test_case(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(plan_id): Path<String>,
+    Json(body): Json<CreateTestCaseBody>,
+) -> Result<Json<ApiResponse<TestCaseDto>>, DevopsError> {
+    let dto = state
+        .service
+        .create_test_case(
+            &plan_id,
+            &user.id,
+            Some(user.username.as_str()),
+            &body.title,
+            body.description.as_deref(),
+            body.steps.as_deref(),
+            body.expected.as_deref(),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateTestCaseBody {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default, with = "double_option")]
+    description: Option<Option<String>>,
+    #[serde(default, with = "double_option")]
+    steps: Option<Option<String>>,
+    #[serde(default, with = "double_option")]
+    expected: Option<Option<String>>,
+}
+
+async fn update_test_case(
+    State(state): State<OneDevopsRouterState>,
+    Path((_, id)): Path<(String, String)>,
+    Json(body): Json<UpdateTestCaseBody>,
+) -> Result<Json<ApiResponse<TestCaseDto>>, DevopsError> {
+    let dto = state
+        .service
+        .update_test_case(
+            &id,
+            body.title.as_deref(),
+            body.status.as_deref(),
+            body.description.as_ref().map(|d| d.as_deref()),
+            body.steps.as_ref().map(|s| s.as_deref()),
+            body.expected.as_ref().map(|e| e.as_deref()),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_test_case(
+    State(state): State<OneDevopsRouterState>,
+    Path((_, id)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    state.service.delete_test_case(&id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+// -- pipelines ------------------------------------------------------------
+
+async fn list_pipelines(
+    State(state): State<OneDevopsRouterState>,
+) -> Result<Json<ApiResponse<Vec<PipelineDto>>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(state.service.list_pipelines().await?)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreatePipelineBody {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    trigger: Option<String>,
+}
+
+async fn create_pipeline(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<CreatePipelineBody>,
+) -> Result<Json<ApiResponse<PipelineDto>>, DevopsError> {
+    let dto = state
+        .service
+        .create_pipeline(
+            &user.id,
+            Some(user.username.as_str()),
+            &body.name,
+            body.description.as_deref(),
+            body.trigger.as_deref(),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdatePipelineBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default, with = "double_option")]
+    description: Option<Option<String>>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    trigger: Option<String>,
+}
+
+async fn update_pipeline(
+    State(state): State<OneDevopsRouterState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdatePipelineBody>,
+) -> Result<Json<ApiResponse<PipelineDto>>, DevopsError> {
+    let dto = state
+        .service
+        .update_pipeline(
+            &id,
+            body.name.as_deref(),
+            body.description.as_ref().map(|d| d.as_deref()),
+            body.status.as_deref(),
+            body.trigger.as_deref(),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_pipeline(
+    State(state): State<OneDevopsRouterState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    state.service.delete_pipeline(&id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+// -- pipeline runs --------------------------------------------------------
+
+async fn list_pipeline_runs(
+    State(state): State<OneDevopsRouterState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<PipelineRunDto>>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(state.service.list_pipeline_runs(&id).await?)))
+}
+
+async fn create_pipeline_run(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(pipeline_id): Path<String>,
+) -> Result<Json<ApiResponse<PipelineRunDto>>, DevopsError> {
+    let dto = state
+        .service
+        .create_pipeline_run(&pipeline_id, Some(user.username.as_str()))
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdatePipelineRunBody {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default, with = "double_option")]
+    started_at: Option<Option<i64>>,
+    #[serde(default, with = "double_option")]
+    finished_at: Option<Option<i64>>,
+    #[serde(default, with = "double_option")]
+    log: Option<Option<String>>,
+}
+
+async fn update_pipeline_run(
+    State(state): State<OneDevopsRouterState>,
+    Path((_, id)): Path<(String, String)>,
+    Json(body): Json<UpdatePipelineRunBody>,
+) -> Result<Json<ApiResponse<PipelineRunDto>>, DevopsError> {
+    let dto = state
+        .service
+        .update_pipeline_run(
+            &id,
+            body.status.as_deref(),
+            body.started_at,
+            body.finished_at,
+            body.log.as_ref().map(|l| l.as_deref()),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
 }
