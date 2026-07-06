@@ -1105,6 +1105,52 @@
         ]
       },
       "models": []
+    },
+    {
+      "id": "star-office-helper",
+      "name": "Star Office Helper",
+      "name_i18n": {
+        "en-US": "Star Office Helper",
+        "zh-CN": "Star Office 助手",
+        "ru-RU": "Star Office Helper"
+      },
+      "description": "Install, connect, and troubleshoot Star-Office-UI visualization for Aion preview.",
+      "description_i18n": {
+        "en-US": "Install, connect, and troubleshoot Star-Office-UI visualization for Aion preview.",
+        "zh-CN": "用于在 Aion 预览中安装、连接并排查 Star-Office-UI 可视化问题。",
+        "ru-RU": "Install, connect, and troubleshoot Star-Office-UI visualization for Aion preview."
+      },
+      "avatar": "📺",
+      "agent_ref": "aionrs",
+      "enabled_skills": [
+        "star-office-helper"
+      ],
+      "custom_skill_names": [],
+      "disabled_builtin_skills": [],
+      "rule_file": "rules/star-office-helper.{locale}.md",
+      "prompts": [
+        "Set up Star Office on my machine",
+        "Fix Unauthorized on Star Office page",
+        "Connect Aion preview to http://127.0.0.1:19000"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Set up Star Office on my machine",
+          "Fix Unauthorized on Star Office page",
+          "Connect Aion preview to http://127.0.0.1:19000"
+        ],
+        "zh-CN": [
+          "帮我安装 Star Office",
+          "排查 Star Office Unauthorized",
+          "把 Aion 预览连接到 http://127.0.0.1:19000"
+        ],
+        "ru-RU": [
+          "Set up Star Office on my machine",
+          "Fix Unauthorized on Star Office page",
+          "Connect Aion preview to http://127.0.0.1:19000"
+        ]
+      },
+      "models": []
     }
   ]
 }
