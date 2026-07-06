@@ -36,6 +36,22 @@ use aionui_team::team_routes;
 
 use crate::services::AppServices;
 
+/// Adapts one-org's `OrgService::tenant_of` to the `one_employee::TenantResolver`
+/// trait, so one-employee / one-devops can resolve a caller's tenant (for
+/// team-shared employees, A1 L3) without depending on one-org. Resolution
+/// errors fall back to the personal `default` tenant.
+struct OrgTenantResolver(std::sync::Arc<one_org::OrgService>);
+
+#[async_trait::async_trait]
+impl one_employee::TenantResolver for OrgTenantResolver {
+    async fn tenant_of(&self, user_id: &str) -> String {
+        self.0
+            .tenant_of(user_id)
+            .await
+            .unwrap_or_else(|_| one_employee::DEFAULT_TENANT.to_owned())
+    }
+}
+
 use super::health::health_check;
 use super::state::{ModuleStates, RouterBuildError, build_module_states, build_ws_state};
 use super::trace::with_access_log;
@@ -232,10 +248,15 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
 
     // one-org enterprise routes (/api/one/*) — RBAC extractors depend on the
     // upstream auth middleware injecting CurrentUser.
-    let one_org_state = one_org::OneOrgRouterState::new(std::sync::Arc::new(one_org::OrgService::new(
+    let one_org_service = std::sync::Arc::new(one_org::OrgService::new(
         services.database.pool().clone(),
         services.user_repo.clone(),
-    )));
+    ));
+    // Tenant resolver shared by one-employee + one-devops for team-shared
+    // employees (A1 L3).
+    let tenant_resolver: std::sync::Arc<dyn one_employee::TenantResolver> =
+        std::sync::Arc::new(OrgTenantResolver(one_org_service.clone()));
+    let one_org_state = one_org::OneOrgRouterState::new(one_org_service.clone());
     let one_org_authenticated =
         one_org::one_org_routes(one_org_state).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -255,7 +276,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .with_team_session(team_session_service),
     );
     one_employee_service.spawn_scheduler();
-    let one_employee_state = one_employee::OneEmployeeRouterState::new(one_employee_service.clone());
+    let one_employee_state = one_employee::OneEmployeeRouterState::new(one_employee_service.clone())
+        .with_tenant_resolver(tenant_resolver.clone());
     let one_employee_authenticated = one_employee::one_employee_routes(one_employee_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -279,7 +301,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let one_devops_state = one_devops::OneDevopsRouterState::new(std::sync::Arc::new(one_devops::DevopsService::new(
         services.database.pool().clone(),
     )))
-    .with_employee(one_employee_service.clone());
+    .with_employee(one_employee_service.clone())
+    .with_tenant_resolver(tenant_resolver.clone());
     let one_devops_authenticated = one_devops::one_devops_routes(one_devops_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 

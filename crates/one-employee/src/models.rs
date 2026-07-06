@@ -27,6 +27,8 @@ pub struct PersonalAgentRow {
     pub schedule: Option<String>,
     pub schedule_enabled: i64,
     pub next_run_at: Option<i64>,
+    /// 'private' (owner-only) or 'shared' (usable by any same-tenant member).
+    pub visibility: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -46,6 +48,7 @@ pub struct PersonalAgentDto {
     pub schedule: Option<serde_json::Value>,
     pub schedule_enabled: bool,
     pub next_run_at: Option<i64>,
+    pub visibility: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -71,6 +74,7 @@ impl From<PersonalAgentRow> for PersonalAgentDto {
             schedule,
             schedule_enabled: row.schedule_enabled != 0,
             next_run_at: row.next_run_at,
+            visibility: row.visibility,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }

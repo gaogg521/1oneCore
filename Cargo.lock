@@ -3876,6 +3876,7 @@ dependencies = [
  "aionui-cron",
  "aionui-db",
  "aionui-team",
+ "async-trait",
  "axum",
  "http-body-util",
  "serde",

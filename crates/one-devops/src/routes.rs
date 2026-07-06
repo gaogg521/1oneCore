@@ -238,12 +238,13 @@ async fn dispatch_core(
 
     let task_context = build_task_context(&req);
 
+    let tenant = state.tenant_of(user_id).await;
     let (run_id, conversation_id) = employee
-        .run_now_with_context(user_id, assigned_to, task_context)
+        .run_now_with_context(user_id, &tenant, assigned_to, task_context)
         .await
         .map_err(|e| match e {
             one_employee::EmployeeError::NotFound => DevopsError::BadRequest(
-                "assigned digital employee not found among your employees (team-shared employees are not supported yet)".into(),
+                "assigned digital employee is not available to you (not your employee, and not shared within your team)".into(),
             ),
             other => DevopsError::Internal(format!("dispatch run: {other}")),
         })?;
@@ -331,12 +332,13 @@ async fn breakdown_requirement(
         .ok_or_else(|| DevopsError::BadRequest("requirement has no assigned digital employee".into()))?;
 
     let prompt = crate::breakdown::build_breakdown_prompt(&req);
+    let tenant = state.tenant_of(&user.id).await;
     let run = employee
-        .run_prompt_blocking(&user.id, assigned_to, prompt)
+        .run_prompt_blocking(&user.id, &tenant, assigned_to, prompt)
         .await
         .map_err(|e| match e {
             one_employee::EmployeeError::NotFound => DevopsError::BadRequest(
-                "assigned digital employee not found among your employees (team-shared employees are not supported yet)".into(),
+                "assigned digital employee is not available to you (not your employee, and not shared within your team)".into(),
             ),
             other => DevopsError::Internal(format!("breakdown run: {other}")),
         })?;

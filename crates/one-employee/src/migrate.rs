@@ -11,6 +11,7 @@ use crate::error::EmployeeError;
 const MIGRATIONS: &[(&str, &str)] = &[
     ("employee_001_init", include_str!("../migrations/001_init.sql")),
     ("employee_002_schedule", include_str!("../migrations/002_schedule.sql")),
+    ("employee_003_visibility", include_str!("../migrations/003_visibility.sql")),
 ];
 
 /// Run all pending one-employee migrations. Idempotent.

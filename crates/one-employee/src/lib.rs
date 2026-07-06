@@ -15,9 +15,11 @@ pub mod models;
 pub mod routes;
 pub mod service;
 pub mod state;
+pub mod tenant;
 
 pub use error::EmployeeError;
 pub use migrate::run_one_employee_migrations;
 pub use routes::one_employee_routes;
 pub use service::{EmployeeService, RunReply};
 pub use state::OneEmployeeRouterState;
+pub use tenant::{DEFAULT_TENANT, TenantResolver};

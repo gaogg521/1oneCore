@@ -139,6 +139,44 @@ fn build_run_prompt(agent: &PersonalAgentRow) -> String {
     format!("你是「{}」。请立即执行你的日常职责，完成后输出可交付摘要。", agent.name)
 }
 
+/// Employees a user may *use* (own or shared within their tenant). Free
+/// function so the sharing predicate can be unit-tested against a bare pool
+/// without constructing the full `EmployeeService`.
+async fn select_agent_for_use(
+    pool: &SqlitePool,
+    user_id: &str,
+    tenant_id: &str,
+    agent_id: &str,
+) -> Result<Option<PersonalAgentRow>, sqlx::Error> {
+    sqlx::query_as::<_, PersonalAgentRow>(
+        "SELECT * FROM one_personal_agents \
+         WHERE id = ? AND (owner_user_id = ? OR (visibility = 'shared' AND tenant_id = ?))",
+    )
+    .bind(agent_id)
+    .bind(user_id)
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Own employees plus tenant-shared ones. Free function, mirrors
+/// `select_agent_for_use` for testability.
+async fn select_available_agents(
+    pool: &SqlitePool,
+    user_id: &str,
+    tenant_id: &str,
+) -> Result<Vec<PersonalAgentRow>, sqlx::Error> {
+    sqlx::query_as::<_, PersonalAgentRow>(
+        "SELECT * FROM one_personal_agents \
+         WHERE owner_user_id = ? OR (visibility = 'shared' AND tenant_id = ?) \
+         ORDER BY updated_at DESC",
+    )
+    .bind(user_id)
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await
+}
+
 /// Truncate a reply to a 240-char run summary (matches the TS reference).
 fn truncate_summary(reply: &str) -> String {
     if reply.chars().count() > 240 {
@@ -214,16 +252,6 @@ impl EmployeeService {
 
     // --- CRUD ---
 
-    pub async fn list(&self, owner_user_id: &str) -> Result<Vec<PersonalAgentDto>, EmployeeError> {
-        let rows = sqlx::query_as::<_, PersonalAgentRow>(
-            "SELECT * FROM one_personal_agents WHERE owner_user_id = ? ORDER BY updated_at DESC",
-        )
-        .bind(owner_user_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(Into::into).collect())
-    }
-
     pub async fn get(&self, owner_user_id: &str, agent_id: &str) -> Result<PersonalAgentRow, EmployeeError> {
         sqlx::query_as::<_, PersonalAgentRow>(
             "SELECT * FROM one_personal_agents WHERE id = ? AND owner_user_id = ?",
@@ -233,6 +261,61 @@ impl EmployeeService {
         .fetch_optional(&self.pool)
         .await?
         .ok_or(EmployeeError::NotFound)
+    }
+
+    /// Employees the user can pick from: their own, plus employees shared
+    /// within their tenant (A1 L3). Personal-tenant users only ever see their
+    /// own (they are the sole member of the 'default' tenant).
+    pub async fn list_available(
+        &self,
+        user_id: &str,
+        tenant_id: &str,
+    ) -> Result<Vec<PersonalAgentDto>, EmployeeError> {
+        let rows = select_available_agents(&self.pool, user_id, tenant_id).await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Resolve an employee the user is allowed to *use* (dispatch/breakdown):
+    /// their own employee, or one shared within their tenant. Ownership for
+    /// mutation still goes through `get`. Returns `NotFound` when neither
+    /// applies.
+    pub async fn resolve_agent_for_use(
+        &self,
+        user_id: &str,
+        tenant_id: &str,
+        agent_id: &str,
+    ) -> Result<PersonalAgentRow, EmployeeError> {
+        select_agent_for_use(&self.pool, user_id, tenant_id, agent_id)
+            .await?
+            .ok_or(EmployeeError::NotFound)
+    }
+
+    /// Set an employee's visibility ('private' | 'shared'). Owner-only: only
+    /// the creator can share or unshare their employee.
+    pub async fn set_visibility(
+        &self,
+        owner_user_id: &str,
+        agent_id: &str,
+        visibility: &str,
+    ) -> Result<PersonalAgentDto, EmployeeError> {
+        if visibility != "private" && visibility != "shared" {
+            return Err(EmployeeError::BadRequest(format!(
+                "invalid visibility: {visibility} (allowed: private/shared)"
+            )));
+        }
+        let result = sqlx::query(
+            "UPDATE one_personal_agents SET visibility = ?, updated_at = ? WHERE id = ? AND owner_user_id = ?",
+        )
+        .bind(visibility)
+        .bind(now_ms() as i64)
+        .bind(agent_id)
+        .bind(owner_user_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(EmployeeError::NotFound);
+        }
+        Ok(self.get(owner_user_id, agent_id).await?.into())
     }
 
     pub async fn create(
@@ -411,15 +494,22 @@ impl EmployeeService {
     /// Manual run carrying an extra task context (e.g. a devops requirement
     /// dispatched to this employee). The context is appended to the agent's
     /// own run prompt so the turn works the requirement, not just the daily
-    /// routine. Ownership is enforced by `get` (personal-agent isolation).
+    /// routine.
+    ///
+    /// Accepts the caller's tenant so a *shared* employee (A1 L3) can be
+    /// driven by any same-tenant member — `resolve_agent_for_use` allows the
+    /// owner or a tenant-shared employee. The run itself is owned by the
+    /// caller (conversation + workspace + run row), regardless of who owns the
+    /// agent definition.
     pub async fn run_now_with_context(
         self: &Arc<Self>,
-        owner_user_id: &str,
+        user_id: &str,
+        tenant_id: &str,
         agent_id: &str,
         task_context: String,
     ) -> Result<(String, String), EmployeeError> {
-        let agent = self.get(owner_user_id, agent_id).await?;
-        self.start_personal_run(owner_user_id, &agent, TRIGGER_MANUAL, Some(task_context))
+        let agent = self.resolve_agent_for_use(user_id, tenant_id, agent_id).await?;
+        self.start_personal_run(user_id, &agent, TRIGGER_MANUAL, Some(task_context))
             .await
     }
 
@@ -517,19 +607,20 @@ impl EmployeeService {
     /// persist the outcome, and return the agent's full text reply so callers
     /// can parse structured output (e.g. devops breakdown → child requirements).
     ///
-    /// Ownership is enforced by `get` (personal-agent isolation), same L1
-    /// constraint as `run_now_with_context`.
+    /// Accepts the caller's tenant so a shared employee can be used by any
+    /// same-tenant member (A1 L3); the run is owned by the caller.
     pub async fn run_prompt_blocking(
         self: &Arc<Self>,
-        owner_user_id: &str,
+        user_id: &str,
+        tenant_id: &str,
         agent_id: &str,
         prompt: String,
     ) -> Result<RunReply, EmployeeError> {
-        let agent = self.get(owner_user_id, agent_id).await?;
-        let (run_id, conversation_id) = self.provision_run(owner_user_id, &agent, TRIGGER_BREAKDOWN).await?;
+        let agent = self.resolve_agent_for_use(user_id, tenant_id, agent_id).await?;
+        let (run_id, conversation_id) = self.provision_run(user_id, &agent, TRIGGER_BREAKDOWN).await?;
 
         let turn_req = ConversationAgentTurnRequest {
-            user_id: owner_user_id.to_owned(),
+            user_id: user_id.to_owned(),
             conversation_id: conversation_id.clone(),
             content: prompt,
             files: vec![],
@@ -903,6 +994,7 @@ impl EmployeeService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migrate::run_one_employee_migrations;
 
     #[test]
     fn append_task_context_appends_and_noops() {
@@ -929,6 +1021,7 @@ mod tests {
             schedule: None,
             schedule_enabled: 0,
             next_run_at: None,
+            visibility: "private".into(),
             created_at: 0,
             updated_at: 0,
         };
@@ -950,6 +1043,7 @@ mod tests {
             schedule: None,
             schedule_enabled: 0,
             next_run_at: None,
+            visibility: "private".into(),
             created_at: 0,
             updated_at: 0,
         };
@@ -957,6 +1051,54 @@ mod tests {
 
         agent.description = None;
         assert!(build_run_prompt(&agent).contains("日常职责"));
+    }
+
+    async fn insert_agent(pool: &SqlitePool, id: &str, owner: &str, tenant: &str, visibility: &str) {
+        sqlx::query(
+            "INSERT INTO one_personal_agents \
+             (id, owner_user_id, tenant_id, name, agent_type, automation_config, schedule_enabled, visibility, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, 'claude', '{}', 0, ?, 0, 0)",
+        )
+        .bind(id)
+        .bind(owner)
+        .bind(tenant)
+        .bind(id)
+        .bind(visibility)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn sharing_resolves_own_and_tenant_shared() {
+        let db = aionui_db::init_database_memory().await.unwrap();
+        run_one_employee_migrations(db.pool()).await.unwrap();
+        let pool = db.pool();
+        // A: a1 private/t1, a2 shared/t1. B: b1 shared/t1. C: c1 shared/t2.
+        insert_agent(pool, "a1", "A", "t1", "private").await;
+        insert_agent(pool, "a2", "A", "t1", "shared").await;
+        insert_agent(pool, "b1", "B", "t1", "shared").await;
+        insert_agent(pool, "c1", "C", "t2", "shared").await;
+
+        // A@t1: own a1/a2; same-tenant shared b1; NOT cross-tenant c1.
+        assert!(select_agent_for_use(pool, "A", "t1", "a1").await.unwrap().is_some());
+        assert!(select_agent_for_use(pool, "A", "t1", "b1").await.unwrap().is_some());
+        assert!(select_agent_for_use(pool, "A", "t1", "c1").await.unwrap().is_none());
+        // B@t1: NOT A's private a1; A's shared a2 yes; own b1 yes.
+        assert!(select_agent_for_use(pool, "B", "t1", "a1").await.unwrap().is_none());
+        assert!(select_agent_for_use(pool, "B", "t1", "a2").await.unwrap().is_some());
+        // Cross-tenant: A@t2 cannot use t1-shared b1, but always sees own a1.
+        assert!(select_agent_for_use(pool, "A", "t2", "b1").await.unwrap().is_none());
+        assert!(select_agent_for_use(pool, "A", "t2", "a1").await.unwrap().is_some());
+
+        // list_available for B@t1 = own b1 + shared-in-t1 a2 (not private a1, not t2 c1).
+        let ids: std::collections::HashSet<String> = select_available_agents(pool, "B", "t1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, ["a2".to_owned(), "b1".to_owned()].into_iter().collect());
     }
 
     #[test]

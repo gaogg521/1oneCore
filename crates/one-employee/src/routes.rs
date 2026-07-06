@@ -25,6 +25,7 @@ pub fn one_employee_routes(state: OneEmployeeRouterState) -> Router {
         .route("/api/one/employee/agents/{agent_id}/run", post(run_agent))
         .route("/api/one/employee/agents/{agent_id}/run-team", post(run_agent_team))
         .route("/api/one/employee/agents/{agent_id}/schedule", put(set_schedule))
+        .route("/api/one/employee/agents/{agent_id}/visibility", put(set_visibility))
         .route("/api/one/employee/agents/{agent_id}/runs", get(list_runs))
         .route("/api/one/employee/runs/{run_id}", get(get_run))
         .with_state(state)
@@ -34,7 +35,9 @@ async fn list_agents(
     State(state): State<OneEmployeeRouterState>,
     Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<PersonalAgentDto>>>, EmployeeError> {
-    Ok(Json(ApiResponse::ok(state.service.list(&user.id).await?)))
+    // Own employees plus any shared within the caller's tenant (A1 L3).
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(state.service.list_available(&user.id, &tenant).await?)))
 }
 
 #[derive(Deserialize)]
@@ -53,11 +56,12 @@ async fn create_agent(
     Extension(user): Extension<CurrentUser>,
     Json(body): Json<CreateAgentBody>,
 ) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
-    // Tenant scoping follows one-org membership in M3b; personal edition
-    // default is fine for M3a.
+    // Tenant is the caller's org tenant (personal edition → 'default'); it
+    // determines who a later-shared employee reaches (A1 L3).
+    let tenant = state.tenant_of(&user.id).await;
     let agent = state
         .service
-        .create(&user.id, "default", CreateEmployeeInput {
+        .create(&user.id, &tenant, CreateEmployeeInput {
             name: body.name,
             description: body.description,
             agent_type: body.agent_type,
@@ -66,6 +70,23 @@ async fn create_agent(
             automation_config: body.automation_config,
         })
         .await?;
+    Ok(Json(ApiResponse::ok(agent)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetVisibilityBody {
+    visibility: String,
+}
+
+/// Share/unshare an employee within the owner's tenant. Owner-only.
+async fn set_visibility(
+    State(state): State<OneEmployeeRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<SetVisibilityBody>,
+) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
+    let agent = state.service.set_visibility(&user.id, &agent_id, &body.visibility).await?;
     Ok(Json(ApiResponse::ok(agent)))
 }
 
