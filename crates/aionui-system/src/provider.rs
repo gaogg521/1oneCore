@@ -21,9 +21,28 @@ impl ProviderService {
     }
 
     /// List all providers with masked API keys.
+    ///
+    /// Rows whose API key cannot be decrypted (for example after a JWT secret
+    /// rotation or a partially migrated install) are skipped with a warning so
+    /// one corrupt provider does not fail the entire list endpoint.
     pub async fn list(&self) -> Result<Vec<ProviderResponse>, SystemError> {
         let rows = self.repo.list().await?;
-        rows.into_iter().map(|row| self.row_to_response(row)).collect()
+        let mut providers = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id = row.id.clone();
+            match self.row_to_response(row) {
+                Ok(provider) => providers.push(provider),
+                Err(SystemError::BadRequest(reason)) => {
+                    tracing::warn!(
+                        provider_id = %id,
+                        reason = %reason,
+                        "Skipping provider with undecryptable API key"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(providers)
     }
 
     /// Create a new provider. The API key is encrypted before storage.
@@ -497,6 +516,29 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, created.id);
         assert_eq!(all[0].api_key, "sk-ant-api03-test1234");
+    }
+
+    #[tokio::test]
+    async fn list_skips_undecryptable_provider_rows() {
+        let db = init_database_memory().await.unwrap();
+        let repo: Arc<dyn aionui_db::IProviderRepository> =
+            Arc::new(SqliteProviderRepository::new(db.pool().clone()));
+        std::mem::forget(db);
+        let svc = ProviderService::new(Arc::clone(&repo), TEST_KEY);
+        let foreign_key_svc = ProviderService::new(repo, [0x99u8; 32]);
+
+        let good = svc.create(sample_create_request()).await.unwrap();
+        let _undecryptable = foreign_key_svc
+            .create(CreateProviderRequest {
+                name: "Undecryptable".into(),
+                ..sample_create_request()
+            })
+            .await
+            .unwrap();
+
+        let all = svc.list().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, good.id);
     }
 
     #[tokio::test]

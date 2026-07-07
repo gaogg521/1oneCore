@@ -390,6 +390,7 @@ dependencies = [
 name = "aionui-app"
 version = "0.1.42"
 dependencies = [
+ "aion-config",
  "aionui-ai-agent",
  "aionui-api-types",
  "aionui-assets",
@@ -3846,7 +3847,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "one-devops"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "aionui-api-types",
  "aionui-auth",
@@ -3865,7 +3866,7 @@ dependencies = [
 
 [[package]]
 name = "one-employee"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "aionui-ai-agent",
  "aionui-api-types",
@@ -3890,7 +3891,7 @@ dependencies = [
 
 [[package]]
 name = "one-org"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "aionui-api-types",
  "aionui-auth",
@@ -3911,7 +3912,7 @@ dependencies = [
 
 [[package]]
 name = "one-sso"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "aionui-api-types",
  "aionui-auth",

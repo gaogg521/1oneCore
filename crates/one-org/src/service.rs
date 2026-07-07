@@ -311,11 +311,10 @@ impl OrgService {
         };
 
         let tenant = self.get_tenant(&membership.tenant_id).await?;
-        let Some(hash) = tenant.and_then(|t| t.exit_password_hash) else {
-            return Err(OrgError::NoExitPasswordSet);
-        };
-        if !verify_password(exit_code, &hash)? {
-            return Err(OrgError::WrongExitCode);
+        if let Some(hash) = tenant.and_then(|t| t.exit_password_hash) {
+            if !verify_password(exit_code, &hash)? {
+                return Err(OrgError::WrongExitCode);
+            }
         }
 
         sqlx::query("DELETE FROM one_user_org WHERE user_id = ?")
@@ -640,9 +639,14 @@ mod tests {
         let err = service.join_with_invite(member, &display).await.unwrap_err();
         assert_eq!(err.code(), "ALREADY_IN_ENTERPRISE");
 
-        // Exit: no password set yet.
-        let err = service.leave(member, "whatever").await.unwrap_err();
-        assert_eq!(err.code(), "NO_EXIT_PASSWORD_SET");
+        // Exit: no password set — member may leave without a code.
+        service.leave(member, "").await.unwrap();
+        assert_eq!(service.member_count(&tenant_id).await.unwrap(), 1);
+
+        // Re-join to exercise password-gated exit.
+        service.preview_invite(&display).await.unwrap();
+        service.join_with_invite(member, &display).await.unwrap();
+        assert_eq!(service.member_count(&tenant_id).await.unwrap(), 2);
 
         service.set_exit_password(&tenant_id, "s3cret").await.unwrap();
         assert!(service.exit_password_status(&tenant_id).await.unwrap());
