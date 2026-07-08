@@ -160,8 +160,29 @@ pub fn resolve_command_path(cmd: &str) -> Option<PathBuf> {
             }
             which::which("bunx").ok()
         }
+        "agent" => resolve_known_cursor_agent_install_path()
+            .or_else(|| which::which("agent").ok())
+            .or_else(|| windows_shim_fallback("agent")),
         other => which::which(other).ok().or_else(|| windows_shim_fallback(other)),
     }
+}
+
+/// Cursor Agent CLI ships under `%LOCALAPPDATA%\cursor-agent\` on Windows and
+/// is often not on PATH even when installed.
+fn resolve_known_cursor_agent_install_path() -> Option<PathBuf> {
+    resolve_known_cursor_agent_install_path_from_env(std::env::var_os("LOCALAPPDATA").as_deref())
+}
+
+fn resolve_known_cursor_agent_install_path_from_env(local_app_data: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let local_app_data = local_app_data?;
+    let base = PathBuf::from(local_app_data).join("cursor-agent");
+    for name in ["agent.exe", "agent.cmd", "agent", "cursor-agent.exe", "cursor-agent.cmd"] {
+        let candidate = base.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 #[cfg(windows)]
@@ -393,5 +414,18 @@ mod tests {
             "expected the .cmd shim; got {}",
             found.display()
         );
+    }
+
+    #[test]
+    fn resolve_cursor_agent_install_path_from_local_app_data() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agent_dir = tmp.path().join("cursor-agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let agent_cmd = agent_dir.join("agent.cmd");
+        std::fs::write(&agent_cmd, b"@echo off\r\n").unwrap();
+
+        let found = resolve_known_cursor_agent_install_path_from_env(Some(tmp.path().as_os_str()))
+            .expect("must find cursor agent shim");
+        assert_eq!(found, agent_cmd);
     }
 }
