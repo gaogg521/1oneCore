@@ -359,6 +359,15 @@ impl AssistantService {
             .min()
             .unwrap_or_default()
             .min(0);
+        // Generate a bare assistant for every agent whose backing CLI is
+        // present on this machine. `Offline` counts as installed: the binary
+        // resolved but the last ACP handshake failed (e.g. Cursor's `agent`
+        // needs the user to log in first). We still want its assistant to
+        // exist so it surfaces with a "needs login / offline" state instead of
+        // silently vanishing. Only `Missing` (binary not found) is excluded.
+        // Including `Offline` also removes a startup ordering hazard: if a
+        // startup probe marks an installed agent offline before this reconcile
+        // runs, the definition would otherwise never be created.
         let generated_rows: Vec<&AgentManagementRow> = rows
             .iter()
             .filter(|row| {
@@ -366,7 +375,9 @@ impl AssistantService {
                     && row.agent_type.supports_new_conversation()
                     && matches!(
                         row.status,
-                        AgentManagementStatus::Online | AgentManagementStatus::Unchecked
+                        AgentManagementStatus::Online
+                            | AgentManagementStatus::Unchecked
+                            | AgentManagementStatus::Offline
                     )
             })
             .collect();
@@ -3167,6 +3178,33 @@ mod tests {
         assert_eq!(bare.agent_status, aionui_api_types::AgentManagementStatus::Unchecked);
         assert!(bare.team_selectable);
         assert!(bare.agent_status_message.is_none());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_materializes_generated_assistant_from_offline_agent() {
+        // An installed CLI whose ACP handshake failed (e.g. Cursor's `agent`
+        // needs the user to log in) is Offline, not Missing. It must still
+        // materialize as a generated assistant so the UI can surface it with a
+        // "needs login / offline" state instead of hiding it entirely.
+        let mut offline_row = mk_agent_row("agent-cursor", "cursor", aionui_api_types::AgentManagementStatus::Offline);
+        offline_row.last_check_status = Some(aionui_api_types::AgentSnapshotCheckStatus::Offline);
+        offline_row.last_check_error_code = Some("auth_required".into());
+        offline_row.last_check_error_message = Some("Cursor agent requires login".into());
+
+        let fx = fixture_with_options(FixtureOpts {
+            agent_rows: vec![offline_row],
+            ..Default::default()
+        })
+        .await;
+
+        let list = fx.service.list().await.unwrap();
+        let bare = list
+            .iter()
+            .find(|assistant| assistant.id == "bare:agent-cursor")
+            .expect("offline (installed) agent should still be materialized as a generated assistant");
+        assert_eq!(bare.source, AssistantSource::Generated);
+        assert_eq!(bare.agent_id, "agent-cursor");
+        assert_eq!(bare.agent_status, aionui_api_types::AgentManagementStatus::Offline);
     }
 
     #[tokio::test]
