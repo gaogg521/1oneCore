@@ -269,6 +269,19 @@ impl OrgService {
                 "Only system administrators can create an enterprise".into(),
             ));
         }
+        // D3: one server = one enterprise. The one-devops registries and
+        // collaboration boards carry no tenant_id, so a second tenant on the
+        // same instance would share every skill / MCP / requirement with the
+        // first. Reject creation once any tenant exists; members join the
+        // existing enterprise via invite instead.
+        let existing_tenants: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_tenants")
+            .fetch_one(&self.pool)
+            .await?;
+        if existing_tenants > 0 {
+            return Err(OrgError::Forbidden(
+                "This server already hosts an enterprise; a server can host only one. Members should join via invite code.".into(),
+            ));
+        }
 
         let tenant_id = short_id("tenant");
         let now = now_ms() as i64;
@@ -664,6 +677,28 @@ mod tests {
         let err = service.create_tenant(&user, "Evil Corp").await.unwrap_err();
         assert_eq!(err.code(), "FORBIDDEN");
         db.close().await;
+    }
+
+    #[tokio::test]
+    async fn one_server_hosts_only_one_enterprise() {
+        let (_db, service, _user_repo) = setup().await;
+        service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        // Simulate the creator having exited (org row gone) so they are once
+        // more an implicit system_admin not in any enterprise — the only way
+        // to slip past the AlreadyInEnterprise / role guards.
+        sqlx::query("DELETE FROM one_user_org WHERE user_id = ?")
+            .bind(SYSTEM_DEFAULT_USER_ID)
+            .execute(&service.pool)
+            .await
+            .unwrap();
+
+        // A tenant still exists → D3 guard rejects a second enterprise.
+        let err = service
+            .create_tenant(SYSTEM_DEFAULT_USER_ID, "SecondCorp")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "FORBIDDEN");
     }
 
     #[tokio::test]
