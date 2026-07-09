@@ -36,18 +36,20 @@ pub fn normalize_invite_code(raw: &str) -> String {
         .to_uppercase()
 }
 
-/// `XXXX-XXXX` display form.
+/// Dash-grouped display form (`XXXX-XXXX-…`), four hex chars per group.
 fn format_invite_code_for_display(code: &str) -> String {
     let n = normalize_invite_code(code);
-    if n.len() <= 4 {
-        return n;
-    }
-    format!("{}-{}", &n[..4], &n[4..])
+    n.as_bytes()
+        .chunks(4)
+        .filter_map(|c| std::str::from_utf8(c).ok())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
-/// 8 uppercase hex chars from 4 CSPRNG bytes (same shape as the TS side).
+/// 16 uppercase hex chars from 8 CSPRNG bytes (2^64 space — D4: the previous
+/// 4-byte / 2^32 code was enumerable by any logged-in user).
 fn generate_invite_code() -> String {
-    let mut buf = [0u8; 4];
+    let mut buf = [0u8; 8];
     getrandom::getrandom(&mut buf).expect("OS entropy source unavailable");
     buf.iter().map(|b| format!("{b:02X}")).collect()
 }
@@ -601,6 +603,20 @@ mod tests {
     fn display_format_splits_after_four() {
         assert_eq!(format_invite_code_for_display("AB12CD34"), "AB12-CD34");
         assert_eq!(format_invite_code_for_display("AB12"), "AB12");
+        // 16-char (8-byte) codes group into four dash-separated quads.
+        assert_eq!(
+            format_invite_code_for_display("0123456789ABCDEF"),
+            "0123-4567-89AB-CDEF"
+        );
+        // Round-trips: a displayed code normalizes back to the raw form.
+        assert_eq!(normalize_invite_code("0123-4567-89AB-CDEF"), "0123456789ABCDEF");
+    }
+
+    #[test]
+    fn generated_invite_code_is_16_hex() {
+        let code = generate_invite_code();
+        assert_eq!(code.len(), 16, "8 CSPRNG bytes → 16 hex chars");
+        assert!(code.chars().all(|c| c.is_ascii_hexdigit() && !c.is_lowercase()));
     }
 
     #[tokio::test]
