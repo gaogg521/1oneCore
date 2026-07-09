@@ -379,6 +379,25 @@ impl DevopsService {
         self.fetch_requirement(id).await
     }
 
+    /// Enterprise role of `user_id`, or `None` when the user has no org row
+    /// (standalone / personal mode — the sole machine owner).
+    ///
+    /// Reads one-org's `one_user_org` table (same SQLite pool). Returns
+    /// `Ok(None)` when the table itself does not exist, so a standalone
+    /// deployment that never ran one-org migrations keeps working unchanged.
+    pub async fn user_org_role(&self, user_id: &str) -> Result<Option<String>, DevopsError> {
+        let result = sqlx::query_scalar::<_, String>("SELECT role FROM one_user_org WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await;
+        match result {
+            Ok(role) => Ok(role),
+            // Table missing = one-org never initialized = standalone.
+            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     // -- skill registry ---------------------------------------------------
 
     pub async fn list_skills(&self) -> Result<Vec<SkillRegistryDto>, DevopsError> {
@@ -1583,6 +1602,28 @@ mod tests {
         assert!(matches!(err, DevopsError::BadRequest(_)));
         let err = svc.list_comments("missing").await.unwrap_err();
         assert!(matches!(err, DevopsError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn user_org_role_standalone_and_enterprise() {
+        let svc = service().await;
+
+        // Standalone: one_user_org table never created (one-org not initialized)
+        // -> None, and registry writes stay owner-open.
+        assert_eq!(svc.user_org_role("u1").await.unwrap(), None);
+
+        // Enterprise: role rows resolve, distinguishing member from admin.
+        sqlx::raw_sql(
+            "CREATE TABLE one_user_org (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('member1', 't1', 'member');
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('admin1', 't1', 'org_admin');",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+        assert_eq!(svc.user_org_role("member1").await.unwrap().as_deref(), Some("member"));
+        assert_eq!(svc.user_org_role("admin1").await.unwrap().as_deref(), Some("org_admin"));
+        assert_eq!(svc.user_org_role("stranger").await.unwrap(), None);
     }
 
     #[tokio::test]

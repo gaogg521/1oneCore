@@ -18,9 +18,9 @@ use aionui_db::IUserRepository;
 
 use crate::error::OrgError;
 use crate::models::{
-    AdminUserDto, AuditLogRow, DEFAULT_TENANT_ID, InviteDto, InviteRow, OrgContextDto, ROLE_MEMBER,
-    ROLE_SYSTEM_ADMIN, RuntimeNodeDto, RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, TenantRow, UserOrgRow,
-    is_enterprise_tenant_id, is_system_admin_role,
+    AdminUserDto, AuditLogRow, DEFAULT_TENANT_ID, InviteDto, InviteRow, OrgContextDto, ROLE_MEMBER, ROLE_SYSTEM_ADMIN,
+    RuntimeNodeDto, RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, TenantRow, UserOrgRow, is_enterprise_tenant_id,
+    is_system_admin_role,
 };
 
 pub struct OrgService {
@@ -54,7 +54,7 @@ fn generate_invite_code() -> String {
 
 fn short_id(prefix: &str) -> String {
     let uuid = uuid::Uuid::now_v7().simple().to_string();
-    format!("{prefix}_{}", &uuid[..12])
+    format!("{prefix}_{uuid}")
 }
 
 impl OrgService {
@@ -394,10 +394,9 @@ impl OrgService {
 
     /// Name of the enterprise hosted on this server, if any.
     pub async fn public_info(&self) -> Result<Option<String>, OrgError> {
-        let name: Option<String> =
-            sqlx::query_scalar("SELECT name FROM one_tenants ORDER BY created_at ASC LIMIT 1")
-                .fetch_optional(&self.pool)
-                .await?;
+        let name: Option<String> = sqlx::query_scalar("SELECT name FROM one_tenants ORDER BY created_at ASC LIMIT 1")
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(name)
     }
 
@@ -455,21 +454,15 @@ impl OrgService {
     /// Promote/demote a user's role within a tenant. `role` must be one of
     /// `member`/`org_admin`/`system_admin` — validated by the caller (route
     /// handler) so we keep the service free of string validation.
-    pub async fn set_user_role(
-        &self,
-        tenant_id: &str,
-        user_id: &str,
-        role: &str,
-    ) -> Result<(), OrgError> {
-        let result = sqlx::query(
-            "UPDATE one_user_org SET role = ?, updated_at = ? WHERE tenant_id = ? AND user_id = ?",
-        )
-        .bind(role)
-        .bind(now_ms() as i64)
-        .bind(tenant_id)
-        .bind(user_id)
-        .execute(&self.pool)
-        .await?;
+    pub async fn set_user_role(&self, tenant_id: &str, user_id: &str, role: &str) -> Result<(), OrgError> {
+        let result =
+            sqlx::query("UPDATE one_user_org SET role = ?, updated_at = ? WHERE tenant_id = ? AND user_id = ?")
+                .bind(role)
+                .bind(now_ms() as i64)
+                .bind(tenant_id)
+                .bind(user_id)
+                .execute(&self.pool)
+                .await?;
         if result.rows_affected() == 0 {
             return Err(OrgError::BadRequest(format!(
                 "user {user_id} not in tenant {tenant_id}"
@@ -534,13 +527,12 @@ impl OrgService {
         .rows_affected();
 
         if updated > 0 {
-            let id: String = sqlx::query_scalar(
-                "SELECT id FROM one_runtime_nodes WHERE tenant_id = ? AND machine_id = ?",
-            )
-            .bind(tenant_id)
-            .bind(machine_id)
-            .fetch_one(&self.pool)
-            .await?;
+            let id: String =
+                sqlx::query_scalar("SELECT id FROM one_runtime_nodes WHERE tenant_id = ? AND machine_id = ?")
+                    .bind(tenant_id)
+                    .bind(machine_id)
+                    .fetch_one(&self.pool)
+                    .await?;
             return Ok(id);
         }
 
@@ -615,7 +607,10 @@ mod tests {
         );
 
         // Creating again while inside an enterprise is rejected.
-        let err = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Другая").await.unwrap_err();
+        let err = service
+            .create_tenant(SYSTEM_DEFAULT_USER_ID, "Другая")
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), "ALREADY_IN_ENTERPRISE");
 
         // Invite + preview + join as a second user.

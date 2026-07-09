@@ -14,6 +14,9 @@ pub enum DevopsError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -23,6 +26,7 @@ impl DevopsError {
         match self {
             Self::NotFound(_) => "NOT_FOUND",
             Self::BadRequest(_) => "BAD_REQUEST",
+            Self::Forbidden(_) => "FORBIDDEN",
             Self::Internal(_) => "INTERNAL_ERROR",
         }
     }
@@ -31,6 +35,7 @@ impl DevopsError {
         match self {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

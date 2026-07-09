@@ -480,6 +480,23 @@ fn build_task_context(req: &crate::models::RequirementRow) -> String {
 
 // -- registries -----------------------------------------------------------
 
+/// Distribution-policy gate: registry WRITES (skills / MCP / RAG) define what
+/// gets distributed to every member's machine, so inside an enterprise they
+/// are admin-only. A user with no org row (standalone / personal mode, or a
+/// member's own local backend) is the machine owner and passes.
+///
+/// Reads (list/search) and collaboration surfaces (requirements / comments /
+/// dispatch / milestones / test plans / pipelines) stay member-open.
+async fn require_registry_admin(state: &OneDevopsRouterState, user_id: &str) -> Result<(), DevopsError> {
+    match state.service.user_org_role(user_id).await? {
+        None => Ok(()),
+        Some(role) if role == "org_admin" || role == "system_admin" || role == "admin" => Ok(()),
+        Some(_) => Err(DevopsError::Forbidden(
+            "registry writes are admin-only: distributed skills/MCP/knowledge affect every member".into(),
+        )),
+    }
+}
+
 async fn list_skills(
     State(state): State<OneDevopsRouterState>,
 ) -> Result<Json<ApiResponse<Vec<SkillRegistryDto>>>, DevopsError> {
@@ -513,6 +530,7 @@ async fn upsert_skill(
     Extension(user): Extension<CurrentUser>,
     Json(body): Json<UpsertSkillBody>,
 ) -> Result<Json<ApiResponse<SkillRegistryDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
     let dto = state
         .service
         .upsert_skill(
@@ -530,8 +548,10 @@ async fn upsert_skill(
 
 async fn delete_skill(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
     state.service.delete_skill(&id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
@@ -567,6 +587,7 @@ async fn upsert_mcp(
     Extension(user): Extension<CurrentUser>,
     Json(body): Json<UpsertMcpBody>,
 ) -> Result<Json<ApiResponse<McpRegistryDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
     let dto = state
         .service
         .upsert_mcp_registry(
@@ -584,8 +605,10 @@ async fn upsert_mcp(
 
 async fn delete_mcp(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
     state.service.delete_mcp_registry(&id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
@@ -613,6 +636,7 @@ async fn register_rag(
     Extension(user): Extension<CurrentUser>,
     Json(body): Json<RegisterRagBody>,
 ) -> Result<Json<ApiResponse<RagDocumentDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
     let dto = state
         .service
         .register_rag_document(
@@ -628,8 +652,10 @@ async fn register_rag(
 
 async fn delete_rag(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
     state.service.delete_rag_document(&id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
@@ -641,9 +667,11 @@ struct SetRagContentBody {
 
 async fn set_rag_content(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
     Json(body): Json<SetRagContentBody>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
     state.service.set_document_content(&id, &body.content).await?;
     Ok(Json(ApiResponse::ok(())))
 }
@@ -656,8 +684,10 @@ struct ProcessResult {
 
 async fn process_rag(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<ProcessResult>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
     let chunk_count = state.service.process_rag_document(&id).await?;
     Ok(Json(ApiResponse::ok(ProcessResult { chunk_count })))
 }
@@ -680,8 +710,10 @@ struct SetRagConfigBody {
 
 async fn set_rag_config(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Json(body): Json<SetRagConfigBody>,
 ) -> Result<Json<ApiResponse<RagConfigDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
     let dto = state
         .service
         .set_rag_config(&body.base_url, &body.model, body.api_key.as_deref())

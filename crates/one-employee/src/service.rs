@@ -84,7 +84,7 @@ pub struct ScheduleInput {
 
 fn short_id(prefix: &str) -> String {
     let uuid = uuid::Uuid::now_v7().simple().to_string();
-    format!("{prefix}_{}", &uuid[..12])
+    format!("{prefix}_{uuid}")
 }
 
 /// `MM/DD HH:mm` (UTC) — same run-conversation naming shape as the TS
@@ -105,7 +105,20 @@ fn format_run_timestamp(now_ms_value: i64) -> String {
         rem_days -= year_days;
         year += 1;
     }
-    let month_lengths = [31, if leap(year) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_lengths = [
+        31,
+        if leap(year) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 1u32;
     for len in month_lengths {
         if rem_days < len {
@@ -134,7 +147,10 @@ fn build_run_prompt(agent: &PersonalAgentRow) -> String {
         return instructions.to_owned();
     }
     if let Some(description) = agent.description.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        return format!("你是「{}」。你的职责：{}\n\n请立即执行你的日常职责，完成后输出可交付摘要。", agent.name, description);
+        return format!(
+            "你是「{}」。你的职责：{}\n\n请立即执行你的日常职责，完成后输出可交付摘要。",
+            agent.name, description
+        );
     }
     format!("你是「{}」。请立即执行你的日常职责，完成后输出可交付摘要。", agent.name)
 }
@@ -253,24 +269,18 @@ impl EmployeeService {
     // --- CRUD ---
 
     pub async fn get(&self, owner_user_id: &str, agent_id: &str) -> Result<PersonalAgentRow, EmployeeError> {
-        sqlx::query_as::<_, PersonalAgentRow>(
-            "SELECT * FROM one_personal_agents WHERE id = ? AND owner_user_id = ?",
-        )
-        .bind(agent_id)
-        .bind(owner_user_id)
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or(EmployeeError::NotFound)
+        sqlx::query_as::<_, PersonalAgentRow>("SELECT * FROM one_personal_agents WHERE id = ? AND owner_user_id = ?")
+            .bind(agent_id)
+            .bind(owner_user_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(EmployeeError::NotFound)
     }
 
     /// Employees the user can pick from: their own, plus employees shared
     /// within their tenant (A1 L3). Personal-tenant users only ever see their
     /// own (they are the sole member of the 'default' tenant).
-    pub async fn list_available(
-        &self,
-        user_id: &str,
-        tenant_id: &str,
-    ) -> Result<Vec<PersonalAgentDto>, EmployeeError> {
+    pub async fn list_available(&self, user_id: &str, tenant_id: &str) -> Result<Vec<PersonalAgentDto>, EmployeeError> {
         let rows = select_available_agents(&self.pool, user_id, tenant_id).await?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
@@ -469,14 +479,12 @@ impl EmployeeService {
     }
 
     pub async fn get_run(&self, owner_user_id: &str, run_id: &str) -> Result<EmployeeRunRow, EmployeeError> {
-        sqlx::query_as::<_, EmployeeRunRow>(
-            "SELECT * FROM one_employee_runs WHERE id = ? AND owner_user_id = ?",
-        )
-        .bind(run_id)
-        .bind(owner_user_id)
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or(EmployeeError::RunNotFound)
+        sqlx::query_as::<_, EmployeeRunRow>("SELECT * FROM one_employee_runs WHERE id = ? AND owner_user_id = ?")
+            .bind(run_id)
+            .bind(owner_user_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(EmployeeError::RunNotFound)
     }
 
     /// Manual "run now": create a fresh conversation, fire the run prompt as a
@@ -488,7 +496,8 @@ impl EmployeeService {
         agent_id: &str,
     ) -> Result<(String, String), EmployeeError> {
         let agent = self.get(owner_user_id, agent_id).await?;
-        self.start_personal_run(owner_user_id, &agent, TRIGGER_MANUAL, None).await
+        self.start_personal_run(owner_user_id, &agent, TRIGGER_MANUAL, None)
+            .await
     }
 
     /// Manual run carrying an extra task context (e.g. a devops requirement
@@ -595,7 +604,14 @@ impl EmployeeService {
         let agent_clone = agent.clone();
         tokio::spawn(async move {
             service
-                .execute_run(&owner, &agent_clone, &run_id_bg, &conversation_id_bg, &trigger, task_context)
+                .execute_run(
+                    &owner,
+                    &agent_clone,
+                    &run_id_bg,
+                    &conversation_id_bg,
+                    &trigger,
+                    task_context,
+                )
                 .await;
         });
 
@@ -634,16 +650,23 @@ impl EmployeeService {
             Ok(outcome) if outcome.status == ConversationAgentTurnStatus::Completed => {
                 let reply = self.extract_latest_reply(&conversation_id).await.unwrap_or_default();
                 let summary = truncate_summary(&reply);
-                self.persist_run_outcome(&run_id, RUN_SUCCESS, Some(&outcome.turn_id), Some(&summary), None).await;
-                Ok(RunReply { run_id, conversation_id, reply })
+                self.persist_run_outcome(&run_id, RUN_SUCCESS, Some(&outcome.turn_id), Some(&summary), None)
+                    .await;
+                Ok(RunReply {
+                    run_id,
+                    conversation_id,
+                    reply,
+                })
             }
             Ok(outcome) => {
                 let error = outcome.error_message.unwrap_or_else(|| "agent turn failed".into());
-                self.persist_run_outcome(&run_id, RUN_FAILED, Some(&outcome.turn_id), None, Some(&error)).await;
+                self.persist_run_outcome(&run_id, RUN_FAILED, Some(&outcome.turn_id), None, Some(&error))
+                    .await;
                 Err(EmployeeError::Internal(error))
             }
             Err(e) => {
-                self.persist_run_outcome(&run_id, RUN_FAILED, None, None, Some(&e.to_string())).await;
+                self.persist_run_outcome(&run_id, RUN_FAILED, None, None, Some(&e.to_string()))
+                    .await;
                 Err(EmployeeError::Internal(e.to_string()))
             }
         }
@@ -718,11 +741,7 @@ impl EmployeeService {
 
     /// Mirror of the cron executor's fallback: some conversation types come
     /// back without a provisioned workspace; the agent turn needs one.
-    async fn ensure_workspace(
-        &self,
-        conversation_id: &str,
-        extra: &serde_json::Value,
-    ) -> Result<(), EmployeeError> {
+    async fn ensure_workspace(&self, conversation_id: &str, extra: &serde_json::Value) -> Result<(), EmployeeError> {
         let workspace = extra
             .get("workspace")
             .and_then(|v| v.as_str())
@@ -742,14 +761,15 @@ impl EmployeeService {
         let Some(row) = self.conversation_repo.get(conversation_id).await? else {
             return Ok(());
         };
-        let mut extra_value: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_else(|_| serde_json::json!({}));
+        let mut extra_value: serde_json::Value =
+            serde_json::from_str(&row.extra).unwrap_or_else(|_| serde_json::json!({}));
         if !extra_value.is_object() {
             extra_value = serde_json::json!({});
         }
-        extra_value
-            .as_object_mut()
-            .expect("json object")
-            .insert("workspace".into(), serde_json::Value::String(fallback.to_string_lossy().into_owned()));
+        extra_value.as_object_mut().expect("json object").insert(
+            "workspace".into(),
+            serde_json::Value::String(fallback.to_string_lossy().into_owned()),
+        );
         let update = ConversationRowUpdate {
             extra: Some(extra_value.to_string()),
             updated_at: Some(now_ms()),
@@ -804,17 +824,12 @@ impl EmployeeService {
     /// Wait for the team slot to settle (`active_run` flips to `None`),
     /// then extract summary from the slot's conversation_id (resolved
     /// up-front in `run_now_team`).
-    async fn execute_team_run(
-        &self,
-        owner_user_id: &str,
-        run_id: &str,
-        team_id: &str,
-        conversation_id: &str,
-    ) {
+    async fn execute_team_run(&self, owner_user_id: &str, run_id: &str, team_id: &str, conversation_id: &str) {
         let team_session = match self.require_team_session() {
             Ok(svc) => Arc::clone(svc),
             Err(e) => {
-                self.persist_run_outcome(run_id, RUN_FAILED, None, None, Some(&e.to_string())).await;
+                self.persist_run_outcome(run_id, RUN_FAILED, None, None, Some(&e.to_string()))
+                    .await;
                 return;
             }
         };
@@ -823,14 +838,16 @@ impl EmployeeService {
         loop {
             if std::time::Instant::now() >= deadline {
                 let msg = "team run poll timed out";
-                self.persist_run_outcome(run_id, RUN_FAILED, None, None, Some(msg)).await;
+                self.persist_run_outcome(run_id, RUN_FAILED, None, None, Some(msg))
+                    .await;
                 return;
             }
             let state = match team_session.get_run_state(owner_user_id, team_id).await {
                 Ok(s) => s,
                 Err(e) => {
                     let msg = format!("get_run_state: {e}");
-                    self.persist_run_outcome(run_id, RUN_FAILED, None, None, Some(&msg)).await;
+                    self.persist_run_outcome(run_id, RUN_FAILED, None, None, Some(&msg))
+                        .await;
                     return;
                 }
             };
@@ -841,7 +858,8 @@ impl EmployeeService {
         }
 
         let summary = self.extract_summary(conversation_id).await;
-        self.persist_run_outcome(run_id, RUN_SUCCESS, None, summary.as_deref(), None).await;
+        self.persist_run_outcome(run_id, RUN_SUCCESS, None, summary.as_deref(), None)
+            .await;
     }
 
     async fn persist_run_outcome(
@@ -873,12 +891,11 @@ impl EmployeeService {
     /// run lands. Uses upstream `compute_next_run` so semantics match the
     /// cron driver exactly.
     async fn recompute_next_run(&self, agent_id: &str) {
-        let row: Result<(Option<String>,), sqlx::Error> = sqlx::query_as(
-            "SELECT schedule FROM one_personal_agents WHERE id = ?",
-        )
-        .bind(agent_id)
-        .fetch_one(&self.pool)
-        .await;
+        let row: Result<(Option<String>,), sqlx::Error> =
+            sqlx::query_as("SELECT schedule FROM one_personal_agents WHERE id = ?")
+                .bind(agent_id)
+                .fetch_one(&self.pool)
+                .await;
         let Ok((schedule_json,)) = row else { return };
         let Some(schedule_json) = schedule_json else { return };
         let Ok(dto) = serde_json::from_str::<CronScheduleDto>(&schedule_json) else {
@@ -896,7 +913,9 @@ impl EmployeeService {
     /// Latest visible assistant text reply, truncated to 240 chars — same
     /// summary rule as the TS reference. Used to fill the run row `summary`.
     async fn extract_summary(&self, conversation_id: &str) -> Option<String> {
-        self.extract_latest_reply(conversation_id).await.map(|r| truncate_summary(&r))
+        self.extract_latest_reply(conversation_id)
+            .await
+            .map(|r| truncate_summary(&r))
     }
 
     /// Latest visible assistant text reply, untruncated. Callers that parse
@@ -981,7 +1000,10 @@ impl EmployeeService {
                 .execute(&self.pool)
                 .await;
 
-            if let Err(e) = self.start_personal_run(&owner_user_id, &agent, TRIGGER_CRON, None).await {
+            if let Err(e) = self
+                .start_personal_run(&owner_user_id, &agent, TRIGGER_CRON, None)
+                .await
+            {
                 tracing::error!(agent_id, error = %e, "one-employee scanner: start_personal_run failed");
                 // Restore next_run_at so we retry on the next tick.
                 let _ = self.recompute_next_run(&agent_id).await;
@@ -1111,7 +1133,10 @@ mod tests {
 
     #[test]
     fn compute_next_run_every() {
-        let dto = CronScheduleDto::Every { every_ms: 60_000, description: None };
+        let dto = CronScheduleDto::Every {
+            every_ms: 60_000,
+            description: None,
+        };
         let schedule = schedule_from_dto(&dto);
         // 1000ms + 60000ms = 61000ms
         assert_eq!(compute_next_run(&schedule, 1000), Some(61_000));
@@ -1119,7 +1144,10 @@ mod tests {
 
     #[test]
     fn compute_next_run_at_is_absolute() {
-        let dto = CronScheduleDto::At { at_ms: 5_000, description: None };
+        let dto = CronScheduleDto::At {
+            at_ms: 5_000,
+            description: None,
+        };
         let schedule = schedule_from_dto(&dto);
         // At always returns the absolute timestamp regardless of `now`.
         assert_eq!(compute_next_run(&schedule, 1000), Some(5_000));
