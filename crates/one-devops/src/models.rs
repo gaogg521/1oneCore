@@ -116,6 +116,9 @@ pub struct McpRegistryDto {
     pub endpoint: String,
     pub enabled: bool,
     pub has_keys: bool,
+    /// stdio `env` / sse `headers` JSON object, distributed to members so the
+    /// connector actually authenticates locally (D5). May be null.
+    pub secrets_json: Option<String>,
     pub scope: String,
     pub team_id: Option<String>,
     pub created_by: String,

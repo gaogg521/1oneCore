@@ -527,7 +527,7 @@ impl DevopsService {
 
     pub async fn list_mcp_registry(&self) -> Result<Vec<McpRegistryDto>, DevopsError> {
         Ok(sqlx::query_as::<_, McpRegistryDto>(
-            "SELECT id, name, type, endpoint, enabled, has_keys, scope, team_id, created_by, created_at, updated_at \
+            "SELECT id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, created_by, created_at, updated_at \
              FROM one_mcp_registry ORDER BY updated_at DESC",
         )
         .fetch_all(&self.pool)
@@ -543,6 +543,7 @@ impl DevopsService {
         endpoint: &str,
         enabled: bool,
         has_keys: bool,
+        secrets_json: Option<&str>,
         created_by: &str,
     ) -> Result<McpRegistryDto, DevopsError> {
         let name = name.trim();
@@ -572,13 +573,14 @@ impl DevopsService {
         let id = match id {
             Some(existing) => {
                 let updated = sqlx::query(
-                    "UPDATE one_mcp_registry SET name = ?, type = ?, endpoint = ?, enabled = ?, has_keys = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE one_mcp_registry SET name = ?, type = ?, endpoint = ?, enabled = ?, has_keys = ?, secrets_json = ?, updated_at = ? WHERE id = ?",
                 )
                 .bind(name)
                 .bind(r#type)
                 .bind(endpoint)
                 .bind(enabled)
                 .bind(has_keys)
+                .bind(secrets_json)
                 .bind(now)
                 .bind(existing)
                 .execute(&self.pool)
@@ -610,7 +612,7 @@ impl DevopsService {
             }
         };
         sqlx::query_as::<_, McpRegistryDto>(
-            "SELECT id, name, type, endpoint, enabled, has_keys, scope, team_id, created_by, created_at, updated_at \
+            "SELECT id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, created_by, created_at, updated_at \
              FROM one_mcp_registry WHERE id = ?",
         )
         .bind(&id)
@@ -1507,11 +1509,11 @@ mod tests {
             .await
             .unwrap();
 
-        svc.upsert_mcp_registry(None, "search", "sse", "https://a/sse", true, false, "u1")
+        svc.upsert_mcp_registry(None, "search", "sse", "https://a/sse", true, false, None, "u1")
             .await
             .unwrap();
         let err = svc
-            .upsert_mcp_registry(None, "search", "sse", "https://b/sse", true, false, "u1")
+            .upsert_mcp_registry(None, "search", "sse", "https://b/sse", true, false, None, "u1")
             .await
             .unwrap_err();
         assert_eq!(err.code(), "BAD_REQUEST");
@@ -1746,13 +1748,13 @@ mod tests {
         assert!(svc.list_skills().await.unwrap().is_empty());
 
         let mcp = svc
-            .upsert_mcp_registry(None, "search", "sse", "https://mcp.corp/sse", true, true, "u1")
+            .upsert_mcp_registry(None, "search", "sse", "https://mcp.corp/sse", true, true, None, "u1")
             .await
             .unwrap();
         assert!(mcp.has_keys);
         assert_eq!(svc.list_mcp_registry().await.unwrap().len(), 1);
         let err = svc
-            .upsert_mcp_registry(None, "bad", "ws", "", true, false, "u1")
+            .upsert_mcp_registry(None, "bad", "ws", "", true, false, None, "u1")
             .await
             .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));

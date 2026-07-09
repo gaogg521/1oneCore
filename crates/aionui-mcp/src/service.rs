@@ -367,6 +367,26 @@ pub struct TeamMcpPayload {
     pub server_type: String,
     pub endpoint: String,
     pub enabled: bool,
+    /// D5: distributed credentials — a JSON object materialized as stdio `env`
+    /// or sse `headers` so the connector authenticates locally (offline).
+    pub secrets_json: Option<String>,
+}
+
+/// Parse a `{ "k": "v" }` secrets blob into a string map. Non-string values
+/// and malformed JSON yield an empty map (never fails the sync).
+fn parse_secret_map(secrets_json: Option<&str>) -> std::collections::HashMap<String, String> {
+    let Some(raw) = secrets_json else {
+        return Default::default();
+    };
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+        .map(|obj| {
+            obj.into_iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Outcome of a team MCP sync pass.
@@ -403,6 +423,7 @@ impl McpConfigService {
         let mut wanted: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for payload in payloads {
+            let secrets = parse_secret_map(payload.secrets_json.as_deref());
             let transport = match payload.server_type.as_str() {
                 "stdio" => {
                     let tokens = shell_split(&payload.endpoint)
@@ -414,12 +435,12 @@ impl McpConfigService {
                     McpServerTransport::Stdio {
                         command: command.clone(),
                         args: args.to_vec(),
-                        env: Default::default(),
+                        env: secrets,
                     }
                 }
                 _ => McpServerTransport::Sse {
                     url: payload.endpoint.clone(),
-                    headers: Default::default(),
+                    headers: secrets,
                 },
             };
 
@@ -1334,6 +1355,7 @@ mod team_sync_tests {
             server_type: ty.to_owned(),
             endpoint: endpoint.to_owned(),
             enabled: true,
+            secrets_json: None,
         }
     }
 
@@ -1360,6 +1382,31 @@ mod team_sync_tests {
             search.original_json.as_deref().unwrap_or("").contains("omcp_a"),
             "ownership marker stored"
         );
+    }
+
+    #[tokio::test]
+    async fn distributed_secrets_materialize_into_transport() {
+        let svc = svc();
+        let mut p = payload("omcp_s", "team-auth", "sse", "https://mcp.corp/sse");
+        p.secrets_json = Some(r#"{"Authorization":"Bearer team-token"}"#.to_owned());
+        svc.sync_team_servers(&[p], true).await.unwrap();
+
+        let server = svc
+            .list_servers()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|s| s.name == "team-auth")
+            .unwrap();
+        match server.transport {
+            aionui_api_types::McpTransport::Sse { headers, .. } => {
+                assert_eq!(
+                    headers.get("Authorization").map(String::as_str),
+                    Some("Bearer team-token")
+                );
+            }
+            other => panic!("expected sse transport, got {other:?}"),
+        }
     }
 
     #[tokio::test]

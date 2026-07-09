@@ -97,6 +97,8 @@ struct TeamMcpSyncItem {
     endpoint: String,
     #[serde(default)]
     enabled: bool,
+    #[serde(default)]
+    secrets_json: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -134,6 +136,7 @@ async fn team_sync(
             server_type: s.server_type,
             endpoint: s.endpoint,
             enabled: s.enabled,
+            secrets_json: s.secrets_json,
         })
         .collect();
     let report = state

@@ -594,6 +594,9 @@ struct UpsertMcpBody {
     enabled: bool,
     #[serde(default)]
     has_keys: bool,
+    /// stdio `env` / sse `headers` JSON, distributed to members (D5).
+    #[serde(default)]
+    secrets_json: Option<String>,
 }
 
 fn default_stdio() -> String {
@@ -615,6 +618,7 @@ async fn upsert_mcp(
             &body.endpoint,
             body.enabled,
             body.has_keys,
+            body.secrets_json.as_deref(),
             &user.id,
         )
         .await?;
