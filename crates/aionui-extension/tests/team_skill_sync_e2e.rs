@@ -8,8 +8,8 @@
 
 use std::path::Path;
 
-use aionui_extension::skill_service::{list_available_skills, SkillPaths, SkillSource};
-use aionui_extension::team_sync::{sync_team_skills, TeamSkillPayload};
+use aionui_extension::skill_service::{SkillPaths, SkillSource, list_available_skills};
+use aionui_extension::team_sync::{TeamSkillPayload, sync_team_skills};
 use tempfile::TempDir;
 
 fn make_paths(base: &Path) -> SkillPaths {
@@ -43,7 +43,12 @@ async fn distributed_team_skill_surfaces_in_listing() {
     // Test data: one team skill the admin "pushed".
     let report = sync_team_skills(
         &paths.team_skills_dir(),
-        &[payload("oskill_report", "weekly-report", "Draft the weekly report", "Write a concise weekly summary.")],
+        &[payload(
+            "oskill_report",
+            "weekly-report",
+            "Draft the weekly report",
+            "Write a concise weekly summary.",
+        )],
         true,
     )
     .await
@@ -97,7 +102,15 @@ async fn admin_delete_propagates_to_listing() {
     )
     .await
     .unwrap();
-    assert_eq!(list_available_skills(&paths).await.unwrap().iter().filter(|s| s.source == SkillSource::Team).count(), 2);
+    assert_eq!(
+        list_available_skills(&paths)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|s| s.source == SkillSource::Team)
+            .count(),
+        2
+    );
 
     // Server now only serves alpha (admin deleted beta) — authoritative resync.
     sync_team_skills(&dir, &[payload("oskill_a", "alpha", "a", "body a")], true)
@@ -105,6 +118,10 @@ async fn admin_delete_propagates_to_listing() {
         .unwrap();
 
     let listed = list_available_skills(&paths).await.unwrap();
-    let team_names: Vec<&str> = listed.iter().filter(|s| s.source == SkillSource::Team).map(|s| s.name.as_str()).collect();
+    let team_names: Vec<&str> = listed
+        .iter()
+        .filter(|s| s.source == SkillSource::Team)
+        .map(|s| s.name.as_str())
+        .collect();
     assert_eq!(team_names, vec!["alpha"], "beta must be reconciled away, alpha kept");
 }

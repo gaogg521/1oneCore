@@ -66,7 +66,10 @@ fn build_skill_md(payload: &TeamSkillPayload) -> String {
     }
     let name = payload.name.trim();
     let description = payload.description.trim().replace(['\r', '\n'], " ");
-    format!("---\nname: {name}\ndescription: {description}\n---\n\n{}", payload.content)
+    format!(
+        "---\nname: {name}\ndescription: {description}\n---\n\n{}",
+        payload.content
+    )
 }
 
 /// Materialize `payloads` under `team_skills_dir` and reconcile removals.

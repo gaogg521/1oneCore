@@ -90,10 +90,9 @@ async fn sync_team_skills_handler(
             content: s.content,
         })
         .collect();
-    let report =
-        crate::team_sync::sync_team_skills(&state.skill_paths.team_skills_dir(), &payloads, req.authoritative)
-            .await
-            .map_err(ApiError::from)?;
+    let report = crate::team_sync::sync_team_skills(&state.skill_paths.team_skills_dir(), &payloads, req.authoritative)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(TeamSyncResponse {
         written: report.written,
         removed: report.removed,
