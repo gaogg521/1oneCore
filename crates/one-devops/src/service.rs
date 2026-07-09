@@ -424,6 +424,21 @@ impl DevopsService {
         if name.is_empty() {
             return Err(DevopsError::BadRequest("name is required".into()));
         }
+        // D7: names must be unique. A duplicate team skill name would
+        // materialize two SKILL.md dirs on every member and shadow each other
+        // (and can mask a built-in skill) — last-write-wins is unsafe for a
+        // distributed capability.
+        let name_taken: bool =
+            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_skill_registry WHERE name = ? AND id != ?")
+                .bind(name)
+                .bind(id.unwrap_or(""))
+                .fetch_one(&self.pool)
+                .await?;
+        if name_taken {
+            return Err(DevopsError::BadRequest(format!(
+                "a team skill named '{name}' already exists"
+            )));
+        }
         let now = now_ms();
         let id = match id {
             Some(existing) => {
@@ -516,6 +531,19 @@ impl DevopsService {
             return Err(DevopsError::BadRequest(format!(
                 "invalid type: {type} (allowed: stdio/sse)",
                 r#type = r#type
+            )));
+        }
+        // D7: MCP connector names must be unique — the member's local MCP
+        // config keys on name (upsert-by-name), so duplicates would clobber.
+        let name_taken: bool =
+            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_mcp_registry WHERE name = ? AND id != ?")
+                .bind(name)
+                .bind(id.unwrap_or(""))
+                .fetch_one(&self.pool)
+                .await?;
+        if name_taken {
+            return Err(DevopsError::BadRequest(format!(
+                "a team MCP named '{name}' already exists"
             )));
         }
         let now = now_ms();
@@ -1415,6 +1443,34 @@ mod tests {
             .unwrap();
         run_one_devops_migrations(&pool).await.unwrap();
         DevopsService::new(pool)
+    }
+
+    #[tokio::test]
+    async fn registry_names_must_be_unique() {
+        let svc = service().await;
+        svc.upsert_skill(None, "review", "d", "c", true, false, "u1")
+            .await
+            .unwrap();
+        // Same name, different (new) record → rejected.
+        let err = svc
+            .upsert_skill(None, "review", "d2", "c2", true, false, "u1")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "BAD_REQUEST");
+        // Updating the existing record keeps its own name → allowed.
+        let first = svc.list_skills().await.unwrap().pop().unwrap();
+        svc.upsert_skill(Some(&first.id), "review", "d3", "c3", false, true, "u1")
+            .await
+            .unwrap();
+
+        svc.upsert_mcp_registry(None, "search", "sse", "https://a/sse", true, false, "u1")
+            .await
+            .unwrap();
+        let err = svc
+            .upsert_mcp_registry(None, "search", "sse", "https://b/sse", true, false, "u1")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "BAD_REQUEST");
     }
 
     #[tokio::test]
