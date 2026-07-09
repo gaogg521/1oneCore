@@ -318,6 +318,11 @@ async fn dispatch_core(state: &OneDevopsRouterState, user_id: &str, id: &str) ->
         .service
         .insert_agent_comment(id, "agent", Some(assigned_to), "数字员工", &body, Some(metadata))
         .await?;
+    let tenant_for_audit = state.tenant_of(user_id).await;
+    state
+        .service
+        .audit(&tenant_for_audit, user_id, "devops.requirement.dispatch", Some(id))
+        .await;
 
     if req.status == "backlog" || req.status == "planning" {
         state
@@ -458,6 +463,10 @@ async fn breakdown_requirement(
         .insert_agent_comment(&id, "agent", Some(assigned_to), "数字员工", &body, Some(metadata))
         .await?;
 
+    state
+        .service
+        .audit(&tenant, &user.id, "devops.requirement.breakdown", Some(&id))
+        .await;
     Ok(Json(ApiResponse::ok(BreakdownResult {
         conversation_id: run.conversation_id,
         run_id: run.run_id,
@@ -487,6 +496,13 @@ fn build_task_context(req: &crate::models::RequirementRow) -> String {
 ///
 /// Reads (list/search) and collaboration surfaces (requirements / comments /
 /// dispatch / milestones / test plans / pipelines) stay member-open.
+/// Best-effort audit for a policy-changing action (D6). Resolves the caller's
+/// tenant and records the action; never fails the request.
+async fn audit(state: &OneDevopsRouterState, user_id: &str, action: &str, resource: Option<&str>) {
+    let tenant = state.tenant_of(user_id).await;
+    state.service.audit(&tenant, user_id, action, resource).await;
+}
+
 async fn require_registry_admin(state: &OneDevopsRouterState, user_id: &str) -> Result<(), DevopsError> {
     match state.service.user_org_role(user_id).await? {
         None => Ok(()),
@@ -543,6 +559,7 @@ async fn upsert_skill(
             &user.id,
         )
         .await?;
+    audit(&state, &user.id, "devops.skill.upsert", Some(&dto.id)).await;
     Ok(Json(ApiResponse::ok(dto)))
 }
 
@@ -552,6 +569,7 @@ async fn delete_skill(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
+    audit(&state, &user.id, "devops.skill.delete", Some(&id)).await;
     state.service.delete_skill(&id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
@@ -600,6 +618,7 @@ async fn upsert_mcp(
             &user.id,
         )
         .await?;
+    audit(&state, &user.id, "devops.mcp.upsert", Some(&dto.id)).await;
     Ok(Json(ApiResponse::ok(dto)))
 }
 
@@ -609,6 +628,7 @@ async fn delete_mcp(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
+    audit(&state, &user.id, "devops.mcp.delete", Some(&id)).await;
     state.service.delete_mcp_registry(&id).await?;
     Ok(Json(ApiResponse::ok(())))
 }

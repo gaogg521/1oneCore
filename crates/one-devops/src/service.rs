@@ -379,6 +379,28 @@ impl DevopsService {
         self.fetch_requirement(id).await
     }
 
+    /// Best-effort audit trail for policy-changing actions (registry writes,
+    /// requirement dispatch/breakdown). Writes into one-org's `one_audit_logs`
+    /// (shared pool). Silently skips when the table is absent (standalone /
+    /// one-org not initialized) and never fails the originating request.
+    pub async fn audit(&self, tenant_id: &str, user_id: &str, action: &str, resource: Option<&str>) {
+        let result = sqlx::query(
+            "INSERT INTO one_audit_logs (id, tenant_id, user_id, action, resource, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(new_id("audit"))
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(action)
+        .bind(resource)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await;
+        if let Err(e) = result {
+            tracing::debug!(error = %e, action, "one-devops audit skipped (table absent or write failed)");
+        }
+    }
+
     /// Enterprise role of `user_id`, or `None` when the user has no org row
     /// (standalone / personal mode — the sole machine owner).
     ///
@@ -1443,6 +1465,28 @@ mod tests {
             .unwrap();
         run_one_devops_migrations(&pool).await.unwrap();
         DevopsService::new(pool)
+    }
+
+    #[tokio::test]
+    async fn audit_writes_when_table_present_and_skips_when_absent() {
+        let svc = service().await;
+
+        // Standalone: one_audit_logs table absent → silent no-op, no panic.
+        svc.audit("default", "u1", "devops.skill.upsert", Some("s1")).await;
+
+        // Enterprise: table present → the action is recorded.
+        sqlx::raw_sql(
+            "CREATE TABLE one_audit_logs (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT, username TEXT, action TEXT NOT NULL, resource TEXT, ip_address TEXT, user_agent TEXT, created_at INTEGER NOT NULL);",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+        svc.audit("t1", "admin1", "devops.skill.delete", Some("s2")).await;
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_audit_logs WHERE action = 'devops.skill.delete'")
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]
