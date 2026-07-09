@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use one_employee::{EmployeeService, TenantResolver, DEFAULT_TENANT};
+use one_employee::{DEFAULT_TENANT, EmployeeService, TenantResolver};
 
 use crate::service::DevopsService;
 
@@ -20,7 +20,11 @@ pub struct OneDevopsRouterState {
 
 impl OneDevopsRouterState {
     pub fn new(service: Arc<DevopsService>) -> Self {
-        Self { service, employee: None, tenant_resolver: None }
+        Self {
+            service,
+            employee: None,
+            tenant_resolver: None,
+        }
     }
 
     /// Wire the employee runtime so requirements can be dispatched to digital

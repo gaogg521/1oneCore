@@ -6,7 +6,7 @@
 //! so we extract the outermost array and clamp each field to the allowed
 //! enum sets rather than rejecting the whole batch on one bad value.
 
-use crate::models::{RequirementRow, REQUIREMENT_PRIORITIES, REQUIREMENT_TYPES};
+use crate::models::{REQUIREMENT_PRIORITIES, REQUIREMENT_TYPES, RequirementRow};
 
 /// Upper bound on children created from one breakdown, guarding against a
 /// runaway reply.
@@ -71,9 +71,18 @@ pub fn parse_breakdown_items(reply: &str) -> Vec<BreakdownItem> {
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         let kind = clamp(obj.get("type").and_then(|v| v.as_str()), REQUIREMENT_TYPES, "story");
-        let priority = clamp(obj.get("priority").and_then(|v| v.as_str()), REQUIREMENT_PRIORITIES, "medium");
+        let priority = clamp(
+            obj.get("priority").and_then(|v| v.as_str()),
+            REQUIREMENT_PRIORITIES,
+            "medium",
+        );
 
-        items.push(BreakdownItem { subject: subject.to_owned(), description, kind, priority });
+        items.push(BreakdownItem {
+            subject: subject.to_owned(),
+            description,
+            kind,
+            priority,
+        });
         if items.len() >= MAX_CHILDREN {
             break;
         }
@@ -94,11 +103,7 @@ fn clamp(value: Option<&str>, allowed: &[&str], default: &str) -> String {
 fn extract_json_array(reply: &str) -> Option<&str> {
     let start = reply.find('[')?;
     let end = reply.rfind(']')?;
-    if end > start {
-        Some(&reply[start..=end])
-    } else {
-        None
-    }
+    if end > start { Some(&reply[start..=end]) } else { None }
 }
 
 #[cfg(test)]
