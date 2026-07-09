@@ -119,7 +119,8 @@ impl AcpSkillManager {
                 }
                 aionui_extension::SkillSource::Custom
                 | aionui_extension::SkillSource::Cron
-                | aionui_extension::SkillSource::Extension => {
+                | aionui_extension::SkillSource::Extension
+                | aionui_extension::SkillSource::Team => {
                     enabled_skills.is_some_and(|en| en.iter().any(|n| n == &item.name))
                 }
             };
@@ -268,7 +269,8 @@ impl AcpSkillManager {
             }
             aionui_extension::SkillSource::Custom
             | aionui_extension::SkillSource::Cron
-            | aionui_extension::SkillSource::Extension => {
+            | aionui_extension::SkillSource::Extension
+            | aionui_extension::SkillSource::Team => {
                 // `location` for scanned user skills is the directory; append SKILL.md.
                 let skill_file = if def.location.is_dir() {
                     def.location.join("SKILL.md")

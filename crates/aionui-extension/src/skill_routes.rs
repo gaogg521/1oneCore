@@ -19,6 +19,7 @@ use aionui_api_types::{
 };
 use aionui_common::ApiError;
 use aionui_db::ISkillRepository;
+use serde::{Deserialize, Serialize};
 
 use crate::classifier::AssistantRuleDispatcher;
 use crate::error::ExtensionError;
@@ -31,7 +32,73 @@ fn to_source_response(source: SkillSource) -> SkillSourceResponse {
         SkillSource::Custom => SkillSourceResponse::Custom,
         SkillSource::Cron => SkillSourceResponse::Cron,
         SkillSource::Extension => SkillSourceResponse::Extension,
+        SkillSource::Team => SkillSourceResponse::Team,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Team skill sync (M3)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamSyncSkillItem {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamSyncRequest {
+    #[serde(default)]
+    skills: Vec<TeamSyncSkillItem>,
+    /// True only when the caller fetched the complete, current server view
+    /// (server reachable). False → no reconciliation, cache kept for offline.
+    #[serde(default)]
+    authoritative: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamSyncResponse {
+    written: Vec<String>,
+    removed: Vec<String>,
+    kept: usize,
+}
+
+/// `POST /api/skills/team-sync` — materialize the member's visible team skills
+/// onto local disk (offline-first) and reconcile server-side deletions. The
+/// renderer fetches team skills from the (possibly remote) `one-devops`
+/// registry, then posts them to the *local* backend for materialization.
+async fn sync_team_skills_handler(
+    State(state): State<SkillRouterState>,
+    body: Result<Json<TeamSyncRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<TeamSyncResponse>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let payloads: Vec<crate::team_sync::TeamSkillPayload> = req
+        .skills
+        .into_iter()
+        .map(|s| crate::team_sync::TeamSkillPayload {
+            id: s.id,
+            name: s.name,
+            description: s.description,
+            content: s.content,
+        })
+        .collect();
+    let report =
+        crate::team_sync::sync_team_skills(&state.skill_paths.team_skills_dir(), &payloads, req.authoritative)
+            .await
+            .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(TeamSyncResponse {
+        written: report.written,
+        removed: report.removed,
+        kept: report.kept,
+    })))
 }
 
 fn is_auto_inject_builtin_skill(source: SkillSource, relative_location: Option<&str>) -> bool {
@@ -70,6 +137,8 @@ pub fn skill_routes(state: SkillRouterState) -> Router {
         .route("/api/skills/import-limits", get(get_import_limits))
         .route("/api/skills/info", post(read_skill_info))
         .route("/api/skills/paths", get(get_skill_paths))
+        // Team skill sync (M3: materialize enterprise-distributed skills locally)
+        .route("/api/skills/team-sync", post(sync_team_skills_handler))
         // Import / export / delete
         .route("/api/skills/import", post(import_skill))
         .route("/api/skills/export-symlink", post(export_skill_symlink))

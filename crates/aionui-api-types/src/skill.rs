@@ -15,6 +15,8 @@ pub enum SkillSourceResponse {
     Custom,
     Cron,
     Extension,
+    /// Team-distributed skill synced from the enterprise registry (read-only).
+    Team,
 }
 
 /// Single item in the available skills list (`GET /api/skills`).

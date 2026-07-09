@@ -125,6 +125,15 @@ pub struct SkillPaths {
     pub assistant_skills_dir: PathBuf,
 }
 
+impl SkillPaths {
+    /// Team-distributed skills materialized onto this member's disk
+    /// (`{data_dir}/team-skills/`). Derived from `data_dir` so existing
+    /// constructors need no change. Offline-first: survives server outages.
+    pub fn team_skills_dir(&self) -> PathBuf {
+        self.data_dir.join(crate::constants::TEAM_SKILLS_DIR_NAME)
+    }
+}
+
 /// Resolve standard skill paths.
 ///
 /// `app_resource_dir` is the application's bundled resource directory
@@ -264,6 +273,10 @@ pub enum SkillSource {
     Custom,
     Cron,
     Extension,
+    /// Team-distributed skill materialized from the enterprise registry onto
+    /// this member's disk (see [`crate::team_sync`]). Read-only for the
+    /// member; loaded like a Custom skill.
+    Team,
 }
 
 /// A discovered skill item for listing.
@@ -319,10 +332,17 @@ pub async fn list_available_skills(paths: &SkillPaths) -> Result<Vec<SkillListIt
             .then_with(|| a.name.cmp(&b.name))
     });
 
+    // Team-distributed skills (materialized on disk); override builtins by name.
+    let team_skills = list_team_skills_from_disk(paths).await.unwrap_or_default();
+    for item in &team_skills {
+        builtin_skills.remove(&item.name);
+    }
+
     let mut builtin_items: Vec<SkillListItem> = builtin_skills.into_values().collect();
     builtin_items.sort_by(|a, b| a.name.cmp(&b.name));
 
     let mut result = custom_skills;
+    result.extend(team_skills);
     result.extend(builtin_items);
     Ok(result)
 }
@@ -332,7 +352,17 @@ pub async fn list_available_skills_with_repo(
     paths: &SkillPaths,
     repo: &dyn ISkillRepository,
 ) -> Result<Vec<SkillListItem>, ExtensionError> {
-    list_skills_from_repo(paths, repo).await
+    let mut items = list_skills_from_repo(paths, repo).await?;
+    // Team-distributed skills live on disk (not in the user-skill repo); merge
+    // them in so the agent loader and Skills Hub see them. They override any
+    // same-named builtin the repo path may have emitted.
+    let team_skills = list_team_skills_from_disk(paths).await.unwrap_or_default();
+    if !team_skills.is_empty() {
+        let team_names: std::collections::HashSet<&str> = team_skills.iter().map(|s| s.name.as_str()).collect();
+        items.retain(|item| item.source != SkillSource::Builtin || !team_names.contains(item.name.as_str()));
+        items.extend(team_skills);
+    }
+    Ok(items)
 }
 
 /// Emit a [`SkillListItem`] for every built-in skill (both auto-inject
@@ -1676,7 +1706,7 @@ fn skill_row_to_list_item(paths: &SkillPaths, row: SkillRow, description: String
             .join(SKILL_MANIFEST_FILE)
             .to_string_lossy()
             .into_owned(),
-        SkillSource::Custom | SkillSource::Extension => row.path.clone(),
+        SkillSource::Custom | SkillSource::Extension | SkillSource::Team => row.path.clone(),
     };
 
     SkillListItem {
@@ -1703,7 +1733,7 @@ fn skill_relative_location(paths: &SkillPaths, row: &SkillRow, source: SkillSour
     match source {
         SkillSource::Builtin => relative_skill_manifest_path(&paths.builtin_skills_dir, skill_dir),
         SkillSource::Cron => None,
-        SkillSource::Custom | SkillSource::Extension => None,
+        SkillSource::Custom | SkillSource::Extension | SkillSource::Team => None,
     }
 }
 
@@ -1729,6 +1759,24 @@ async fn list_user_skills_from_disk(paths: &SkillPaths) -> Result<Vec<SkillListI
             relative_location: None,
             is_custom: true,
             source: SkillSource::Custom,
+        })
+        .collect())
+}
+
+/// Team-distributed skills materialized on this member's disk (see
+/// [`crate::team_sync`]). Emitted with `source = Team` so the UI can tag them
+/// and the loader can treat them as read-only. Missing dir → empty list.
+async fn list_team_skills_from_disk(paths: &SkillPaths) -> Result<Vec<SkillListItem>, ExtensionError> {
+    let scanned = scan_skill_dirs(&paths.team_skills_dir()).await?;
+    Ok(scanned
+        .into_iter()
+        .map(|skill| SkillListItem {
+            name: skill.name,
+            description: skill.description,
+            location: skill.path,
+            relative_location: None,
+            is_custom: false,
+            source: SkillSource::Team,
         })
         .collect())
 }

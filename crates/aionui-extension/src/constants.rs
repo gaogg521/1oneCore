@@ -55,6 +55,11 @@ pub const RESERVED_ROUTE_PREFIXES: &[&str] = &["/api/", "/auth/", "/ws/"];
 /// Default subdirectory name for user-created skills.
 pub const SKILLS_DIR_NAME: &str = "skills";
 
+/// Default subdirectory name for team-distributed skills materialized onto
+/// the member's disk (offline-first). Scanned alongside user skills so the
+/// agent loader picks them up; reconciled against the server on sync.
+pub const TEAM_SKILLS_DIR_NAME: &str = "team-skills";
+
 /// Default subdirectory name for per-job cron skills under the data dir.
 pub const CRON_SKILLS_DIR_NAME: &str = "cron/skills";
 

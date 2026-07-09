@@ -21,6 +21,7 @@ pub mod routes;
 pub mod skill_routes;
 pub mod skill_service;
 pub mod startup_materialize;
+pub mod team_sync;
 pub mod state;
 pub mod template;
 pub mod types;
