@@ -25,6 +25,10 @@ use crate::error::ExtensionError;
 /// that happens to share the folder). Holds the source registry id.
 const TEAM_ORIGIN_MARKER: &str = ".team-origin";
 
+/// Marker for admin-required (auto-active) team skills: member agents load
+/// them without a per-assistant opt-in (mixed distribution model).
+pub(crate) const TEAM_AUTO_MARKER: &str = ".team-auto";
+
 /// One team skill as fetched from the server registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TeamSkillPayload {
@@ -34,6 +38,8 @@ pub struct TeamSkillPayload {
     pub description: String,
     /// SKILL.md body, or a full SKILL.md (with its own frontmatter).
     pub content: String,
+    /// Admin marked this skill auto-active for member agents.
+    pub auto_active: bool,
 }
 
 /// Outcome of a sync pass.
@@ -96,6 +102,14 @@ pub async fn sync_team_skills(
         tokio::fs::create_dir_all(&skill_dir).await?;
         tokio::fs::write(skill_dir.join(SKILL_MANIFEST_FILE), build_skill_md(payload)).await?;
         tokio::fs::write(skill_dir.join(TEAM_ORIGIN_MARKER), payload.id.as_bytes()).await?;
+        let auto_marker = skill_dir.join(TEAM_AUTO_MARKER);
+        if payload.auto_active {
+            tokio::fs::write(&auto_marker, b"1").await?;
+        } else if let Err(e) = tokio::fs::remove_file(&auto_marker).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(ExtensionError::Io(e));
+        }
         wanted.insert(dir_id.clone());
         report.written.push(dir_id);
     }
@@ -143,7 +157,23 @@ mod tests {
             name: name.to_string(),
             description: format!("{name} description"),
             content: content.to_string(),
+            auto_active: false,
         }
+    }
+
+    #[tokio::test]
+    async fn auto_marker_written_and_cleared() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("team-skills");
+        let mut p = payload("oskill_auto", "auto-skill", "body");
+        p.auto_active = true;
+        sync_team_skills(&dir, &[p.clone()], true).await.unwrap();
+        assert!(dir.join("oskill_auto").join(TEAM_AUTO_MARKER).exists());
+
+        // Admin flips it back to opt-in → marker cleared on resync.
+        p.auto_active = false;
+        sync_team_skills(&dir, &[p], true).await.unwrap();
+        assert!(!dir.join("oskill_auto").join(TEAM_AUTO_MARKER).exists());
     }
 
     #[tokio::test]

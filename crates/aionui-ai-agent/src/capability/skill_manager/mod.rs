@@ -119,9 +119,13 @@ impl AcpSkillManager {
                 }
                 aionui_extension::SkillSource::Custom
                 | aionui_extension::SkillSource::Cron
-                | aionui_extension::SkillSource::Extension
-                | aionui_extension::SkillSource::Team => {
+                | aionui_extension::SkillSource::Extension => {
                     enabled_skills.is_some_and(|en| en.iter().any(|n| n == &item.name))
+                }
+                // Mixed distribution model: admin-required team skills load
+                // without a per-assistant opt-in; optional ones stay opt-in.
+                aionui_extension::SkillSource::Team => {
+                    item.auto_active || enabled_skills.is_some_and(|en| en.iter().any(|n| n == &item.name))
                 }
             };
             if !keep {

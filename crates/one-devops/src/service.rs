@@ -6,13 +6,13 @@ use sqlx::SqlitePool;
 
 use aionui_common::now_ms;
 
-use crate::error::DevopsError;
 use crate::embedding::EmbeddingConfig;
+use crate::error::DevopsError;
 use crate::models::{
-    McpRegistryDto, MILESTONE_STATUSES, MilestoneDto, PIPELINE_RUN_STATUSES, PIPELINE_STATUSES, PIPELINE_TRIGGERS,
-    PipelineDto, PipelineRunDto, RagConfigDto, RagDocumentDto, RagSearchHit, REQUIREMENT_PRIORITIES, REQUIREMENT_STATUSES,
-    REQUIREMENT_TYPES, RequirementCommentDto, RequirementDto, RequirementRow, SkillRegistryDto, TEST_CASE_STATUSES,
-    TEST_PLAN_STATUSES, TestCaseDto, TestPlanDto,
+    MILESTONE_STATUSES, McpRegistryDto, MilestoneDto, PIPELINE_RUN_STATUSES, PIPELINE_STATUSES, PIPELINE_TRIGGERS,
+    PipelineDto, PipelineRunDto, REQUIREMENT_PRIORITIES, REQUIREMENT_STATUSES, REQUIREMENT_TYPES, RagConfigDto,
+    RagDocumentDto, RagSearchHit, RequirementCommentDto, RequirementDto, RequirementRow, SkillRegistryDto,
+    TEST_CASE_STATUSES, TEST_PLAN_STATUSES, TestCaseDto, TestPlanDto,
 };
 
 pub struct DevopsService {
@@ -43,7 +43,11 @@ pub struct UpdateRequirementInput {
 }
 
 fn new_id(prefix: &str) -> String {
-    format!("{prefix}_{}", &uuid::Uuid::now_v7().simple().to_string()[..12])
+    // Full UUIDv7. The previous `[..12]` truncation kept only the leading
+    // 48 bits — which in v7 are purely the millisecond timestamp — so two
+    // ids minted in the same millisecond collided (UNIQUE constraint
+    // failures under bursts, e.g. requirement breakdown inserting children).
+    format!("{prefix}_{}", uuid::Uuid::now_v7().simple())
 }
 
 fn validate_one_of(value: &str, allowed: &[&str], label: &str) -> Result<(), DevopsError> {
@@ -160,15 +164,19 @@ impl DevopsService {
         let mut created = Vec::with_capacity(items.len());
         for item in items {
             let child = self
-                .create_requirement(creator_id, creator_name, CreateRequirementInput {
-                    parent_id: Some(parent_id.to_owned()),
-                    kind: Some(item.kind.clone()),
-                    subject: item.subject.clone(),
-                    description: item.description.clone(),
-                    priority: Some(item.priority.clone()),
-                    milestone_id: None,
-                    autopilot: None,
-                })
+                .create_requirement(
+                    creator_id,
+                    creator_name,
+                    CreateRequirementInput {
+                        parent_id: Some(parent_id.to_owned()),
+                        kind: Some(item.kind.clone()),
+                        subject: item.subject.clone(),
+                        description: item.description.clone(),
+                        priority: Some(item.priority.clone()),
+                        milestone_id: None,
+                        autopilot: None,
+                    },
+                )
                 .await?;
             created.push(child);
         }
@@ -375,13 +383,14 @@ impl DevopsService {
 
     pub async fn list_skills(&self) -> Result<Vec<SkillRegistryDto>, DevopsError> {
         Ok(sqlx::query_as::<_, SkillRegistryDto>(
-            "SELECT id, name, description, content, enabled, scope, team_id, created_by, created_at, updated_at \
+            "SELECT id, name, description, content, enabled, auto_active, scope, team_id, created_by, created_at, updated_at \
              FROM one_skill_registry ORDER BY updated_at DESC",
         )
         .fetch_all(&self.pool)
         .await?)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_skill(
         &self,
         id: Option<&str>,
@@ -389,6 +398,7 @@ impl DevopsService {
         description: &str,
         content: &str,
         enabled: bool,
+        auto_active: bool,
         created_by: &str,
     ) -> Result<SkillRegistryDto, DevopsError> {
         let name = name.trim();
@@ -399,12 +409,13 @@ impl DevopsService {
         let id = match id {
             Some(existing) => {
                 let updated = sqlx::query(
-                    "UPDATE one_skill_registry SET name = ?, description = ?, content = ?, enabled = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE one_skill_registry SET name = ?, description = ?, content = ?, enabled = ?, auto_active = ?, updated_at = ? WHERE id = ?",
                 )
                 .bind(name)
                 .bind(description)
                 .bind(content)
                 .bind(enabled)
+                .bind(auto_active)
                 .bind(now)
                 .bind(existing)
                 .execute(&self.pool)
@@ -418,14 +429,15 @@ impl DevopsService {
                 let id = new_id("oskill");
                 sqlx::query(
                     "INSERT INTO one_skill_registry \
-                        (id, name, description, content, enabled, scope, team_id, created_by, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, 'org', NULL, ?, ?, ?)",
+                        (id, name, description, content, enabled, auto_active, scope, team_id, created_by, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, 'org', NULL, ?, ?, ?)",
                 )
                 .bind(&id)
                 .bind(name)
                 .bind(description)
                 .bind(content)
                 .bind(enabled)
+                .bind(auto_active)
                 .bind(created_by)
                 .bind(now)
                 .bind(now)
@@ -435,7 +447,7 @@ impl DevopsService {
             }
         };
         sqlx::query_as::<_, SkillRegistryDto>(
-            "SELECT id, name, description, content, enabled, scope, team_id, created_by, created_at, updated_at \
+            "SELECT id, name, description, content, enabled, auto_active, scope, team_id, created_by, created_at, updated_at \
              FROM one_skill_registry WHERE id = ?",
         )
         .bind(&id)
@@ -482,7 +494,10 @@ impl DevopsService {
             return Err(DevopsError::BadRequest("name is required".into()));
         }
         if !matches!(r#type, "stdio" | "sse") {
-            return Err(DevopsError::BadRequest(format!("invalid type: {type} (allowed: stdio/sse)", r#type = r#type)));
+            return Err(DevopsError::BadRequest(format!(
+                "invalid type: {type} (allowed: stdio/sse)",
+                r#type = r#type
+            )));
         }
         let now = now_ms();
         let id = match id {
@@ -741,7 +756,13 @@ impl DevopsService {
                 dimensions,
                 updated_at,
             },
-            None => RagConfigDto { base_url: String::new(), model: String::new(), has_key: false, dimensions: None, updated_at: 0 },
+            None => RagConfigDto {
+                base_url: String::new(),
+                model: String::new(),
+                has_key: false,
+                dimensions: None,
+                updated_at: 0,
+            },
         })
     }
 
@@ -782,10 +803,13 @@ impl DevopsService {
             sqlx::query_as("SELECT base_url, api_key, model FROM one_rag_config WHERE id = 'default'")
                 .fetch_optional(&self.pool)
                 .await?;
-        let (base_url, api_key, model) = row.ok_or_else(|| {
-            DevopsError::BadRequest("RAG embedding endpoint not configured".into())
-        })?;
-        Ok(EmbeddingConfig { base_url, api_key, model })
+        let (base_url, api_key, model) =
+            row.ok_or_else(|| DevopsError::BadRequest("RAG embedding endpoint not configured".into()))?;
+        Ok(EmbeddingConfig {
+            base_url,
+            api_key,
+            model,
+        })
     }
 
     /// Set a document's inline content (the text to embed on process).
@@ -891,7 +915,13 @@ impl DevopsService {
             .into_iter()
             .map(|(document_id, chunk_index, content, blob, document_title)| {
                 let score = crate::embedding::cosine_similarity(&query_vec, &crate::embedding::unpack_embedding(&blob));
-                RagSearchHit { document_id, document_title, chunk_index, content, score }
+                RagSearchHit {
+                    document_id,
+                    document_title,
+                    chunk_index,
+                    content,
+                    score,
+                }
             })
             .collect();
         hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
@@ -1372,21 +1402,29 @@ mod tests {
     async fn requirement_crud_and_tree_nesting() {
         let svc = service().await;
         let epic = svc
-            .create_requirement("u1", Some("Alice"), CreateRequirementInput {
-                kind: Some("epic".into()),
-                subject: "Big epic".into(),
-                priority: Some("high".into()),
-                ..Default::default()
-            })
+            .create_requirement(
+                "u1",
+                Some("Alice"),
+                CreateRequirementInput {
+                    kind: Some("epic".into()),
+                    subject: "Big epic".into(),
+                    priority: Some("high".into()),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         let story = svc
-            .create_requirement("u1", Some("Alice"), CreateRequirementInput {
-                parent_id: Some(epic.id.clone()),
-                kind: Some("story".into()),
-                subject: "Child story".into(),
-                ..Default::default()
-            })
+            .create_requirement(
+                "u1",
+                Some("Alice"),
+                CreateRequirementInput {
+                    parent_id: Some(epic.id.clone()),
+                    kind: Some("story".into()),
+                    subject: "Child story".into(),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
 
@@ -1396,11 +1434,14 @@ mod tests {
         assert_eq!(tree[0].children.len(), 1);
         assert_eq!(tree[0].children[0].id, story.id);
 
-        svc.update_requirement(&story.id, UpdateRequirementInput {
-            status: Some("developing".into()),
-            assigned_to: Some(Some("agent-1".into())),
-            ..Default::default()
-        })
+        svc.update_requirement(
+            &story.id,
+            UpdateRequirementInput {
+                status: Some("developing".into()),
+                assigned_to: Some(Some("agent-1".into())),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
         let tree = svc.requirements_tree().await.unwrap();
@@ -1416,31 +1457,51 @@ mod tests {
     async fn autopilot_flag_persists_and_toggles() {
         let svc = service().await;
         let req = svc
-            .create_requirement("u1", Some("Alice"), CreateRequirementInput {
-                subject: "auto".into(),
-                autopilot: Some(true),
-                ..Default::default()
-            })
+            .create_requirement(
+                "u1",
+                Some("Alice"),
+                CreateRequirementInput {
+                    subject: "auto".into(),
+                    autopilot: Some(true),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert!(req.autopilot);
         // Default is off.
         let plain = svc
-            .create_requirement("u1", None, CreateRequirementInput { subject: "manual".into(), ..Default::default() })
+            .create_requirement(
+                "u1",
+                None,
+                CreateRequirementInput {
+                    subject: "manual".into(),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert!(!plain.autopilot);
 
         // Toggling other fields leaves autopilot untouched; explicit toggle flips it.
-        svc.update_requirement(&req.id, UpdateRequirementInput {
-            priority: Some("high".into()),
-            ..Default::default()
-        })
+        svc.update_requirement(
+            &req.id,
+            UpdateRequirementInput {
+                priority: Some("high".into()),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
-        svc.update_requirement(&req.id, UpdateRequirementInput { autopilot: Some(false), ..Default::default() })
-            .await
-            .unwrap();
+        svc.update_requirement(
+            &req.id,
+            UpdateRequirementInput {
+                autopilot: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         let tree = svc.requirements_tree().await.unwrap();
         let refreshed = tree.iter().find(|r| r.id == req.id).unwrap();
         assert!(!refreshed.autopilot);
@@ -1451,34 +1512,48 @@ mod tests {
     async fn requirement_validation_rejects_bad_values() {
         let svc = service().await;
         let err = svc
-            .create_requirement("u1", None, CreateRequirementInput {
-                subject: "  ".into(),
-                ..Default::default()
-            })
+            .create_requirement(
+                "u1",
+                None,
+                CreateRequirementInput {
+                    subject: "  ".into(),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));
 
         let req = svc
-            .create_requirement("u1", None, CreateRequirementInput {
-                subject: "ok".into(),
-                ..Default::default()
-            })
+            .create_requirement(
+                "u1",
+                None,
+                CreateRequirementInput {
+                    subject: "ok".into(),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         let err = svc
-            .update_requirement(&req.id, UpdateRequirementInput {
-                status: Some("nonsense".into()),
-                ..Default::default()
-            })
+            .update_requirement(
+                &req.id,
+                UpdateRequirementInput {
+                    status: Some("nonsense".into()),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));
         let err = svc
-            .update_requirement(&req.id, UpdateRequirementInput {
-                parent_id: Some(Some(req.id.clone())),
-                ..Default::default()
-            })
+            .update_requirement(
+                &req.id,
+                UpdateRequirementInput {
+                    parent_id: Some(Some(req.id.clone())),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));
@@ -1488,10 +1563,14 @@ mod tests {
     async fn comments_roundtrip() {
         let svc = service().await;
         let req = svc
-            .create_requirement("u1", Some("Alice"), CreateRequirementInput {
-                subject: "with comments".into(),
-                ..Default::default()
-            })
+            .create_requirement(
+                "u1",
+                Some("Alice"),
+                CreateRequirementInput {
+                    subject: "with comments".into(),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         svc.create_comment(&req.id, "u1", "Alice", "first!").await.unwrap();
@@ -1510,12 +1589,17 @@ mod tests {
     async fn registries_crud() {
         let svc = service().await;
 
-        let skill = svc.upsert_skill(None, "review", "code review", "...", true, "u1").await.unwrap();
         let skill = svc
-            .upsert_skill(Some(&skill.id), "review", "better desc", "...", false, "u1")
+            .upsert_skill(None, "review", "code review", "...", true, false, "u1")
+            .await
+            .unwrap();
+        assert!(!skill.auto_active);
+        let skill = svc
+            .upsert_skill(Some(&skill.id), "review", "better desc", "...", false, true, "u1")
             .await
             .unwrap();
         assert!(!skill.enabled);
+        assert!(skill.auto_active, "admin can flip a skill to auto-active");
         assert_eq!(svc.list_skills().await.unwrap().len(), 1);
         svc.delete_skill(&skill.id).await.unwrap();
         assert!(svc.list_skills().await.unwrap().is_empty());
@@ -1534,7 +1618,13 @@ mod tests {
         svc.delete_mcp_registry(&mcp.id).await.unwrap();
 
         let doc = svc
-            .register_rag_document("handbook.pdf", Some("/data/handbook.pdf"), Some(1024), Some("application/pdf"), "u1")
+            .register_rag_document(
+                "handbook.pdf",
+                Some("/data/handbook.pdf"),
+                Some(1024),
+                Some("application/pdf"),
+                "u1",
+            )
             .await
             .unwrap();
         assert_eq!(doc.status, "pending");
@@ -1547,7 +1637,13 @@ mod tests {
     async fn milestone_crud_and_requirement_link_clearing() {
         let svc = service().await;
         let m = svc
-            .create_milestone("u1", Some("Alice"), "v1.0 发布", Some("首个灰度"), Some(1_800_000_000_000))
+            .create_milestone(
+                "u1",
+                Some("Alice"),
+                "v1.0 发布",
+                Some("首个灰度"),
+                Some(1_800_000_000_000),
+            )
             .await
             .unwrap();
         assert_eq!(m.status, "active");
@@ -1561,16 +1657,23 @@ mod tests {
         assert!(m.description.is_none());
         assert_eq!(m.due_at, Some(1_800_000_000_000));
 
-        let err = svc.update_milestone(&m.id, None, None, Some("bogus"), None).await.unwrap_err();
+        let err = svc
+            .update_milestone(&m.id, None, None, Some("bogus"), None)
+            .await
+            .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));
 
         // A requirement pointing at the milestone gets its link cleared on delete.
         let req = svc
-            .create_requirement("u1", Some("Alice"), CreateRequirementInput {
-                subject: "linked".into(),
-                milestone_id: Some(m.id.clone()),
-                ..Default::default()
-            })
+            .create_requirement(
+                "u1",
+                Some("Alice"),
+                CreateRequirementInput {
+                    subject: "linked".into(),
+                    milestone_id: Some(m.id.clone()),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert_eq!(req.milestone_id.as_deref(), Some(m.id.as_str()));
@@ -1597,7 +1700,10 @@ mod tests {
         assert_eq!(svc.list_test_plans().await.unwrap().len(), 1);
 
         // Update plan
-        let plan = svc.update_test_plan(&plan.id, Some("登录回归测试"), None, Some("active"), None).await.unwrap();
+        let plan = svc
+            .update_test_plan(&plan.id, Some("登录回归测试"), None, Some("active"), None)
+            .await
+            .unwrap();
         assert_eq!(plan.status, "active");
 
         // Create cases
@@ -1615,10 +1721,16 @@ mod tests {
         assert_eq!(cases.len(), 2);
 
         // Update case status
-        let c1 = svc.update_test_case(&c1.id, None, Some("passed"), None, None, None).await.unwrap();
+        let c1 = svc
+            .update_test_case(&c1.id, None, Some("passed"), None, None, None)
+            .await
+            .unwrap();
         assert_eq!(c1.status, "passed");
 
-        let err = svc.update_test_case(&c2.id, None, Some("bogus"), None, None, None).await.unwrap_err();
+        let err = svc
+            .update_test_case(&c2.id, None, Some("bogus"), None, None, None)
+            .await
+            .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));
 
         // Delete case
@@ -1636,7 +1748,13 @@ mod tests {
 
         // Create pipeline
         let pipe = svc
-            .create_pipeline("u1", Some("Alice"), "CI 主流水线", Some("main 分支推送触发"), Some("push"))
+            .create_pipeline(
+                "u1",
+                Some("Alice"),
+                "CI 主流水线",
+                Some("main 分支推送触发"),
+                Some("push"),
+            )
             .await
             .unwrap();
         assert_eq!(pipe.status, "active");
@@ -1644,10 +1762,16 @@ mod tests {
         assert_eq!(svc.list_pipelines().await.unwrap().len(), 1);
 
         // Update pipeline
-        let pipe = svc.update_pipeline(&pipe.id, None, None, Some("disabled"), None).await.unwrap();
+        let pipe = svc
+            .update_pipeline(&pipe.id, None, None, Some("disabled"), None)
+            .await
+            .unwrap();
         assert_eq!(pipe.status, "disabled");
 
-        let err = svc.update_pipeline(&pipe.id, None, None, Some("bad"), None).await.unwrap_err();
+        let err = svc
+            .update_pipeline(&pipe.id, None, None, Some("bad"), None)
+            .await
+            .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));
 
         // Create run

@@ -296,6 +296,11 @@ pub struct SkillListItem {
     pub relative_location: Option<String>,
     pub is_custom: bool,
     pub source: SkillSource,
+    /// Team skills only: admin marked this skill auto-active, so member
+    /// agents load it without a per-assistant opt-in. Always `false` for
+    /// other sources (builtin auto-inject is signaled via
+    /// `relative_location` instead).
+    pub auto_active: bool,
 }
 
 /// List all available skills (built-in + user custom), deduplicated.
@@ -402,6 +407,7 @@ async fn list_builtin_skills_from_disk(dir: &Path) -> Vec<SkillListItem> {
                 relative_location: Some(rel),
                 is_custom: false,
                 source: SkillSource::Builtin,
+                auto_active: false,
             });
         }
     }
@@ -428,6 +434,7 @@ async fn list_builtin_skills_from_disk(dir: &Path) -> Vec<SkillListItem> {
                 relative_location: Some(rel),
                 is_custom: false,
                 source: SkillSource::Builtin,
+                auto_active: false,
             });
         }
     }
@@ -1716,6 +1723,7 @@ fn skill_row_to_list_item(paths: &SkillPaths, row: SkillRow, description: String
         relative_location,
         is_custom: source == SkillSource::Custom,
         source,
+        auto_active: false,
     }
 }
 
@@ -1759,6 +1767,7 @@ async fn list_user_skills_from_disk(paths: &SkillPaths) -> Result<Vec<SkillListI
             relative_location: None,
             is_custom: true,
             source: SkillSource::Custom,
+            auto_active: false,
         })
         .collect())
 }
@@ -1770,13 +1779,20 @@ async fn list_team_skills_from_disk(paths: &SkillPaths) -> Result<Vec<SkillListI
     let scanned = scan_skill_dirs(&paths.team_skills_dir()).await?;
     Ok(scanned
         .into_iter()
-        .map(|skill| SkillListItem {
-            name: skill.name,
-            description: skill.description,
-            location: skill.path,
-            relative_location: None,
-            is_custom: false,
-            source: SkillSource::Team,
+        .map(|skill| {
+            // Mixed distribution model: `.team-auto` marker (written by
+            // team_sync) means the admin requires this skill — member agents
+            // load it without opt-in.
+            let auto_active = Path::new(&skill.path).join(crate::team_sync::TEAM_AUTO_MARKER).exists();
+            SkillListItem {
+                name: skill.name,
+                description: skill.description,
+                location: skill.path,
+                relative_location: None,
+                is_custom: false,
+                source: SkillSource::Team,
+                auto_active,
+            }
         })
         .collect())
 }

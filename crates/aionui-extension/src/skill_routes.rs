@@ -50,6 +50,10 @@ struct TeamSyncSkillItem {
     description: String,
     #[serde(default)]
     content: String,
+    /// Admin-required (auto-active) skill — member agents load it without
+    /// opting in per assistant.
+    #[serde(default)]
+    auto_active: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +92,7 @@ async fn sync_team_skills_handler(
             name: s.name,
             description: s.description,
             content: s.content,
+            auto_active: s.auto_active,
         })
         .collect();
     let report = crate::team_sync::sync_team_skills(&state.skill_paths.team_skills_dir(), &payloads, req.authoritative)
@@ -184,7 +189,9 @@ async fn list_skills(
     let resp: Vec<SkillListItemResponse> = items
         .into_iter()
         .map(|s| SkillListItemResponse {
-            is_auto_inject: is_auto_inject_builtin_skill(s.source, s.relative_location.as_deref()),
+            // Builtin auto-inject OR admin-required team skill — both load
+            // without a per-assistant opt-in, so the UI can badge them alike.
+            is_auto_inject: is_auto_inject_builtin_skill(s.source, s.relative_location.as_deref()) || s.auto_active,
             name: s.name,
             description: s.description,
             location: s.location,

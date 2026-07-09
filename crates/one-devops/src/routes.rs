@@ -30,25 +30,43 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
             "/api/one/devops/requirements/{id}/comments",
             get(list_comments).post(create_comment),
         )
-        .route("/api/one/devops/requirements/{id}/dispatch", axum::routing::post(dispatch_requirement))
-        .route("/api/one/devops/requirements/{id}/breakdown", axum::routing::post(breakdown_requirement))
+        .route(
+            "/api/one/devops/requirements/{id}/dispatch",
+            axum::routing::post(dispatch_requirement),
+        )
+        .route(
+            "/api/one/devops/requirements/{id}/breakdown",
+            axum::routing::post(breakdown_requirement),
+        )
         .route("/api/one/devops/skills", get(list_skills).post(upsert_skill))
         .route("/api/one/devops/skills/{id}", axum::routing::delete(delete_skill))
         .route("/api/one/devops/mcp-registry", get(list_mcp).post(upsert_mcp))
         .route("/api/one/devops/mcp-registry/{id}", axum::routing::delete(delete_mcp))
         .route("/api/one/devops/rag/documents", get(list_rag).post(register_rag))
         .route("/api/one/devops/rag/documents/{id}", axum::routing::delete(delete_rag))
-        .route("/api/one/devops/rag/documents/{id}/content", axum::routing::put(set_rag_content))
-        .route("/api/one/devops/rag/documents/{id}/process", axum::routing::post(process_rag))
+        .route(
+            "/api/one/devops/rag/documents/{id}/content",
+            axum::routing::put(set_rag_content),
+        )
+        .route(
+            "/api/one/devops/rag/documents/{id}/process",
+            axum::routing::post(process_rag),
+        )
         .route("/api/one/devops/rag/config", get(get_rag_config).put(set_rag_config))
         .route("/api/one/devops/rag/search", axum::routing::post(search_rag))
-        .route("/api/one/devops/milestones", get(list_milestones).post(create_milestone))
+        .route(
+            "/api/one/devops/milestones",
+            get(list_milestones).post(create_milestone),
+        )
         .route(
             "/api/one/devops/milestones/{id}",
             patch(update_milestone).delete(delete_milestone),
         )
         // test plans (A4)
-        .route("/api/one/devops/test-plans", get(list_test_plans).post(create_test_plan))
+        .route(
+            "/api/one/devops/test-plans",
+            get(list_test_plans).post(create_test_plan),
+        )
         .route(
             "/api/one/devops/test-plans/{id}",
             patch(update_test_plan).delete(delete_test_plan),
@@ -111,15 +129,19 @@ async fn create_requirement(
 ) -> Result<Json<ApiResponse<RequirementDto>>, DevopsError> {
     let created = state
         .service
-        .create_requirement(&user.id, Some(user.username.as_str()), CreateRequirementInput {
-            parent_id: body.parent_id,
-            kind: body.kind,
-            subject: body.subject,
-            description: body.description,
-            priority: body.priority,
-            milestone_id: body.milestone_id,
-            autopilot: body.autopilot,
-        })
+        .create_requirement(
+            &user.id,
+            Some(user.username.as_str()),
+            CreateRequirementInput {
+                parent_id: body.parent_id,
+                kind: body.kind,
+                subject: body.subject,
+                description: body.description,
+                priority: body.priority,
+                milestone_id: body.milestone_id,
+                autopilot: body.autopilot,
+            },
+        )
         .await?;
     maybe_autopilot(&state, &user.id, &created.id).await;
     Ok(Json(ApiResponse::ok(created)))
@@ -168,16 +190,19 @@ async fn update_requirement(
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     state
         .service
-        .update_requirement(&id, UpdateRequirementInput {
-            subject: body.subject,
-            description: body.description,
-            status: body.status,
-            priority: body.priority,
-            assigned_to: body.assigned_to,
-            parent_id: body.parent_id,
-            milestone_id: body.milestone_id,
-            autopilot: body.autopilot,
-        })
+        .update_requirement(
+            &id,
+            UpdateRequirementInput {
+                subject: body.subject,
+                description: body.description,
+                status: body.status,
+                priority: body.priority,
+                assigned_to: body.assigned_to,
+                parent_id: body.parent_id,
+                milestone_id: body.milestone_id,
+                autopilot: body.autopilot,
+            },
+        )
         .await?;
     maybe_autopilot(&state, &user.id, &id).await;
     Ok(Json(ApiResponse::ok(())))
@@ -246,11 +271,7 @@ async fn dispatch_requirement(
 /// and advance a pre-dev status to `developing`. Shared by the manual
 /// dispatch endpoint and autopilot. Errors with `BadRequest` when the
 /// requirement has no assigned employee.
-async fn dispatch_core(
-    state: &OneDevopsRouterState,
-    user_id: &str,
-    id: &str,
-) -> Result<DispatchResult, DevopsError> {
+async fn dispatch_core(state: &OneDevopsRouterState, user_id: &str, id: &str) -> Result<DispatchResult, DevopsError> {
     let employee = state
         .employee
         .as_ref()
@@ -264,7 +285,21 @@ async fn dispatch_core(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| DevopsError::BadRequest("requirement has no assigned digital employee".into()))?;
 
-    let task_context = build_task_context(&req);
+    let mut task_context = build_task_context(&req);
+
+    // M2-RAG: enrich the employee's task with team knowledge. Strictly
+    // best-effort — RAG unconfigured, embedding endpoint down, or an empty
+    // index must never block a dispatch (and standalone mode has no RAG).
+    let rag_query = format!("{} {}", req.subject, req.description.as_deref().unwrap_or(""));
+    if let Ok(hits) = state.service.search_rag(&rag_query, 3).await {
+        let relevant: Vec<_> = hits.into_iter().filter(|h| h.score >= 0.35).collect();
+        if !relevant.is_empty() {
+            task_context.push_str("\n\n——团队知识库参考（自动检索，按相关度）——\n");
+            for hit in &relevant {
+                task_context.push_str(&format!("\n【{}】\n{}\n", hit.document_title, hit.content));
+            }
+        }
+    }
 
     let tenant = state.tenant_of(user_id).await;
     let (run_id, conversation_id) = employee
@@ -287,14 +322,20 @@ async fn dispatch_core(
     if req.status == "backlog" || req.status == "planning" {
         state
             .service
-            .update_requirement(id, UpdateRequirementInput {
-                status: Some("developing".into()),
-                ..Default::default()
-            })
+            .update_requirement(
+                id,
+                UpdateRequirementInput {
+                    status: Some("developing".into()),
+                    ..Default::default()
+                },
+            )
             .await?;
     }
 
-    Ok(DispatchResult { conversation_id, run_id })
+    Ok(DispatchResult {
+        conversation_id,
+        run_id,
+    })
 }
 
 /// Best-effort autopilot (A1 L3): after a create/update, if the requirement
@@ -315,7 +356,13 @@ async fn maybe_autopilot(state: &OneDevopsRouterState, user_id: &str, id: &str) 
     if !req.autopilot {
         return;
     }
-    if req.assigned_to.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_none() {
+    if req
+        .assigned_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_none()
+    {
         return;
     }
     if req.status != "backlog" && req.status != "planning" {
@@ -401,7 +448,11 @@ async fn breakdown_requirement(
         "childIds": child_ids,
     })
     .to_string();
-    let body = format!("已自动拆解为 {} 条子需求（会话 {}）", created.len(), run.conversation_id);
+    let body = format!(
+        "已自动拆解为 {} 条子需求（会话 {}）",
+        created.len(),
+        run.conversation_id
+    );
     state
         .service
         .insert_agent_comment(&id, "agent", Some(assigned_to), "数字员工", &body, Some(metadata))
@@ -447,6 +498,10 @@ struct UpsertSkillBody {
     content: String,
     #[serde(default = "default_true")]
     enabled: bool,
+    /// Mixed distribution model: admin marks the skill as auto-active for
+    /// member agents. Defaults to opt-in (false).
+    #[serde(default)]
+    auto_active: bool,
 }
 
 fn default_true() -> bool {
@@ -466,6 +521,7 @@ async fn upsert_skill(
             &body.description,
             &body.content,
             body.enabled,
+            body.auto_active,
             &user.id,
         )
         .await?;
@@ -674,7 +730,13 @@ async fn create_milestone(
 ) -> Result<Json<ApiResponse<MilestoneDto>>, DevopsError> {
     let dto = state
         .service
-        .create_milestone(&user.id, Some(user.username.as_str()), &body.title, body.description.as_deref(), body.due_at)
+        .create_milestone(
+            &user.id,
+            Some(user.username.as_str()),
+            &body.title,
+            body.description.as_deref(),
+            body.due_at,
+        )
         .await?;
     Ok(Json(ApiResponse::ok(dto)))
 }

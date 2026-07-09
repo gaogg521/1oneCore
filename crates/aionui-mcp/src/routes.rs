@@ -62,6 +62,8 @@ pub struct McpRouterState {
 pub fn mcp_routes(state: McpRouterState) -> Router {
     Router::new()
         .route("/api/mcp/servers", get(list_servers).post(add_server))
+        // Team MCP sync (M3: materialize enterprise-distributed connectors locally)
+        .route("/api/mcp/team-sync", post(team_sync))
         .route("/api/mcp/servers/import", post(batch_import))
         .route(
             "/api/mcp/servers/{id}",
@@ -78,6 +80,73 @@ pub fn mcp_routes(state: McpRouterState) -> Router {
         .route("/api/mcp/oauth/logout", post(oauth_logout))
         .route("/api/mcp/oauth/authenticated", get(oauth_authenticated))
         .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// Team MCP sync (M3)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamMcpSyncItem {
+    id: String,
+    name: String,
+    #[serde(rename = "type", default)]
+    server_type: String,
+    #[serde(default)]
+    endpoint: String,
+    #[serde(default)]
+    enabled: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamMcpSyncRequest {
+    #[serde(default)]
+    servers: Vec<TeamMcpSyncItem>,
+    /// True only when the payload is the complete current server view.
+    #[serde(default)]
+    authoritative: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamMcpSyncResponse {
+    written: Vec<String>,
+    removed: Vec<String>,
+    conflicts: Vec<String>,
+    kept: usize,
+}
+
+/// `POST /api/mcp/team-sync` — materialize team registry MCP connectors into
+/// the member's local MCP config (offline-first) and reconcile removals.
+async fn team_sync(
+    State(state): State<McpRouterState>,
+    body: Result<Json<TeamMcpSyncRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<TeamMcpSyncResponse>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let payloads: Vec<crate::service::TeamMcpPayload> = req
+        .servers
+        .into_iter()
+        .map(|s| crate::service::TeamMcpPayload {
+            registry_id: s.id,
+            name: s.name,
+            server_type: s.server_type,
+            endpoint: s.endpoint,
+            enabled: s.enabled,
+        })
+        .collect();
+    let report = state
+        .config_service
+        .sync_team_servers(&payloads, req.authoritative)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(TeamMcpSyncResponse {
+        written: report.written,
+        removed: report.removed,
+        conflicts: report.conflicts,
+        kept: report.kept,
+    })))
 }
 
 // ---------------------------------------------------------------------------

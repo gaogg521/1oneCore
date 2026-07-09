@@ -96,6 +96,9 @@ pub struct SkillRegistryDto {
     pub description: String,
     pub content: String,
     pub enabled: bool,
+    /// Mixed distribution model: `true` = member agents load this skill
+    /// automatically (admin-required); `false` = member opts in per assistant.
+    pub auto_active: bool,
     pub scope: String,
     pub team_id: Option<String>,
     pub created_by: String,

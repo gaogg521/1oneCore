@@ -348,6 +348,123 @@ fn shell_split(input: &str) -> Result<Vec<String>, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Team MCP distribution (M3) — materialize enterprise registry entries into
+// the member's local MCP config so agents actually connect to them, offline.
+// ---------------------------------------------------------------------------
+
+/// JSON key stored in `original_json` marking a server as team-distributed.
+/// Ownership marker for reconcile: only servers carrying this key are ever
+/// touched by team sync — a member's personal servers are never clobbered.
+const TEAM_REGISTRY_KEY: &str = "teamRegistryId";
+
+/// One team MCP connector fetched from the enterprise registry.
+#[derive(Debug, Clone)]
+pub struct TeamMcpPayload {
+    /// Stable registry id (`omcp_*`); reconcile key.
+    pub registry_id: String,
+    pub name: String,
+    /// `stdio` (endpoint = command line) or `sse` (endpoint = URL).
+    pub server_type: String,
+    pub endpoint: String,
+    pub enabled: bool,
+}
+
+/// Outcome of a team MCP sync pass.
+#[derive(Debug, Default)]
+pub struct TeamMcpSyncReport {
+    pub written: Vec<String>,
+    pub removed: Vec<String>,
+    /// Names skipped because a personal (non-team) server already owns them.
+    pub conflicts: Vec<String>,
+    pub kept: usize,
+}
+
+fn team_origin_json(registry_id: &str) -> String {
+    serde_json::json!({ TEAM_REGISTRY_KEY: registry_id }).to_string()
+}
+
+fn team_registry_id_of(original_json: Option<&str>) -> Option<String> {
+    let raw = original_json?;
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    value.get(TEAM_REGISTRY_KEY)?.as_str().map(str::to_owned)
+}
+
+impl McpConfigService {
+    /// Materialize team registry MCP connectors into the local config and
+    /// reconcile removals. `authoritative` MUST be true only when `payloads`
+    /// is the complete current server view (server reachable); offline calls
+    /// pass false so the local cache is never wiped.
+    pub async fn sync_team_servers(
+        &self,
+        payloads: &[TeamMcpPayload],
+        authoritative: bool,
+    ) -> Result<TeamMcpSyncReport, McpError> {
+        let mut report = TeamMcpSyncReport::default();
+        let mut wanted: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for payload in payloads {
+            let transport = match payload.server_type.as_str() {
+                "stdio" => {
+                    let tokens = shell_split(&payload.endpoint)
+                        .map_err(|e| McpError::InvalidTransport(format!("team stdio endpoint: {e}")))?;
+                    let Some((command, args)) = tokens.split_first() else {
+                        report.conflicts.push(payload.name.clone());
+                        continue;
+                    };
+                    McpServerTransport::Stdio {
+                        command: command.clone(),
+                        args: args.to_vec(),
+                        env: Default::default(),
+                    }
+                }
+                _ => McpServerTransport::Sse {
+                    url: payload.endpoint.clone(),
+                    headers: Default::default(),
+                },
+            };
+
+            // Conflict guard: never clobber a member's personal server that
+            // happens to share the name — only servers we own (team marker).
+            if let Some(existing) = self.repo.find_by_name_any(&payload.name).await?
+                && team_registry_id_of(existing.original_json.as_deref()).is_none()
+            {
+                report.conflicts.push(payload.name.clone());
+                continue;
+            }
+
+            self.upsert_server(
+                &payload.name,
+                Some("Team-distributed MCP connector"),
+                &transport,
+                Some(&team_origin_json(&payload.registry_id)),
+                false,
+                payload.enabled,
+            )
+            .await?;
+            wanted.insert(payload.registry_id.clone());
+            report.written.push(payload.name.clone());
+        }
+
+        if authoritative {
+            for row in self.repo.list().await? {
+                if let Some(registry_id) = team_registry_id_of(row.original_json.as_deref())
+                    && !wanted.contains(&registry_id)
+                {
+                    self.repo.delete(&row.id).await?;
+                    report.removed.push(row.name);
+                }
+            }
+        }
+
+        report.kept = wanted.len();
+        report.written.sort();
+        report.removed.sort();
+        report.conflicts.sort();
+        Ok(report)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -364,13 +481,13 @@ mod tests {
     // -- In-memory mock repository -------------------------------------------
 
     #[derive(Debug)]
-    struct MockMcpServerRepo {
+    pub(super) struct MockMcpServerRepo {
         servers: Mutex<Vec<McpServerRow>>,
         id_counter: Mutex<u32>,
     }
 
     impl MockMcpServerRepo {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             Self {
                 servers: Mutex::new(Vec::new()),
                 id_counter: Mutex::new(0),
@@ -1198,5 +1315,106 @@ mod tests {
         assert_eq!(updated.last_test_status, aionui_common::McpServerStatus::Error);
         assert!(updated.tools.is_none());
         assert!(updated.last_connected.is_some());
+    }
+}
+
+#[cfg(test)]
+mod team_sync_tests {
+    use super::tests::MockMcpServerRepo;
+    use super::*;
+
+    fn svc() -> McpConfigService {
+        McpConfigService::new(Arc::new(MockMcpServerRepo::new()))
+    }
+
+    fn payload(id: &str, name: &str, ty: &str, endpoint: &str) -> TeamMcpPayload {
+        TeamMcpPayload {
+            registry_id: id.to_owned(),
+            name: name.to_owned(),
+            server_type: ty.to_owned(),
+            endpoint: endpoint.to_owned(),
+            enabled: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn materializes_team_connectors_locally() {
+        let svc = svc();
+        let report = svc
+            .sync_team_servers(
+                &[
+                    payload("omcp_a", "team-search", "sse", "https://mcp.corp/sse"),
+                    payload("omcp_b", "team-tools", "stdio", "npx corp-tools --serve"),
+                ],
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(report.written, vec!["team-search".to_owned(), "team-tools".to_owned()]);
+        assert!(report.conflicts.is_empty());
+
+        let listed = svc.list_servers().await.unwrap();
+        let search = listed.iter().find(|s| s.name == "team-search").unwrap();
+        assert!(search.enabled, "team connector materialized enabled");
+        assert!(
+            search.original_json.as_deref().unwrap_or("").contains("omcp_a"),
+            "ownership marker stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn never_clobbers_personal_server_with_same_name() {
+        let svc = svc();
+        // Member's own personal server.
+        svc.add_server(CreateMcpServerRequest {
+            name: "my-mcp".to_owned(),
+            description: None,
+            transport: aionui_api_types::McpTransport::Sse {
+                url: "https://personal.example/sse".to_owned(),
+                headers: Default::default(),
+            },
+            original_json: None,
+            builtin: false,
+        })
+        .await
+        .unwrap();
+
+        let report = svc
+            .sync_team_servers(&[payload("omcp_x", "my-mcp", "sse", "https://corp.example/sse")], true)
+            .await
+            .unwrap();
+        assert_eq!(report.conflicts, vec!["my-mcp".to_owned()]);
+
+        let listed = svc.list_servers().await.unwrap();
+        let mine = listed.iter().find(|s| s.name == "my-mcp").unwrap();
+        assert!(mine.original_json.is_none(), "personal server untouched by team sync");
+    }
+
+    #[tokio::test]
+    async fn authoritative_resync_removes_admin_deleted_and_offline_keeps() {
+        let svc = svc();
+        svc.sync_team_servers(
+            &[
+                payload("omcp_a", "team-a", "sse", "https://a/sse"),
+                payload("omcp_b", "team-b", "sse", "https://b/sse"),
+            ],
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Offline pass (not authoritative): nothing removed.
+        let offline = svc.sync_team_servers(&[], false).await.unwrap();
+        assert!(offline.removed.is_empty());
+        assert_eq!(svc.list_servers().await.unwrap().len(), 2);
+
+        // Admin deleted team-b on the server: authoritative resync removes it.
+        let resync = svc
+            .sync_team_servers(&[payload("omcp_a", "team-a", "sse", "https://a/sse")], true)
+            .await
+            .unwrap();
+        assert_eq!(resync.removed, vec!["team-b".to_owned()]);
+        let names: Vec<String> = svc.list_servers().await.unwrap().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, vec!["team-a".to_owned()]);
     }
 }

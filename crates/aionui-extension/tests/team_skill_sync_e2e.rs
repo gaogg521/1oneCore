@@ -30,7 +30,37 @@ fn payload(id: &str, name: &str, desc: &str, body: &str) -> TeamSkillPayload {
         name: name.to_string(),
         description: desc.to_string(),
         content: body.to_string(),
+        auto_active: false,
     }
+}
+
+/// Mixed model: an admin-required skill surfaces with `auto_active = true`,
+/// which is exactly what the agent loader keys on to load it without opt-in.
+#[tokio::test]
+async fn admin_required_skill_surfaces_auto_active() {
+    let tmp = TempDir::new().unwrap();
+    let paths = make_paths(tmp.path());
+
+    let mut required = payload(
+        "oskill_req",
+        "security-policy",
+        "Mandatory security rules",
+        "Always follow policy.",
+    );
+    required.auto_active = true;
+    sync_team_skills(
+        &paths.team_skills_dir(),
+        &[required, payload("oskill_opt", "optional-skill", "opt", "o")],
+        true,
+    )
+    .await
+    .unwrap();
+
+    let listed = list_available_skills(&paths).await.unwrap();
+    let req = listed.iter().find(|s| s.name == "security-policy").unwrap();
+    let opt = listed.iter().find(|s| s.name == "optional-skill").unwrap();
+    assert!(req.auto_active, "admin-required skill must be auto-active");
+    assert!(!opt.auto_active, "optional skill stays opt-in");
 }
 
 /// Admin distributes a team skill → member syncs → it appears in the skill list

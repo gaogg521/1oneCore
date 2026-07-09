@@ -17,6 +17,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("004_autopilot", include_str!("../migrations/004_autopilot.sql")),
     ("005_test_plans", include_str!("../migrations/005_test_plans.sql")),
     ("006_pipelines", include_str!("../migrations/006_pipelines.sql")),
+    (
+        "007_skill_auto_active",
+        include_str!("../migrations/007_skill_auto_active.sql"),
+    ),
 ];
 
 /// Run all pending one-devops migrations. Idempotent; call once at startup
@@ -68,12 +72,11 @@ mod tests {
         run_one_devops_migrations(&pool).await.unwrap();
         run_one_devops_migrations(&pool).await.unwrap();
 
-        let tables: Vec<String> = sqlx::query_scalar(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'one_%' ORDER BY name",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+        let tables: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'one_%' ORDER BY name")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
         assert!(tables.contains(&"one_requirements".to_owned()));
         assert!(tables.contains(&"one_requirement_comments".to_owned()));
         assert!(tables.contains(&"one_skill_registry".to_owned()));
