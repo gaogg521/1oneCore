@@ -118,7 +118,7 @@ dependencies = [
 [[package]]
 name = "aion-agent"
 version = "0.1.38"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#107417bc882f3ae3f5f58905d40937063df2435b"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#90d2e4e987ba5b27c677cb07adaccdd3a4e1127d"
 dependencies = [
  "aion-compact",
  "aion-config",
@@ -148,7 +148,7 @@ dependencies = [
 [[package]]
 name = "aion-compact"
 version = "0.1.38"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#107417bc882f3ae3f5f58905d40937063df2435b"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#90d2e4e987ba5b27c677cb07adaccdd3a4e1127d"
 dependencies = [
  "regex",
  "serde",
@@ -160,7 +160,7 @@ dependencies = [
 [[package]]
 name = "aion-config"
 version = "0.1.38"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#107417bc882f3ae3f5f58905d40937063df2435b"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#90d2e4e987ba5b27c677cb07adaccdd3a4e1127d"
 dependencies = [
  "aion-compact",
  "aion-process",
@@ -185,7 +185,7 @@ dependencies = [
 [[package]]
 name = "aion-mcp"
 version = "0.1.38"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#107417bc882f3ae3f5f58905d40937063df2435b"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#90d2e4e987ba5b27c677cb07adaccdd3a4e1127d"
 dependencies = [
  "aion-config",
  "aion-protocol",
@@ -206,7 +206,7 @@ dependencies = [
 [[package]]
 name = "aion-memory"
 version = "0.1.38"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#107417bc882f3ae3f5f58905d40937063df2435b"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#90d2e4e987ba5b27c677cb07adaccdd3a4e1127d"
 dependencies = [
  "aion-config",
  "chrono",
@@ -220,7 +220,7 @@ dependencies = [
 [[package]]
 name = "aion-process"
 version = "0.1.38"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#107417bc882f3ae3f5f58905d40937063df2435b"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#90d2e4e987ba5b27c677cb07adaccdd3a4e1127d"
 dependencies = [
  "libc",
  "tokio",
@@ -231,7 +231,7 @@ dependencies = [
 [[package]]
 name = "aion-protocol"
 version = "0.1.38"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#107417bc882f3ae3f5f58905d40937063df2435b"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#90d2e4e987ba5b27c677cb07adaccdd3a4e1127d"
 dependencies = [
  "aion-types",
  "serde",
@@ -244,7 +244,7 @@ dependencies = [
 [[package]]
 name = "aion-providers"
 version = "0.1.38"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#107417bc882f3ae3f5f58905d40937063df2435b"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#90d2e4e987ba5b27c677cb07adaccdd3a4e1127d"
 dependencies = [
  "aion-config",
  "aion-types",
@@ -272,7 +272,7 @@ dependencies = [
 [[package]]
 name = "aion-skills"
 version = "0.1.38"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#107417bc882f3ae3f5f58905d40937063df2435b"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#90d2e4e987ba5b27c677cb07adaccdd3a4e1127d"
 dependencies = [
  "aion-config",
  "aion-mcp",
@@ -299,7 +299,7 @@ dependencies = [
 [[package]]
 name = "aion-tools"
 version = "0.1.38"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#107417bc882f3ae3f5f58905d40937063df2435b"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#90d2e4e987ba5b27c677cb07adaccdd3a4e1127d"
 dependencies = [
  "aion-config",
  "aion-process",
@@ -320,7 +320,7 @@ dependencies = [
 [[package]]
 name = "aion-types"
 version = "0.1.38"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#107417bc882f3ae3f5f58905d40937063df2435b"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#90d2e4e987ba5b27c677cb07adaccdd3a4e1127d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6432,7 +6432,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6875,7 +6875,7 @@ dependencies = [
 [[package]]
 name = "workspace-hack"
 version = "0.1.0"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#107417bc882f3ae3f5f58905d40937063df2435b"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=fix-openai-thinking-param#90d2e4e987ba5b27c677cb07adaccdd3a4e1127d"
 dependencies = [
  "bitflags",
  "cc",
