@@ -61,12 +61,19 @@ one-employee = { path = "crates/one-employee" }
 one-sso = { path = "crates/one-sso" }
 one-devops = { path = "crates/one-devops" }
 
-aion-agent = { git = "https://github.com/iOfficeAI/aionrs.git", tag = "v0.1.38" }
-aion-providers = { git = "https://github.com/iOfficeAI/aionrs.git", tag = "v0.1.38" }
-aion-types = { git = "https://github.com/iOfficeAI/aionrs.git", tag = "v0.1.38" }
-aion-protocol = { git = "https://github.com/iOfficeAI/aionrs.git", tag = "v0.1.38" }
-aion-config = { git = "https://github.com/iOfficeAI/aionrs.git", tag = "v0.1.38" }
-aion-mcp = { git = "https://github.com/iOfficeAI/aionrs.git", tag = "v0.1.38" }
+# TEMPORARY: pinned to our fork's fix-openai-thinking-param branch (based on
+# upstream v0.1.38) instead of iOfficeAI/aionrs directly. OpenAiProjector was
+# dropping the `thinking` request field entirely, breaking any OpenAI-protocol
+# reasoning model (DeepSeek/Kimi-class) that requires thinking.type=enabled.
+# Revert to `tag = "v0.1.38"` (or a newer official tag) once this fix lands
+# upstream and a new aionrs release includes it.
+# https://github.com/gaogg521/aionrs/tree/fix-openai-thinking-param
+aion-agent = { git = "https://github.com/gaogg521/aionrs.git", branch = "fix-openai-thinking-param" }
+aion-providers = { git = "https://github.com/gaogg521/aionrs.git", branch = "fix-openai-thinking-param" }
+aion-types = { git = "https://github.com/gaogg521/aionrs.git", branch = "fix-openai-thinking-param" }
+aion-protocol = { git = "https://github.com/gaogg521/aionrs.git", branch = "fix-openai-thinking-param" }
+aion-config = { git = "https://github.com/gaogg521/aionrs.git", branch = "fix-openai-thinking-param" }
+aion-mcp = { git = "https://github.com/gaogg521/aionrs.git", branch = "fix-openai-thinking-param" }
 
 # Core framework
 tokio = { version = "1", features = ["full"] }
