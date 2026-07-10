@@ -1339,7 +1339,7 @@ impl ConversationService {
                 "auto" => preference.as_ref().and_then(|row| row.last_model_id.clone()),
                 _ => None,
             });
-        let permission = overrides
+        let mut permission = overrides
             .permission
             .clone()
             .or_else(|| match definition.default_permission_mode.as_str() {
@@ -1372,6 +1372,18 @@ impl ConversationService {
                 reason: format!("assistant agent `{effective_agent_id}` is not registered in agent_metadata"),
             })?;
         let agent_type = parse_agent_type_from_metadata(&agent_binding.agent_type)?;
+
+        // Aionrs conversations gate tool-call auto-approval on session_mode
+        // == "yolo" (see AionrsAgentManager::new). When an aionrs assistant
+        // has never been explicitly configured (default_permission_mode ==
+        // "auto") and the user has no prior session_mode preference for it
+        // yet, default to fully-automatic instead of leaving it unset
+        // (which resolves to the confirm-every-tool-call "default" mode).
+        // A user's own later mode switch still persists as their preference
+        // and takes precedence via the branches above.
+        if permission.is_none() && agent_type == AgentType::Aionrs && definition.default_permission_mode == "auto" {
+            permission = Some("yolo".to_string());
+        }
 
         Ok(Some(AssistantSnapshot {
             assistant_definition_id: definition.id,

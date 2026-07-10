@@ -3975,6 +3975,86 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
 }
 
 #[tokio::test]
+async fn create_defaults_aionrs_session_mode_to_yolo_for_never_used_auto_assistant() {
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let (svc, _broadcaster, _repo, definition_repo, overlay_repo, _preference_repo) =
+        make_service_with_mock_task_manager_and_assistant_support(task_mgr.clone()).await;
+
+    upsert_test_assistant_definition(
+        &definition_repo,
+        "asstdef_aionrs_never_used",
+        "assistant-aionrs-never-used",
+        "aionrs",
+        "auto",
+        "auto",
+    )
+    .await;
+    overlay_repo
+        .upsert(&UpsertAssistantOverlayParams {
+            assistant_definition_id: "asstdef_aionrs_never_used",
+            enabled: true,
+            sort_order: 0,
+            agent_id_override: None,
+            last_used_at: None,
+        })
+        .await
+        .unwrap();
+    // No preference row at all — this assistant has never been used before.
+
+    let conv = create_assistant_backed_conversation(
+        &svc,
+        "user_1",
+        Some("aionrs"),
+        "aionrs",
+        "assistant-aionrs-never-used",
+    )
+    .await;
+
+    assert_eq!(conv.extra["session_mode"], json!("yolo"));
+}
+
+#[tokio::test]
+async fn create_keeps_aionrs_session_mode_unset_when_permission_mode_is_fixed() {
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let (svc, _broadcaster, _repo, definition_repo, overlay_repo, _preference_repo) =
+        make_service_with_mock_task_manager_and_assistant_support(task_mgr.clone()).await;
+
+    upsert_test_assistant_definition(
+        &definition_repo,
+        "asstdef_aionrs_fixed_no_value",
+        "assistant-aionrs-fixed-no-value",
+        "aionrs",
+        "auto",
+        "fixed",
+    )
+    .await;
+    overlay_repo
+        .upsert(&UpsertAssistantOverlayParams {
+            assistant_definition_id: "asstdef_aionrs_fixed_no_value",
+            enabled: true,
+            sort_order: 0,
+            agent_id_override: None,
+            last_used_at: None,
+        })
+        .await
+        .unwrap();
+
+    let conv = create_assistant_backed_conversation(
+        &svc,
+        "user_1",
+        Some("aionrs"),
+        "aionrs",
+        "assistant-aionrs-fixed-no-value",
+    )
+    .await;
+
+    // "fixed" mode with no configured value means the assistant author
+    // deliberately opted out of a default — the yolo fallback must not
+    // kick in and override that choice.
+    assert!(conv.extra.get("session_mode").is_none());
+}
+
+#[tokio::test]
 async fn send_message_missing_workspace_persists_message_and_failure_tip() {
     let (svc, broadcaster, repo, _task_mgr) = make_service();
     let task_mgr: Arc<dyn IWorkerTaskManager> = Arc::new(MockTaskManager::new());
