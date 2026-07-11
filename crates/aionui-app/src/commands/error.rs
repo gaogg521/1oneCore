@@ -90,10 +90,6 @@ impl CliBoundaryCode {
 
     fn exit_kind(self) -> ExitKind {
         match self {
-            Self::CronEnvMissing | Self::CronPayloadMissing | Self::CronPayloadInvalid => ExitKind::Config,
-            Self::CronBackendUnavailable | Self::CronHttpRequestFailed | Self::CronHttpStatusError => {
-                ExitKind::Unavailable
-            }
             Self::McpEnvMissing
             | Self::McpEnvInvalidPort
             | Self::McpStdinTty

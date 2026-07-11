@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.1.45](https://github.com/iOfficeAI/AionCore/compare/v0.1.44...v0.1.45) (2026-07-10)
+
+
+### Features
+
+* **ai-agent:** adapt to aionrs v0.2.2 config changes ([4f71bf2](https://github.com/iOfficeAI/AionCore/commit/4f71bf2c97de1bafc676906e26a5cf512ff94af9))
+* **cli:** add agent-facing config and diagnose commands ([#595](https://github.com/iOfficeAI/AionCore/issues/595)) ([e80177e](https://github.com/iOfficeAI/AionCore/commit/e80177e95a380c89f833b4302ff24b7359ac2a58))
+
+
+### Bug Fixes
+
+* **ai-agent:** cap provider health check tokens ([1021b63](https://github.com/iOfficeAI/AionCore/commit/1021b631aa1b7b97d7b70d18284df21bf29dda41))
+* **ai-agent:** set default aionrs thinking cli args ([de240a4](https://github.com/iOfficeAI/AionCore/commit/de240a4435058bf349acd7897b2836cff49b884d))
+* **model_fetcher:** extract first key from multi-line api_key for HTTP requests ([#593](https://github.com/iOfficeAI/AionCore/issues/593)) ([1161647](https://github.com/iOfficeAI/AionCore/commit/116164756544306ef8ac257106a03e665c85cf3d))
+* **runtime:** update Claude ACP package ([#599](https://github.com/iOfficeAI/AionCore/issues/599)) ([cf69332](https://github.com/iOfficeAI/AionCore/commit/cf693323913c31d3276a5e103b434c6ca51b519e))
+* **runtime:** update managed Codex ACP package ([#598](https://github.com/iOfficeAI/AionCore/issues/598)) ([1bb2be7](https://github.com/iOfficeAI/AionCore/commit/1bb2be72a040d16f284d4a0b5b2de670aa2f864b))
+* stop defaulting aionrs max tokens ([22bc24b](https://github.com/iOfficeAI/AionCore/commit/22bc24b1f30ef4d475ccada7d36b3ee977054eba))
+
+## [0.1.44](https://github.com/iOfficeAI/AionCore/compare/v0.1.43...v0.1.44) (2026-07-08)
+
+
+### Features
+
+* **agent:** use aionrs runtime env API ([#586](https://github.com/iOfficeAI/AionCore/issues/586)) ([2f6f43f](https://github.com/iOfficeAI/AionCore/commit/2f6f43f305221701ca2baa58123180caf2342055))
+* **ai-agent:** surface upstream 429 body in AgentSendError detail ([#591](https://github.com/iOfficeAI/AionCore/issues/591)) ([b8fe5b6](https://github.com/iOfficeAI/AionCore/commit/b8fe5b6f3c6f93f7b8fc730b658772da3f4f83fa))
+* **system:** add feedback diagnostics report ([#585](https://github.com/iOfficeAI/AionCore/issues/585)) ([a3eb1e4](https://github.com/iOfficeAI/AionCore/commit/a3eb1e49396e715ce8464700dca5e50a966552ee))
+
+
+### Bug Fixes
+
+* **agent:** preserve ACP error cause detail ([#581](https://github.com/iOfficeAI/AionCore/issues/581)) ([220f682](https://github.com/iOfficeAI/AionCore/commit/220f6823c1d29fde640427cfdd77de7e981758b2))
+* **skills:** correct aionui-config butler skill drift (2026-07) ([#584](https://github.com/iOfficeAI/AionCore/issues/584)) ([e72e03f](https://github.com/iOfficeAI/AionCore/commit/e72e03ff6e1366f705352bcefec474887a85adfa))
+* use provider and model protocol to determine llm request. ([37f76a8](https://github.com/iOfficeAI/AionCore/commit/37f76a8bf1ba8aafabb5dd6b6062da40173ef010))
+
+## [0.1.43](https://github.com/iOfficeAI/AionCore/compare/v0.1.42...v0.1.43) (2026-07-06)
+
+
+### Features
+
+* **assistant:** persist thought-level defaults ([#574](https://github.com/iOfficeAI/AionCore/issues/574)) ([dd9f299](https://github.com/iOfficeAI/AionCore/commit/dd9f29967270f4e7263484532fad3b2199ba1894))
+
+
+### Bug Fixes
+
+* **agent:** project available commands in management rows ([#579](https://github.com/iOfficeAI/AionCore/issues/579)) ([689ee8f](https://github.com/iOfficeAI/AionCore/commit/689ee8f91cbabd7e57c4e882f86c1ceec167e36d))
+* **assistant:** filter generated assistants by installed agents ([#578](https://github.com/iOfficeAI/AionCore/issues/578)) ([5b7c366](https://github.com/iOfficeAI/AionCore/commit/5b7c366132006eb16e748e8fc5a0976da9a5b2a3))
+* **cron:** enforce full-auto mode for scheduled tasks ([#576](https://github.com/iOfficeAI/AionCore/issues/576)) ([cf0a9bd](https://github.com/iOfficeAI/AionCore/commit/cf0a9bd88ac295fe8b40a6c1f9f21174b574718d))
+
 ## [0.1.42](https://github.com/iOfficeAI/AionCore/compare/v0.1.41...v0.1.42) (2026-07-03)
 
 

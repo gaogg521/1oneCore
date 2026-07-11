@@ -29,7 +29,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.42"
+version = "0.1.45-one.1"
 edition = "2024"
 license = "MIT"
 
@@ -62,11 +62,13 @@ one-sso = { path = "crates/one-sso" }
 one-devops = { path = "crates/one-devops" }
 
 # Pinned to our fork gaogg521/aionrs (master), which carries fork-only fixes
-# not yet in / not going to upstream iOfficeAI/aionrs (thinking param handling,
-# streaming tool_call empty-object bug, textualized tool-history replay for
-# gateways that reject tool_calls history). fork is long-lived and independent:
-# we only sync upstream -> fork, never PR back. See fork commit history and
-# 1oneUI docs/guides/session-2026-07-10-thinking-param-and-rename.zh-CN.md.
+# not yet in / not going to upstream iOfficeAI/aionrs (streaming tool_call
+# empty-object bug, textualized tool-history replay for gateways that reject
+# tool_calls history). As of the v0.2.2 sync the fork master IS upstream
+# v0.2.2 + those two fork-only patches, which is exactly the aionrs version
+# this AionCore release (v0.1.45) adapted to. fork is long-lived and
+# independent: we only sync upstream -> fork, never PR back. See fork commit
+# history and 1oneUI docs/guides/session-2026-07-10-thinking-param-and-rename.zh-CN.md.
 aion-agent = { git = "https://github.com/gaogg521/aionrs.git", branch = "master" }
 aion-providers = { git = "https://github.com/gaogg521/aionrs.git", branch = "master" }
 aion-types = { git = "https://github.com/gaogg521/aionrs.git", branch = "master" }
@@ -164,7 +166,7 @@ open = "5"
 which = "7"
 
 # Office
-calamine = "0.26"
+calamine = "0.36"
 rust_xlsxwriter = "0.82"
 sha1 = "0.10"
 sha2 = "0.10"

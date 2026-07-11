@@ -644,6 +644,9 @@ impl EmployeeService {
             persist_user_message: true,
             user_message_hidden: true,
             on_started: None,
+            // Employee/breakdown runs don't force a runtime mode; keep the
+            // agent's own resolved mode (matches pre-v0.1.45 behavior).
+            required_runtime_mode: None,
         };
 
         match self.conversation_service.run_agent_turn(turn_req).await {
@@ -798,6 +801,9 @@ impl EmployeeService {
             persist_user_message: true,
             user_message_hidden: true,
             on_started: None,
+            // Autopilot employee runs don't force a runtime mode; keep the
+            // agent's own resolved mode (matches pre-v0.1.45 behavior).
+            required_runtime_mode: None,
         };
 
         let (status, turn_id, summary, error) = match self.conversation_service.run_agent_turn(turn_req).await {
