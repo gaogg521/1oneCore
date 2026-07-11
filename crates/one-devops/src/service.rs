@@ -236,6 +236,30 @@ impl DevopsService {
         Ok(())
     }
 
+    /// Atomically claim a requirement for dispatch by transitioning it from a
+    /// pre-dev status (`backlog`/`planning`) to `developing` in a single
+    /// conditional UPDATE. Returns `true` iff THIS call won the claim
+    /// (`rows_affected == 1`).
+    ///
+    /// This closes a TOCTOU race: `dispatch_core` and `maybe_autopilot` used to
+    /// read the status, run the (quota-costing) digital-employee turn, and only
+    /// then advance the status — so a concurrent manual dispatch + autopilot (or
+    /// a double click) could both observe `backlog`, both fire a run, and burn
+    /// quota twice. Claiming before the run guarantees exactly one winner.
+    /// Requirements already in `developing` or a later status are not claimable
+    /// here; the caller decides whether a deliberate re-dispatch is still allowed.
+    pub async fn claim_requirement_for_dispatch(&self, id: &str) -> Result<bool, DevopsError> {
+        let res = sqlx::query(
+            "UPDATE one_requirements SET status = 'developing', updated_at = ? \
+             WHERE id = ? AND status IN ('backlog', 'planning')",
+        )
+        .bind(now_ms())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() == 1)
+    }
+
     /// Delete a requirement and its whole subtree (plus their comments).
     pub async fn delete_requirement(&self, id: &str) -> Result<(), DevopsError> {
         self.require_requirement(id).await?;
@@ -1517,6 +1541,44 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), "BAD_REQUEST");
+    }
+
+    #[tokio::test]
+    async fn claim_for_dispatch_is_won_once_then_blocks_and_ignores_non_predev() {
+        let svc = service().await;
+        let req = svc
+            .create_requirement(
+                "u1",
+                Some("Alice"),
+                CreateRequirementInput {
+                    subject: "派活抢占".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // First claim on a fresh (backlog) requirement wins and advances status.
+        assert!(svc.claim_requirement_for_dispatch(&req.id).await.unwrap());
+        assert_eq!(svc.get_requirement_row(&req.id).await.unwrap().status, "developing");
+
+        // Second claim loses — the requirement is no longer in a pre-dev status,
+        // so a concurrent dispatch/autopilot can't fire a duplicate run.
+        assert!(!svc.claim_requirement_for_dispatch(&req.id).await.unwrap());
+
+        // A requirement already past pre-dev is likewise not claimable here.
+        let planning = svc
+            .create_requirement("u1", Some("Alice"), CreateRequirementInput { subject: "P".into(), ..Default::default() })
+            .await
+            .unwrap();
+        svc.update_requirement(
+            &planning.id,
+            UpdateRequirementInput { status: Some("planning".into()), ..Default::default() },
+        )
+        .await
+        .unwrap();
+        assert!(svc.claim_requirement_for_dispatch(&planning.id).await.unwrap());
+        assert!(!svc.claim_requirement_for_dispatch(&planning.id).await.unwrap());
     }
 
     #[tokio::test]

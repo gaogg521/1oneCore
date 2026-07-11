@@ -47,13 +47,24 @@ pub fn build_breakdown_prompt(req: &RequirementRow) -> String {
 /// Extract child items from an agent reply. Returns an empty vec when nothing
 /// parseable is found (caller treats that as a breakdown failure).
 pub fn parse_breakdown_items(reply: &str) -> Vec<BreakdownItem> {
-    let Some(array_slice) = extract_json_array(reply) else {
-        return Vec::new();
-    };
-    let Ok(serde_json::Value::Array(elems)) = serde_json::from_str::<serde_json::Value>(array_slice) else {
-        return Vec::new();
-    };
+    // Try each bracket-balanced candidate in order; the first that parses to a
+    // JSON array yielding at least one item wins. Trying candidates (rather
+    // than a single first-`[`..last-`]` slice) is what makes stray brackets in
+    // the surrounding prose harmless.
+    for candidate in json_array_candidates(reply) {
+        let Ok(serde_json::Value::Array(elems)) = serde_json::from_str::<serde_json::Value>(candidate) else {
+            continue;
+        };
+        let items = collect_breakdown_items(elems);
+        if !items.is_empty() {
+            return items;
+        }
+    }
+    Vec::new()
+}
 
+/// Map already-parsed JSON array elements into clamped `BreakdownItem`s.
+fn collect_breakdown_items(elems: Vec<serde_json::Value>) -> Vec<BreakdownItem> {
     let mut items = Vec::new();
     for elem in elems {
         let Some(obj) = elem.as_object() else { continue };
@@ -98,12 +109,62 @@ fn clamp(value: Option<&str>, allowed: &[&str], default: &str) -> String {
     }
 }
 
-/// Slice out the outermost `[ ... ]` array from a reply that may contain prose
-/// or code fences around it.
-fn extract_json_array(reply: &str) -> Option<&str> {
-    let start = reply.find('[')?;
-    let end = reply.rfind(']')?;
-    if end > start { Some(&reply[start..=end]) } else { None }
+/// Every bracket-balanced `[ ... ]` span in `reply`, in order of appearance.
+///
+/// LLM replies wrap the array in prose or ```json fences and sometimes leave
+/// stray brackets in that prose (e.g. "参考[1]" or "如下：[...]"). A naive
+/// first-`[`..last-`]` slice would swallow those and produce invalid JSON,
+/// surfacing as a spurious "拆解失败". Here we bracket-match each `[` (honoring
+/// JSON string literals so brackets inside `"..."` don't shift nesting) and let
+/// the caller try each candidate.
+fn json_array_candidates(reply: &str) -> Vec<&str> {
+    let bytes = reply.as_bytes();
+    let mut candidates = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        // `[` and `]` are ASCII, so these byte indices are char boundaries even
+        // when the span contains multibyte UTF-8.
+        if bytes[i] == b'[' && let Some(end) = balanced_array_end(bytes, i) {
+            candidates.push(&reply[i..=end]);
+            i = end + 1;
+            continue;
+        }
+        i += 1;
+    }
+    candidates
+}
+
+/// Given a `[` at `open`, return the byte index of its matching `]`, tracking
+/// nested `[]`/`{}` and skipping brackets inside JSON string literals. Returns
+/// `None` if the brackets never balance before end of input.
+fn balanced_array_end(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, &c) in bytes[open..].iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            b'"' => in_string = true,
+            b'[' | b'{' => depth += 1,
+            b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -155,6 +216,28 @@ mod tests {
         assert!(parse_breakdown_items("抱歉我无法拆解").is_empty());
         assert!(parse_breakdown_items("").is_empty());
         assert!(parse_breakdown_items("[not json]").is_empty());
+    }
+
+    #[test]
+    fn ignores_stray_brackets_in_surrounding_prose() {
+        // B2 regression: prose brackets before/after the real array used to be
+        // swallowed by the first-`[`..last-`]` slice, yielding invalid JSON and
+        // a spurious breakdown failure.
+        let reply = "参考需求 [见附录] 拆解如下：\n[{\"subject\":\"任务A\",\"type\":\"task\"}]\n详见 [1] 与 [2]。";
+        let items = parse_breakdown_items(reply);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].subject, "任务A");
+        assert_eq!(items[0].kind, "task");
+    }
+
+    #[test]
+    fn handles_brackets_inside_string_values() {
+        // A `]` inside a JSON string must not be treated as the array end.
+        let reply = r#"[{"subject":"支持 [数组] 语法","description":"处理 a[i] 下标","type":"story"}]"#;
+        let items = parse_breakdown_items(reply);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].subject, "支持 [数组] 语法");
+        assert_eq!(items[0].description.as_deref(), Some("处理 a[i] 下标"));
     }
 
     #[test]

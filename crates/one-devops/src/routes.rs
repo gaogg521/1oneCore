@@ -301,16 +301,46 @@ async fn dispatch_core(state: &OneDevopsRouterState, user_id: &str, id: &str) ->
         }
     }
 
+    // Atomically claim the pre-dev → developing transition BEFORE the
+    // quota-costing run so a concurrent manual dispatch + autopilot (or a
+    // double dispatch) can't both fire. A requirement already past pre-dev is
+    // a deliberate re-dispatch of an in-progress item — allowed, no claim.
+    let was_pre_dev = req.status == "backlog" || req.status == "planning";
+    if was_pre_dev && !state.service.claim_requirement_for_dispatch(id).await? {
+        return Err(DevopsError::BadRequest(
+            "该需求正在被派发（并发抢占已被另一次调用赢得），请勿重复派发".into(),
+        ));
+    }
+
     let tenant = state.tenant_of(user_id).await;
-    let (run_id, conversation_id) = employee
+    let run = employee
         .run_now_with_context(user_id, &tenant, assigned_to, task_context)
-        .await
-        .map_err(|e| match e {
-            one_employee::EmployeeError::NotFound => DevopsError::BadRequest(
-                "assigned digital employee is not available to you (not your employee, and not shared within your team)".into(),
-            ),
-            other => DevopsError::Internal(format!("dispatch run: {other}")),
-        })?;
+        .await;
+    let (run_id, conversation_id) = match run {
+        Ok(v) => v,
+        Err(e) => {
+            // The run never started, so roll the status back to where it was
+            // instead of leaving the requirement stuck in `developing`.
+            if was_pre_dev {
+                let _ = state
+                    .service
+                    .update_requirement(
+                        id,
+                        UpdateRequirementInput {
+                            status: Some(req.status.clone()),
+                            ..Default::default()
+                        },
+                    )
+                    .await;
+            }
+            return Err(match e {
+                one_employee::EmployeeError::NotFound => DevopsError::BadRequest(
+                    "assigned digital employee is not available to you (not your employee, and not shared within your team)".into(),
+                ),
+                other => DevopsError::Internal(format!("dispatch run: {other}")),
+            });
+        }
+    };
 
     let metadata = serde_json::json!({ "conversationId": conversation_id, "runId": run_id }).to_string();
     let body = format!("已派发给数字员工，运行中（会话 {conversation_id}）");
@@ -324,18 +354,8 @@ async fn dispatch_core(state: &OneDevopsRouterState, user_id: &str, id: &str) ->
         .audit(&tenant_for_audit, user_id, "devops.requirement.dispatch", Some(id))
         .await;
 
-    if req.status == "backlog" || req.status == "planning" {
-        state
-            .service
-            .update_requirement(
-                id,
-                UpdateRequirementInput {
-                    status: Some("developing".into()),
-                    ..Default::default()
-                },
-            )
-            .await?;
-    }
+    // Status was already advanced to `developing` by the atomic claim above
+    // (for pre-dev requirements) before the run started.
 
     Ok(DispatchResult {
         conversation_id,
