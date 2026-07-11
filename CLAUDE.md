@@ -2,8 +2,9 @@
 
 ## ⚠️ 关键排障文档（后端 / aionrs 相关，新 AI 首读）
 
-> aionrs 依赖来自 fork **`gaogg521/aionrs`** 分支 `fix-openai-thinking-param`（见本仓 `Cargo.toml` 的
+> aionrs 依赖来自 fork **`gaogg521/aionrs`** 的 **`master`** 分支（见本仓 `Cargo.toml` 的
 > `aion-*` git 依赖）；本地源码在同级目录 `../aionrs-local`。上游 = `iOfficeAI/aionrs`，**只单向同步上游 → fork，不反向提 PR**。
+> （历史遗留的 `fix-openai-thinking-param` 功能分支已快进合并进 master 并删除，改动全在 master。）
 
 - **aionrs OpenAI 协议 thinking 参数 / 网关拒绝 tool_calls / 文本化工具历史兜底 / 授权模式默认全自动**（2026-07-10~11）：
   完整分析、三仓 commit 索引、黑盒探测网关方法论、上游对齐（issue #74 / PR #203）都在 1oneUI 仓库的这份 session 文档：
