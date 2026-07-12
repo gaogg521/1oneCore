@@ -19,6 +19,6 @@
 
 | fork(origin） | 上游 | 已同步到 | 对齐 |
 |---|---|---|---|
-| `gaogg521/1oneCore`（本仓，`one-main`）| `iOfficeAI/AionCore` | **v0.1.45** | ✅ 落后 0 |
-| `gaogg521/aionrs`（`../aionrs-local`，`master`）| `iOfficeAI/aionrs` | **v0.2.2** | ✅ 落后 0 |
-| `gaogg521/1oneUI`（`../1oneUI`，`one-main`）| `iOfficeAI/AionUi` | **v2.1.32** | ⚠️ 落后 2（同步后上游新增）|
+| `gaogg521/1oneCore`（本仓，`one-main`）| [`iOfficeAI/AionCore`](https://github.com/iOfficeAI/AionCore) | **v0.1.45** | ✅ 落后 0 |
+| `gaogg521/aionrs`（`../aionrs-local`，`master`）| [`iOfficeAI/aionrs`](https://github.com/iOfficeAI/aionrs) | **v0.2.2** | ✅ 落后 0 |
+| `gaogg521/1oneUI`（`../1oneUI`，`one-main`）| [`iOfficeAI/AionUi`](https://github.com/iOfficeAI/AionUi) | **v2.1.32** | ⚠️ 落后 2（同步后上游新增）|
