@@ -139,6 +139,9 @@ pub struct ProviderResponse {
     pub model_enabled: Option<HashMap<String, bool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_health: Option<HashMap<String, ModelHealthStatus>>,
+    /// JSON object: model_id -> max output tokens per response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_max_tokens: Option<HashMap<String, u32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bedrock_config: Option<BedrockConfig>,
     #[serde(default)]
@@ -175,6 +178,8 @@ pub struct CreateProviderRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_health: Option<HashMap<String, ModelHealthStatus>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_max_tokens: Option<HashMap<String, u32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bedrock_config: Option<BedrockConfig>,
     #[serde(default)]
     pub is_full_url: bool,
@@ -200,6 +205,7 @@ pub struct UpdateProviderRequest {
     pub model_protocols: Option<HashMap<String, String>>,
     pub model_enabled: Option<HashMap<String, bool>>,
     pub model_health: Option<HashMap<String, ModelHealthStatus>>,
+    pub model_max_tokens: Option<HashMap<String, u32>>,
     pub bedrock_config: Option<BedrockConfig>,
     pub is_full_url: Option<bool>,
 }
@@ -470,6 +476,7 @@ mod tests {
             model_protocols: None,
             model_enabled: Some(HashMap::from([("claude-sonnet-4-20250514".into(), true)])),
             model_health: None,
+            model_max_tokens: None,
             bedrock_config: None,
             is_full_url: false,
             created_at: 1712345678000,
@@ -484,6 +491,7 @@ mod tests {
         assert_eq!(json["model_enabled"]["claude-sonnet-4-20250514"], true);
         assert!(json.get("context_limit").is_none());
         assert!(json.get("model_protocols").is_none());
+        assert!(json.get("model_max_tokens").is_none());
         assert!(json.get("bedrock_config").is_none());
     }
 
@@ -503,6 +511,7 @@ mod tests {
             model_protocols: None,
             model_enabled: None,
             model_health: None,
+            model_max_tokens: None,
             bedrock_config: None,
             is_full_url: false,
             created_at: 0,
@@ -594,7 +603,8 @@ mod tests {
             "model_enabled": {"gpt-4": true, "gpt-3.5": false},
             "model_health": {
                 "gpt-4": {"status": "healthy", "last_check": 1712345678000_i64, "latency": 320}
-            }
+            },
+            "model_max_tokens": {"gpt-4": 65536}
         });
         let req: CreateProviderRequest = serde_json::from_value(raw).unwrap();
         assert_eq!(
@@ -606,6 +616,66 @@ mod tests {
         let health = req.model_health.as_ref().unwrap().get("gpt-4").unwrap();
         assert_eq!(health.status, HealthStatus::Healthy);
         assert_eq!(health.latency, Some(320));
+        assert_eq!(req.model_max_tokens.as_ref().unwrap().get("gpt-4"), Some(&65536));
+    }
+
+    #[test]
+    fn test_provider_response_model_max_tokens_serialization() {
+        let resp = ProviderResponse {
+            id: "id".into(),
+            platform: "custom".into(),
+            name: "Custom".into(),
+            base_url: "https://litellm-internal.example.com".into(),
+            api_key: "sk-test".into(),
+            models: vec!["deepseek-v4-pro".into()],
+            enabled: true,
+            capabilities: vec![],
+            context_limit: None,
+            model_protocols: None,
+            model_enabled: None,
+            model_health: None,
+            model_max_tokens: Some(HashMap::from([("deepseek-v4-pro".into(), 65536u32)])),
+            bedrock_config: None,
+            is_full_url: false,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["model_max_tokens"]["deepseek-v4-pro"], 65536);
+
+        let round_tripped: ProviderResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            round_tripped
+                .model_max_tokens
+                .as_ref()
+                .and_then(|m| m.get("deepseek-v4-pro")),
+            Some(&65536)
+        );
+    }
+
+    #[test]
+    fn test_provider_response_model_max_tokens_omitted_when_none() {
+        let resp = ProviderResponse {
+            id: "id".into(),
+            platform: "anthropic".into(),
+            name: "Anthropic".into(),
+            base_url: "https://api.anthropic.com".into(),
+            api_key: "sk-test".into(),
+            models: vec![],
+            enabled: true,
+            capabilities: vec![],
+            context_limit: None,
+            model_protocols: None,
+            model_enabled: None,
+            model_health: None,
+            model_max_tokens: None,
+            bedrock_config: None,
+            is_full_url: false,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json.get("model_max_tokens").is_none());
     }
 
     #[test]
@@ -624,6 +694,7 @@ mod tests {
             model_protocols: None,
             model_enabled: None,
             model_health: None,
+            model_max_tokens: None,
             bedrock_config: None,
             is_full_url: false,
         };

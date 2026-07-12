@@ -28,6 +28,7 @@ fn sample_params() -> CreateProviderParams<'static> {
         model_protocols: None,
         model_enabled: None,
         model_health: None,
+        model_max_tokens: None,
         bedrock_config: None,
         is_full_url: false,
     }
@@ -74,6 +75,7 @@ async fn create_with_all_optional_fields() {
             model_protocols: Some(r#"{"m1":"openai"}"#),
             model_enabled: Some(r#"{"m1":true}"#),
             model_health: Some(r#"{"m1":{"status":"healthy"}}"#),
+            model_max_tokens: Some(r#"{"m1":65536}"#),
             bedrock_config: Some(r#"{"region":"us-east-1"}"#),
             ..sample_params()
         })
@@ -83,6 +85,7 @@ async fn create_with_all_optional_fields() {
     assert_eq!(p.model_protocols.as_deref(), Some(r#"{"m1":"openai"}"#));
     assert_eq!(p.model_enabled.as_deref(), Some(r#"{"m1":true}"#));
     assert!(p.model_health.is_some());
+    assert_eq!(p.model_max_tokens.as_deref(), Some(r#"{"m1":65536}"#));
     assert!(p.bedrock_config.is_some());
 }
 
@@ -200,6 +203,51 @@ async fn update_optional_fields_can_be_set_and_cleared() {
         .await
         .unwrap();
     assert!(cleared.bedrock_config.is_none());
+}
+
+#[tokio::test]
+async fn update_model_max_tokens_can_be_set_and_cleared_without_touching_other_fields() {
+    let r = repo().await;
+    let created = r
+        .create(CreateProviderParams {
+            model_health: Some(r#"{"m1":{"status":"healthy"}}"#),
+            ..sample_params()
+        })
+        .await
+        .unwrap();
+    assert!(created.model_max_tokens.is_none());
+
+    // Set
+    let with_tokens = r
+        .update(
+            &created.id,
+            UpdateProviderParams {
+                model_max_tokens: Some(Some(r#"{"deepseek-v4-pro":65536}"#)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        with_tokens.model_max_tokens.as_deref(),
+        Some(r#"{"deepseek-v4-pro":65536}"#)
+    );
+    // Untouched fields (including the other per-model map) survive the partial update.
+    assert!(with_tokens.model_health.is_some());
+
+    // Clear
+    let cleared = r
+        .update(
+            &created.id,
+            UpdateProviderParams {
+                model_max_tokens: Some(None),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(cleared.model_max_tokens.is_none());
+    assert!(cleared.model_health.is_some());
 }
 
 #[tokio::test]

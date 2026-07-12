@@ -94,6 +94,7 @@ pub(super) async fn build(
         .to_owned();
 
     let provider = map_aionrs_provider(&row.platform, &model_id, row.model_protocols.as_deref())?;
+    let model_max_tokens = resolve_model_max_tokens(&model_id, row.model_max_tokens.as_deref());
 
     let (base_url, compat_overrides) =
         resolve_aionrs_url_and_compat(&row.platform, &row.base_url, &provider, row.is_full_url);
@@ -160,7 +161,7 @@ pub(super) async fn build(
         model: model_id,
         base_url,
         system_prompt: overrides.system_prompt,
-        max_tokens: overrides.max_tokens,
+        max_tokens: overrides.max_tokens.or(model_max_tokens),
         max_turns: overrides.max_turns,
         max_tool_call_malformed_turns: overrides.max_tool_call_malformed_turns,
         max_tool_call_failure_turns: overrides.max_tool_call_failure_turns,
@@ -292,6 +293,20 @@ fn resolve_model_protocol(model_id: &str, model_protocols: Option<&str>) -> Resu
     match map.get(model_id) {
         Some(Value::String(protocol)) if !protocol.is_empty() => Ok(protocol.clone()),
         _ => Ok("openai".to_owned()),
+    }
+}
+
+/// Look up a model's configured max output tokens from the provider's
+/// per-model `model_max_tokens` JSON map (`model_id -> u32`). Returns `None`
+/// when the field is absent, empty, malformed, or has no entry for
+/// `model_id` — callers should fall back to the assistant/provider default
+/// in that case, not treat it as an error.
+fn resolve_model_max_tokens(model_id: &str, model_max_tokens: Option<&str>) -> Option<u32> {
+    let json = model_max_tokens.map(str::trim).filter(|value| !value.is_empty())?;
+    let map = serde_json::from_str::<Map<String, Value>>(json).ok()?;
+    match map.get(model_id) {
+        Some(Value::Number(n)) => n.as_u64().and_then(|v| u32::try_from(v).ok()),
+        _ => None,
     }
 }
 
@@ -1024,6 +1039,78 @@ mod tests {
                 Some(expected) => assert_eq!(result.unwrap(), expected, "{}", case.name),
                 None => assert!(result.is_err(), "{}", case.name),
             }
+        }
+    }
+
+    struct ModelMaxTokensCase<'a> {
+        name: &'a str,
+        model_id: &'a str,
+        model_max_tokens: Option<&'a str>,
+        expected: Option<u32>,
+    }
+
+    #[test]
+    fn resolve_model_max_tokens_table_driven_cases() {
+        let cases = [
+            ModelMaxTokensCase {
+                name: "no field set falls back to None",
+                model_id: "deepseek-v4-pro",
+                model_max_tokens: None,
+                expected: None,
+            },
+            ModelMaxTokensCase {
+                name: "empty string falls back to None",
+                model_id: "deepseek-v4-pro",
+                model_max_tokens: Some(""),
+                expected: None,
+            },
+            ModelMaxTokensCase {
+                name: "matching model returns configured value",
+                model_id: "deepseek-v4-pro",
+                model_max_tokens: Some(r#"{"deepseek-v4-pro":65536}"#),
+                expected: Some(65536),
+            },
+            ModelMaxTokensCase {
+                name: "non-matching model falls back to None",
+                model_id: "claude-sonnet-latest",
+                model_max_tokens: Some(r#"{"deepseek-v4-pro":65536}"#),
+                expected: None,
+            },
+            ModelMaxTokensCase {
+                name: "empty map falls back to None",
+                model_id: "m",
+                model_max_tokens: Some("{}"),
+                expected: None,
+            },
+            ModelMaxTokensCase {
+                name: "invalid json falls back to None",
+                model_id: "m",
+                model_max_tokens: Some("not json"),
+                expected: None,
+            },
+            ModelMaxTokensCase {
+                name: "non-numeric value falls back to None",
+                model_id: "m",
+                model_max_tokens: Some(r#"{"m":"a lot"}"#),
+                expected: None,
+            },
+            ModelMaxTokensCase {
+                name: "negative value falls back to None",
+                model_id: "m",
+                model_max_tokens: Some(r#"{"m":-1}"#),
+                expected: None,
+            },
+            ModelMaxTokensCase {
+                name: "value larger than u32 falls back to None",
+                model_id: "m",
+                model_max_tokens: Some(r#"{"m":9999999999}"#),
+                expected: None,
+            },
+        ];
+
+        for case in cases {
+            let result = resolve_model_max_tokens(case.model_id, case.model_max_tokens);
+            assert_eq!(result, case.expected, "{}", case.name);
         }
     }
 

@@ -38,6 +38,15 @@ async fn setup() -> (
 }
 
 async fn insert_test_provider(repo: &dyn IProviderRepository, id: &str, platform: &str) {
+    insert_test_provider_with_max_tokens(repo, id, platform, None).await;
+}
+
+async fn insert_test_provider_with_max_tokens(
+    repo: &dyn IProviderRepository,
+    id: &str,
+    platform: &str,
+    model_max_tokens: Option<&str>,
+) {
     let key = test_encryption_key();
     let encrypted_api_key = encrypt_string("sk-test-key-12345", &key).unwrap();
     repo.create(CreateProviderParams {
@@ -53,6 +62,7 @@ async fn insert_test_provider(repo: &dyn IProviderRepository, id: &str, platform
         model_protocols: None,
         model_enabled: None,
         model_health: None,
+        model_max_tokens,
         bedrock_config: None,
         is_full_url: false,
     })
@@ -158,6 +168,54 @@ async fn aionrs_factory_resolves_provider_from_db() {
             max_tokens: Some(2048),
             ..Default::default()
         },
+    );
+
+    let result = factory(options).await;
+    assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aionrs_factory_resolves_ok_with_provider_model_max_tokens_and_no_override() {
+    let (provider_repo, agent_registry, acp_agent_service) = setup().await;
+    insert_test_provider_with_max_tokens(&*provider_repo, "prov-003", "openai", Some(r#"{"gpt-4o":65536}"#)).await;
+    let factory = make_factory(provider_repo, agent_registry, acp_agent_service);
+
+    // Assistant sets no `max_tokens` override — the factory must still build
+    // successfully by falling back to the provider's per-model config
+    // (`resolve_model_max_tokens` in `factory/aionrs.rs`) instead of erroring.
+    let options = make_aionrs_options(
+        "conv-test-4",
+        "/tmp/test-workspace",
+        ProviderWithModel {
+            provider_id: "prov-003".into(),
+            model: "gpt-4o".into(),
+            use_model: None,
+        },
+        AionrsBuildExtra::default(),
+    );
+
+    let result = factory(options).await;
+    assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aionrs_factory_tolerates_malformed_provider_model_max_tokens() {
+    let (provider_repo, agent_registry, acp_agent_service) = setup().await;
+    // Malformed JSON in `model_max_tokens` must degrade gracefully (fall back
+    // to no override) rather than fail agent construction — a corrupt/edited
+    // provider row should never brick every conversation on that provider.
+    insert_test_provider_with_max_tokens(&*provider_repo, "prov-004", "openai", Some("not json")).await;
+    let factory = make_factory(provider_repo, agent_registry, acp_agent_service);
+
+    let options = make_aionrs_options(
+        "conv-test-5",
+        "/tmp/test-workspace",
+        ProviderWithModel {
+            provider_id: "prov-004".into(),
+            model: "gpt-4o".into(),
+            use_model: None,
+        },
+        AionrsBuildExtra::default(),
     );
 
     let result = factory(options).await;

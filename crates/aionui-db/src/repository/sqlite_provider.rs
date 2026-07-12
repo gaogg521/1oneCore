@@ -47,8 +47,8 @@ impl IProviderRepository for SqliteProviderRepository {
             "INSERT INTO providers \
                 (id, platform, name, base_url, api_key_encrypted, models, enabled, \
                  capabilities, context_limit, model_protocols, model_enabled, \
-                 model_health, bedrock_config, is_full_url, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 model_health, model_max_tokens, bedrock_config, is_full_url, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(params.platform)
@@ -62,6 +62,7 @@ impl IProviderRepository for SqliteProviderRepository {
         .bind(params.model_protocols)
         .bind(params.model_enabled)
         .bind(params.model_health)
+        .bind(params.model_max_tokens)
         .bind(params.bedrock_config)
         .bind(params.is_full_url)
         .bind(now)
@@ -88,6 +89,7 @@ impl IProviderRepository for SqliteProviderRepository {
             model_protocols: params.model_protocols.map(String::from),
             model_enabled: params.model_enabled.map(String::from),
             model_health: params.model_health.map(String::from),
+            model_max_tokens: params.model_max_tokens.map(String::from),
             bedrock_config: params.bedrock_config.map(String::from),
             is_full_url: params.is_full_url,
             created_at: now,
@@ -107,7 +109,7 @@ impl IProviderRepository for SqliteProviderRepository {
             "UPDATE providers SET \
                 platform = ?, name = ?, base_url = ?, api_key_encrypted = ?, \
                 models = ?, enabled = ?, capabilities = ?, context_limit = ?, \
-                model_protocols = ?, model_enabled = ?, model_health = ?, \
+                model_protocols = ?, model_enabled = ?, model_health = ?, model_max_tokens = ?, \
                 bedrock_config = ?, is_full_url = ?, updated_at = ? \
              WHERE id = ?",
         )
@@ -122,6 +124,7 @@ impl IProviderRepository for SqliteProviderRepository {
         .bind(&merged.model_protocols)
         .bind(&merged.model_enabled)
         .bind(&merged.model_health)
+        .bind(&merged.model_max_tokens)
         .bind(&merged.bedrock_config)
         .bind(merged.is_full_url)
         .bind(merged.updated_at)
@@ -176,6 +179,9 @@ fn merge_update(existing: Provider, params: UpdateProviderParams<'_>) -> Provide
         model_health: params
             .model_health
             .map_or(existing.model_health, |v| v.map(String::from)),
+        model_max_tokens: params
+            .model_max_tokens
+            .map_or(existing.model_max_tokens, |v| v.map(String::from)),
         bedrock_config: params
             .bedrock_config
             .map_or(existing.bedrock_config, |v| v.map(String::from)),
@@ -210,6 +216,7 @@ mod tests {
             model_protocols: None,
             model_enabled: None,
             model_health: None,
+            model_max_tokens: None,
             bedrock_config: None,
             is_full_url: false,
         }
