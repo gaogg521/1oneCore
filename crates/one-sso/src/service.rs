@@ -162,9 +162,17 @@ impl SsoService {
         match existing {
             Some(row) => {
                 let new_enabled = enabled.unwrap_or(row.enabled);
-                let new_config = config
-                    .map(|v| v.to_string())
-                    .unwrap_or(row.config);
+                // Merge incoming keys into the stored config instead of
+                // replacing it wholesale. Secrets are never echoed to the
+                // admin form, so the client only sends the fields the user
+                // just (re)typed; a wholesale replace would wipe every
+                // untouched field (e.g. appSecret / redirectUri) and make the
+                // config impossible to edit incrementally. Blank fields are
+                // dropped client-side, so "leave empty to keep" holds.
+                let new_config = match config {
+                    Some(incoming) => merge_config(&row.config, incoming),
+                    None => row.config,
+                };
                 sqlx::query(
                     "UPDATE one_sso_providers SET enabled = ?, config = ?, updated_at = ?, updated_by = ? WHERE provider = ?",
                 )
@@ -378,6 +386,26 @@ fn sanitize_username(raw: &str) -> String {
     }
 }
 
+/// Merge `incoming` config keys onto the `existing` stored JSON object,
+/// incoming values winning. Non-object inputs fall back gracefully: a
+/// non-object `incoming` replaces (mirrors the old behavior), and a
+/// non-object/empty `existing` is treated as `{}`. Enables incremental
+/// edits from the admin form, which only sends the fields just typed.
+fn merge_config(existing: &str, incoming: serde_json::Value) -> String {
+    let serde_json::Value::Object(incoming_obj) = incoming else {
+        // Not an object — nothing sensible to merge; store as-is.
+        return incoming.to_string();
+    };
+    let mut merged = serde_json::from_str::<serde_json::Value>(existing)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    for (key, value) in incoming_obj {
+        merged.insert(key, value);
+    }
+    serde_json::Value::Object(merged).to_string()
+}
+
 /// Minimal-config check per provider — used by the login page to decide
 /// whether to render the SSO button at all (no secrets exposed).
 fn has_minimal_config(provider: &str, config_json: &str) -> bool {
@@ -464,6 +492,27 @@ mod tests {
         let long = "a".repeat(80);
         let result = sanitize_username(&long);
         assert_eq!(result.len(), 64);
+    }
+
+    #[test]
+    fn merge_config_keeps_untouched_fields() {
+        // BUG5: admin re-saves feishu with only appId changed (secret not
+        // echoed, so the form only sends appId). The stored appSecret /
+        // redirectUri must survive the partial update.
+        let existing = r#"{"appId":"cli_old","appSecret":"s3cret","redirectUri":"https://x/cb"}"#;
+        let incoming = serde_json::json!({ "appId": "cli_new" });
+        let merged = merge_config(existing, incoming);
+        let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(value["appId"], "cli_new");
+        assert_eq!(value["appSecret"], "s3cret");
+        assert_eq!(value["redirectUri"], "https://x/cb");
+    }
+
+    #[test]
+    fn merge_config_from_empty_existing() {
+        let merged = merge_config("", serde_json::json!({ "appId": "cli_a" }));
+        let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(value["appId"], "cli_a");
     }
 
     #[test]

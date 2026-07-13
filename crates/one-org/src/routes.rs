@@ -13,7 +13,8 @@ use aionui_api_types::ApiResponse;
 
 use crate::error::OrgError;
 use crate::models::{
-    AdminUserDto, AuditLogRow, InviteDto, OrgContextDto, ResetLocalResult, RuntimeNodeDto, is_system_admin_role,
+    AdminUserDto, AuditLogRow, InviteDto, OrgContextDto, ResetLocalResult, RuntimeNodeDto, is_enterprise_tenant_id,
+    is_system_admin_role,
 };
 use crate::rbac::{OrgActor, RequireOrgAdmin};
 use crate::state::OneOrgRouterState;
@@ -24,6 +25,8 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         .route("/api/one/org/public-info", get(org_public_info))
         .route("/api/one/org/invites/preview", post(org_preview_invite))
         .route("/api/one/org/join", post(org_join))
+        .route("/api/one/org/members", get(org_members))
+        .route("/api/one/org/invites", get(org_invites))
         .route("/api/one/org/exit", post(org_exit))
         .route("/api/one/org/create", post(org_create))
         .route("/api/one/org/reset-local", post(org_reset_local))
@@ -101,6 +104,34 @@ async fn org_join(
 ) -> Result<Json<ApiResponse<TenantDto>>, OrgError> {
     let (tenant_id, tenant_name) = state.service.join_with_invite(&actor.user_id, &body.code).await?;
     Ok(Json(ApiResponse::ok(TenantDto { tenant_id, tenant_name })))
+}
+
+/// Read-only tenant roster for any enterprise member (client-mode terminals
+/// see their team without admin rights). Mutations stay on `/api/one/admin/*`
+/// behind `RequireOrgAdmin`.
+async fn org_members(
+    State(state): State<OneOrgRouterState>,
+    actor: OrgActor,
+) -> Result<Json<ApiResponse<Vec<AdminUserDto>>>, OrgError> {
+    if !is_enterprise_tenant_id(&actor.tenant_id) {
+        return Err(OrgError::NotInEnterprise);
+    }
+    let users = state.service.list_users(&actor.tenant_id).await?;
+    Ok(Json(ApiResponse::ok(users)))
+}
+
+/// Read-only invite list for any enterprise member. Members accepted this
+/// visibility trade-off (codes are shown so a member can re-share them);
+/// creation/revocation remain admin-only.
+async fn org_invites(
+    State(state): State<OneOrgRouterState>,
+    actor: OrgActor,
+) -> Result<Json<ApiResponse<Vec<InviteDto>>>, OrgError> {
+    if !is_enterprise_tenant_id(&actor.tenant_id) {
+        return Err(OrgError::NotInEnterprise);
+    }
+    let invites = state.service.list_invites(&actor.tenant_id).await?;
+    Ok(Json(ApiResponse::ok(invites)))
 }
 
 #[derive(Deserialize)]
