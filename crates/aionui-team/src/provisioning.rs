@@ -489,9 +489,11 @@ impl TeamAgentProvisioner {
             session_mode,
         );
         let provider_id = if agent_type == AgentType::Aionrs {
-            self.resolve_provider_for_model(model)
-                .await
-                .unwrap_or_else(|| backend.to_owned())
+            self.resolve_provider_for_model(model).await.ok_or_else(|| {
+                TeamError::InvalidRequest(format!(
+                    "no enabled provider offers model '{model}'; please select a valid model for this teammate"
+                ))
+            })?
         } else {
             backend.to_owned()
         };

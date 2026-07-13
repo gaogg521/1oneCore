@@ -936,7 +936,31 @@ pub(crate) mod workspace_harness {
     #[async_trait]
     impl IProviderRepository for EmptyProviderRepo {
         async fn list(&self) -> Result<Vec<aionui_db::models::Provider>, DbError> {
-            Ok(vec![])
+            // Not actually "empty" for aionrs model resolution: this repo backs
+            // `team_with_aionrs_worker_request`'s "claude-sonnet" teammate, and
+            // `resolve_provider_for_model` must find a matching enabled provider
+            // or team creation now fails fast (see provisioning.rs). No other
+            // test in this harness creates an aionrs-backend teammate, so this
+            // single fake provider is safe to add here.
+            Ok(vec![aionui_db::models::Provider {
+                id: "test-provider".into(),
+                platform: "anthropic".into(),
+                name: "Test Provider".into(),
+                base_url: "https://example.invalid".into(),
+                api_key_encrypted: String::new(),
+                models: serde_json::json!(["claude-sonnet"]).to_string(),
+                enabled: true,
+                capabilities: serde_json::json!([]).to_string(),
+                context_limit: None,
+                model_protocols: None,
+                model_enabled: None,
+                model_health: None,
+                model_max_tokens: None,
+                bedrock_config: None,
+                is_full_url: false,
+                created_at: 0,
+                updated_at: 0,
+            }])
         }
 
         async fn find_by_id(&self, _id: &str) -> Result<Option<aionui_db::models::Provider>, DbError> {

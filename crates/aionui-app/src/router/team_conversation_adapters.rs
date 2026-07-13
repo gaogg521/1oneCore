@@ -337,8 +337,26 @@ fn map_conversation_update_error(error: ConversationError) -> TeamError {
         ConversationError::ActiveAgentNotFound { conversation_id } => TeamError::RuntimeNotReady { conversation_id },
         ConversationError::NotFound { id } => TeamError::InvalidRequest(format!("conversation not found: {id}")),
         ConversationError::NotFoundReason { reason } => TeamError::InvalidRequest(reason),
+        ConversationError::BadRequest { reason } if is_stale_provider_binding(&reason) => {
+            TeamError::InvalidRequest(
+                "this teammate has no valid model/provider configured; please remove and re-add it with a model selected"
+                    .to_owned(),
+            )
+        }
         other => TeamError::InvalidRequest(other.to_string()),
     }
+}
+
+/// Heuristic: detects the "Provider '{id}' not found" message produced when a
+/// team member's persisted `top_level_model.provider_id` no longer resolves
+/// to a real provider (e.g. it was written from an unresolvable model value
+/// before `create_team_conversation_for_agent` started rejecting those).
+/// String-matching is a compromise — `ConversationError::BadRequest` is a
+/// shared catch-all for many unrelated validation failures, and giving this
+/// one case its own typed variant would require threading a new error
+/// variant through `AgentError` -> `ConversationError` -> `TeamError`.
+fn is_stale_provider_binding(reason: &str) -> bool {
+    reason.starts_with("Provider '") && reason.ends_with("' not found")
 }
 
 fn map_conversation_turn_error(error: ConversationError) -> AgentTurnExecutionError {
@@ -365,6 +383,37 @@ mod tests {
             TeamError::RuntimeNotReady {
                 conversation_id: ref id
             } if id == "conv-1"
+        ));
+    }
+
+    #[test]
+    fn stale_provider_binding_maps_to_friendly_invalid_request() {
+        let err = map_conversation_update_error(ConversationError::BadRequest {
+            reason: "Provider 'aionrs' not found".into(),
+        });
+
+        let TeamError::InvalidRequest(message) = err else {
+            panic!("expected TeamError::InvalidRequest, got {err:?}");
+        };
+        assert!(
+            message.contains("remove and re-add"),
+            "expected an actionable message, got: {message}"
+        );
+        assert!(
+            !message.contains("Provider 'aionrs' not found"),
+            "internal error detail should not leak to the user, got: {message}"
+        );
+    }
+
+    #[test]
+    fn unrelated_bad_request_keeps_original_reason() {
+        let err = map_conversation_update_error(ConversationError::BadRequest {
+            reason: "skills payload is malformed".into(),
+        });
+
+        assert!(matches!(
+            err,
+            TeamError::InvalidRequest(ref message) if message == "Bad request: skills payload is malformed"
         ));
     }
 }
