@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use aionui_api_types::ApiResponse;
 
 use crate::error::OrgError;
-use crate::models::{AdminUserDto, AuditLogRow, InviteDto, OrgContextDto, RuntimeNodeDto, is_system_admin_role};
+use crate::models::{
+    AdminUserDto, AuditLogRow, InviteDto, OrgContextDto, ResetLocalResult, RuntimeNodeDto, is_system_admin_role,
+};
 use crate::rbac::{OrgActor, RequireOrgAdmin};
 use crate::state::OneOrgRouterState;
 
@@ -24,6 +26,7 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         .route("/api/one/org/join", post(org_join))
         .route("/api/one/org/exit", post(org_exit))
         .route("/api/one/org/create", post(org_create))
+        .route("/api/one/org/reset-local", post(org_reset_local))
         .route("/api/one/admin/invites", get(admin_list_invites).post(admin_create_invite))
         .route("/api/one/admin/invites/{invite_id}/revoke", post(admin_revoke_invite))
         .route(
@@ -127,6 +130,17 @@ async fn org_create(
 ) -> Result<Json<ApiResponse<TenantDto>>, OrgError> {
     let (tenant_id, tenant_name) = state.service.create_tenant(&actor.user_id, &body.name).await?;
     Ok(Json(ApiResponse::ok(TenantDto { tenant_id, tenant_name })))
+}
+
+/// Archive and wipe stale local tenant/membership data left behind on this
+/// machine, clearing the way for `org_create` to succeed again. See
+/// `OrgService::reset_local_enterprise` for what gets archived and deleted.
+async fn org_reset_local(
+    State(state): State<OneOrgRouterState>,
+    actor: OrgActor,
+) -> Result<Json<ApiResponse<ResetLocalResult>>, OrgError> {
+    let result = state.service.reset_local_enterprise(&actor.user_id).await?;
+    Ok(Json(ApiResponse::ok(result)))
 }
 
 // --- admin ---

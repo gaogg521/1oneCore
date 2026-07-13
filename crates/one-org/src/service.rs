@@ -8,8 +8,10 @@
 //! repository to invalidate sessions after a tenant change (the per-user
 //! secret makes this strictly scoped to the affected user).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use serde::Serialize;
 use sqlx::SqlitePool;
 
 use aionui_auth::{generate_random_secret_string, hash_password, verify_password};
@@ -19,13 +21,14 @@ use aionui_db::IUserRepository;
 use crate::error::OrgError;
 use crate::models::{
     AdminUserDto, AuditLogRow, DEFAULT_TENANT_ID, InviteDto, InviteRow, OrgContextDto, ROLE_MEMBER, ROLE_SYSTEM_ADMIN,
-    RuntimeNodeDto, RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, TenantRow, UserOrgRow, is_enterprise_tenant_id,
-    is_system_admin_role,
+    ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, TenantRow, UserOrgRow,
+    is_enterprise_tenant_id, is_system_admin_role,
 };
 
 pub struct OrgService {
     pool: SqlitePool,
     user_repo: Arc<dyn IUserRepository>,
+    data_dir: PathBuf,
 }
 
 /// Normalize an invite code: strip whitespace/dashes, uppercase.
@@ -60,8 +63,8 @@ fn short_id(prefix: &str) -> String {
 }
 
 impl OrgService {
-    pub fn new(pool: SqlitePool, user_repo: Arc<dyn IUserRepository>) -> Self {
-        Self { pool, user_repo }
+    pub fn new(pool: SqlitePool, user_repo: Arc<dyn IUserRepository>, data_dir: PathBuf) -> Self {
+        Self { pool, user_repo, data_dir }
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -280,9 +283,7 @@ impl OrgService {
             .fetch_one(&self.pool)
             .await?;
         if existing_tenants > 0 {
-            return Err(OrgError::Forbidden(
-                "This server already hosts an enterprise; a server can host only one. Members should join via invite code.".into(),
-            ));
+            return Err(OrgError::AlreadyHostsEnterprise);
         }
 
         let tenant_id = short_id("tenant");
@@ -317,6 +318,91 @@ impl OrgService {
         self.audit(&tenant_id, Some(user_id), "org.create", Some(name)).await;
 
         Ok((tenant_id, name.to_string()))
+    }
+
+    /// Archive and wipe all local tenant/membership data, so a stale/orphaned
+    /// tenant left behind on this machine (from a prior test or a reinstall
+    /// that never went through a clean `leave`) no longer blocks
+    /// `create_tenant`'s "one server = one enterprise" gate. Self-service
+    /// escape hatch for the scenario the D3 comment above didn't account
+    /// for: a tenant row surviving with no one able to administer it.
+    pub async fn reset_local_enterprise(&self, user_id: &str) -> Result<ResetLocalResult, OrgError> {
+        let role = self.effective_role(user_id).await?;
+        if !is_system_admin_role(&role) {
+            return Err(OrgError::Forbidden(
+                "Only system administrators can reset local enterprise data".into(),
+            ));
+        }
+
+        #[derive(Serialize)]
+        struct ArchivedTenant {
+            id: String,
+            name: String,
+            created_at: i64,
+            updated_at: i64,
+            members: Vec<AdminUserDto>,
+        }
+
+        #[derive(Serialize)]
+        struct ArchiveSnapshot {
+            archived_at: i64,
+            tenants: Vec<ArchivedTenant>,
+        }
+
+        let tenants = sqlx::query_as::<_, TenantRow>("SELECT * FROM one_tenants")
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut archived_tenants = Vec::with_capacity(tenants.len());
+        let mut affected_user_ids = Vec::new();
+        let mut archived_member_count: i64 = 0;
+        for tenant in &tenants {
+            let members = self.list_users(&tenant.id).await?;
+            archived_member_count += members.len() as i64;
+            affected_user_ids.extend(members.iter().map(|m| m.user_id.clone()));
+            archived_tenants.push(ArchivedTenant {
+                id: tenant.id.clone(),
+                name: tenant.name.clone(),
+                created_at: tenant.created_at,
+                updated_at: tenant.updated_at,
+                members,
+            });
+        }
+        let archived_tenant_count = archived_tenants.len() as i64;
+
+        let now = now_ms() as i64;
+        let snapshot = ArchiveSnapshot {
+            archived_at: now,
+            tenants: archived_tenants,
+        };
+
+        let archive_dir = self.data_dir.join("enterprise-archives");
+        std::fs::create_dir_all(&archive_dir)
+            .map_err(|e| OrgError::Internal(format!("failed to create enterprise archive directory: {e}")))?;
+        let archive_path = archive_dir.join(format!("enterprise-{now}.json"));
+        let json = serde_json::to_string_pretty(&snapshot)
+            .map_err(|e| OrgError::Internal(format!("failed to serialize enterprise archive: {e}")))?;
+        std::fs::write(&archive_path, json)
+            .map_err(|e| OrgError::Internal(format!("failed to write enterprise archive: {e}")))?;
+        let archive_path_str = archive_path.to_string_lossy().to_string();
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM one_user_org").execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM one_tenants").execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM one_tenant_invites").execute(&mut *tx).await?;
+        tx.commit().await?;
+
+        for affected_user_id in &affected_user_ids {
+            self.invalidate_user_tokens(affected_user_id).await?;
+        }
+        self.audit(DEFAULT_TENANT_ID, Some(user_id), "org.reset_local", Some(&archive_path_str))
+            .await;
+
+        Ok(ResetLocalResult {
+            archived_tenant_count,
+            archived_member_count,
+            archive_path: archive_path_str,
+        })
     }
 
     pub async fn leave(&self, user_id: &str, exit_code: &str) -> Result<(), OrgError> {
@@ -583,7 +669,8 @@ mod tests {
         let db = aionui_db::init_database_memory().await.unwrap();
         crate::migrate::run_one_migrations(db.pool()).await.unwrap();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(db.pool().clone()));
-        let service = Arc::new(OrgService::new(db.pool().clone(), user_repo.clone()));
+        let data_dir = std::env::temp_dir().join(format!("one-org-test-{}", uuid::Uuid::now_v7()));
+        let service = Arc::new(OrgService::new(db.pool().clone(), user_repo.clone(), data_dir));
         (db, service, user_repo)
     }
 
@@ -714,7 +801,88 @@ mod tests {
             .create_tenant(SYSTEM_DEFAULT_USER_ID, "SecondCorp")
             .await
             .unwrap_err();
+        assert_eq!(err.code(), "ALREADY_HOSTS_ENTERPRISE");
+    }
+
+    #[tokio::test]
+    async fn reset_local_enterprise_clears_stale_tenant_and_allows_recreate() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let member = create_user(&user_repo, "member1").await;
+        let (invite, code) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+        let _ = invite;
+        service.join_with_invite(&member, &code).await.unwrap();
+
+        // Simulate the same stale-data scenario as
+        // `one_server_hosts_only_one_enterprise`: the creator's own
+        // membership row is gone, but the tenant (and the other member) are
+        // still there, so `create_tenant` is blocked.
+        sqlx::query("DELETE FROM one_user_org WHERE user_id = ?")
+            .bind(SYSTEM_DEFAULT_USER_ID)
+            .execute(&service.pool)
+            .await
+            .unwrap();
+        let err = service
+            .create_tenant(SYSTEM_DEFAULT_USER_ID, "SecondCorp")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "ALREADY_HOSTS_ENTERPRISE");
+
+        let result = service.reset_local_enterprise(SYSTEM_DEFAULT_USER_ID).await.unwrap();
+        assert_eq!(result.archived_tenant_count, 1);
+        assert_eq!(result.archived_member_count, 1); // only `member` had a row left
+        assert!(std::path::Path::new(&result.archive_path).exists());
+        let archived_json = std::fs::read_to_string(&result.archive_path).unwrap();
+        assert!(archived_json.contains("Acme"));
+        assert!(archived_json.contains(&member));
+
+        let tenants_left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_tenants")
+            .fetch_one(&service.pool)
+            .await
+            .unwrap();
+        assert_eq!(tenants_left, 0);
+        let memberships_left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_user_org")
+            .fetch_one(&service.pool)
+            .await
+            .unwrap();
+        assert_eq!(memberships_left, 0);
+
+        // The gate is clear again — creating a fresh enterprise now succeeds.
+        let (new_tenant_id, new_name) = service
+            .create_tenant(SYSTEM_DEFAULT_USER_ID, "SecondCorp")
+            .await
+            .unwrap();
+        assert_ne!(new_tenant_id, tenant_id);
+        assert_eq!(new_name, "SecondCorp");
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn reset_local_enterprise_requires_system_admin() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let (_, code) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+        let member = create_user(&user_repo, "member1").await;
+        service.join_with_invite(&member, &code).await.unwrap();
+
+        let err = service.reset_local_enterprise(&member).await.unwrap_err();
         assert_eq!(err.code(), "FORBIDDEN");
+
+        // Nothing was touched.
+        let tenants_left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_tenants")
+            .fetch_one(&service.pool)
+            .await
+            .unwrap();
+        assert_eq!(tenants_left, 1);
+
+        db.close().await;
     }
 
     #[tokio::test]

@@ -184,6 +184,15 @@ impl From<RuntimeNodeRow> for RuntimeNodeDto {
     }
 }
 
+/// Result of dissolving stale local enterprise data via `reset_local_enterprise`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetLocalResult {
+    pub archived_tenant_count: i64,
+    pub archived_member_count: i64,
+    pub archive_path: String,
+}
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditLogRow {

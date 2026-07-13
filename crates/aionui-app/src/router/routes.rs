@@ -264,6 +264,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let one_org_service = std::sync::Arc::new(one_org::OrgService::new(
         services.database.pool().clone(),
         services.user_repo.clone(),
+        services.data_dir.clone(),
     ));
     // Tenant resolver shared by one-employee + one-devops for team-shared
     // employees (A1 L3).
