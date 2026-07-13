@@ -39,6 +39,10 @@ pub enum AgentErrorCode {
     UserAgentMissingEnv,
     UserAgentUnsupportedMethod,
     UserAgentInvalidParams,
+    /// The agent engine stopped after consecutive rounds of failing tool
+    /// calls (aionrs `ToolCallFailures` breaker). Local diagnosis, not an
+    /// unknown upstream failure.
+    UserAgentToolCallLoop,
     UserLlmProviderAuthFailed,
     UserLlmProviderAwsSsoExpired,
     UserLlmProviderPermissionDenied,

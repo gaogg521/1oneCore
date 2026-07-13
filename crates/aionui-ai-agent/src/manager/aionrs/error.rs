@@ -195,10 +195,13 @@ fn append_provider_body(detail: String, body: Option<&str>) -> String {
 }
 
 fn tool_call_failure_send_error(detail: String) -> AgentSendError {
+    // Deliberately NOT UnknownUpstreamError: this is the local agent engine's
+    // consecutive-tool-failure breaker, a known local condition. Labelling it
+    // "unknown upstream" hides the actual failure from the user.
     AgentSendError::new(
-        "The upstream Agent repeatedly failed while executing tool calls",
-        AgentErrorCode::UnknownUpstreamError,
-        AgentErrorOwnership::UnknownUpstream,
+        "The agent stopped after repeated failing tool calls",
+        AgentErrorCode::UserAgentToolCallLoop,
+        AgentErrorOwnership::UserAgent,
         Some(detail),
         true,
         true,
@@ -386,17 +389,17 @@ mod tests {
     }
 
     #[test]
-    fn aionrs_tool_call_failures_are_unknown_upstream_error() {
+    fn aionrs_tool_call_failures_are_agent_tool_call_loop_error() {
         let error = AionrsAgentError::ToolCallFailures { count: 3, limit: 3 };
         let send_error = aionrs_engine_error_to_send_error(&error);
 
         assert_eq!(
             send_error.code(),
-            Some(aionui_api_types::AgentErrorCode::UnknownUpstreamError)
+            Some(aionui_api_types::AgentErrorCode::UserAgentToolCallLoop)
         );
         assert_eq!(
             send_error.ownership(),
-            Some(aionui_api_types::AgentErrorOwnership::UnknownUpstream)
+            Some(aionui_api_types::AgentErrorOwnership::UserAgent)
         );
         assert_eq!(send_error.stream_error().retryable, Some(true));
     }
