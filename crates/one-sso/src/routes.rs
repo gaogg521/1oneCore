@@ -16,7 +16,7 @@ use aionui_api_types::ApiResponse;
 use aionui_auth::CurrentUser;
 
 use crate::error::SsoError;
-use crate::models::{SsoProviderKind, SsoProviderStatusDto, UpdateProviderBody};
+use crate::models::{SsoProviderConfigDto, SsoProviderKind, SsoProviderStatusDto, UpdateProviderBody};
 use crate::state::OneSsoRouterState;
 
 pub fn one_sso_public_routes(state: OneSsoRouterState) -> Router {
@@ -30,6 +30,7 @@ pub fn one_sso_public_routes(state: OneSsoRouterState) -> Router {
 
 pub fn one_sso_admin_routes(state: OneSsoRouterState) -> Router {
     Router::new()
+        .route("/api/one/admin/sso/providers", get(list_provider_configs))
         .route("/api/one/admin/sso/{provider}", put(upsert_provider))
         .with_state(state)
 }
@@ -333,6 +334,15 @@ async fn ldap_login(
         })),
     )
         .into_response())
+}
+
+/// Admin-only: status + non-secret config values, so the settings form can
+/// pre-fill fields the admin already saved instead of always starting blank.
+async fn list_provider_configs(
+    State(state): State<OneSsoRouterState>,
+) -> Result<Json<ApiResponse<Vec<SsoProviderConfigDto>>>, SsoError> {
+    let dtos = state.service.list_provider_configs().await?;
+    Ok(Json(ApiResponse::ok(dtos)))
 }
 
 async fn upsert_provider(

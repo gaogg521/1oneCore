@@ -65,6 +65,20 @@ pub struct SsoProviderStatusDto {
     pub configured: bool,
 }
 
+/// Admin-only status + non-secret config values, used to pre-fill the
+/// settings form so re-editing a provider doesn't require retyping fields
+/// (App ID, Redirect URI, ...) that are already saved. Secret fields (App
+/// Secret / Secret / Bind Password) are still stripped — only the admin
+/// route serves this, never the public one.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SsoProviderConfigDto {
+    pub provider: String,
+    pub enabled: bool,
+    pub configured: bool,
+    pub config: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateProviderBody {

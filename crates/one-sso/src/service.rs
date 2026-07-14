@@ -25,7 +25,7 @@ use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 
 use crate::error::SsoError;
-use crate::models::{SsoIdentityRow, SsoProviderKind, SsoProviderRow};
+use crate::models::{SsoIdentityRow, SsoProviderConfigDto, SsoProviderKind, SsoProviderRow};
 use crate::providers::{ProviderUserInfo, feishu::FeishuProviderConfig};
 
 /// Lifetime of an OAuth `state` nonce — same as the TS reference (10 min).
@@ -146,6 +146,32 @@ impl SsoService {
             .map(|row| {
                 let configured = has_minimal_config(&row.provider, &row.config);
                 (row.provider, row.enabled, configured)
+            })
+            .collect())
+    }
+
+    /// Admin-only status + non-secret config values, for pre-filling the
+    /// settings form (BUG: the form used to always start blank because the
+    /// only status endpoint stripped the *entire* config, secrets included —
+    /// admins had to remember and retype App ID / Redirect URI on every
+    /// edit). Secret fields are still stripped here.
+    pub async fn list_provider_configs(&self) -> Result<Vec<SsoProviderConfigDto>, SsoError> {
+        let rows = sqlx::query_as::<_, SsoProviderRow>(
+            "SELECT provider, enabled, config, updated_at, updated_by FROM one_sso_providers",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let configured = has_minimal_config(&row.provider, &row.config);
+                let config = redact_secret_fields(&row.provider, &row.config);
+                SsoProviderConfigDto {
+                    provider: row.provider,
+                    enabled: row.enabled,
+                    configured,
+                    config,
+                }
             })
             .collect())
     }
@@ -435,6 +461,35 @@ fn has_minimal_config(provider: &str, config_json: &str) -> bool {
     }
 }
 
+/// Field names holding secrets per provider — never sent to the admin
+/// settings form, even redacted. Mirrors the `secret: true` markers in the
+/// frontend `SsoSettingsTab` field specs.
+fn secret_keys(provider: &str) -> &'static [&'static str] {
+    match provider {
+        "feishu" => &["appSecret"],
+        "dingtalk" => &["appSecret"],
+        "wecom" => &["secret"],
+        "ldap" => &["bindPassword"],
+        _ => &[],
+    }
+}
+
+/// Strip secret fields from a stored config JSON, keeping the rest so the
+/// admin form can pre-fill non-secret values (App ID, Redirect URI, ...).
+fn redact_secret_fields(provider: &str, config_json: &str) -> serde_json::Value {
+    let mut obj = serde_json::from_str::<serde_json::Value>(config_json)
+        .ok()
+        .and_then(|v| match v {
+            serde_json::Value::Object(o) => Some(o),
+            _ => None,
+        })
+        .unwrap_or_default();
+    for key in secret_keys(provider) {
+        obj.remove(*key);
+    }
+    serde_json::Value::Object(obj)
+}
+
 /// Parse a Feishu config row into a typed config, applying env-var fallbacks
 /// the way the TS reference does. Returns `None` when the row is missing or
 /// has no appId.
@@ -526,6 +581,40 @@ mod tests {
             "feishu",
             r#"{"appId":"cli_x","appSecret":"******"}"#
         ));
+    }
+
+    #[test]
+    fn redact_secret_fields_strips_only_secrets() {
+        let config = r#"{"appId":"cli_x","appSecret":"s3cret","redirectUri":"https://x/cb"}"#;
+        let redacted = redact_secret_fields("feishu", config);
+        assert_eq!(redacted["appId"], "cli_x");
+        assert_eq!(redacted["redirectUri"], "https://x/cb");
+        assert!(redacted.get("appSecret").is_none());
+    }
+
+    #[test]
+    fn redact_secret_fields_covers_every_provider_secret() {
+        assert!(
+            redact_secret_fields("dingtalk", r#"{"appKey":"k","appSecret":"s"}"#)
+                .get("appSecret")
+                .is_none()
+        );
+        assert!(
+            redact_secret_fields("wecom", r#"{"corpId":"c","secret":"s"}"#)
+                .get("secret")
+                .is_none()
+        );
+        assert!(
+            redact_secret_fields("ldap", r#"{"url":"ldap://x","bindPassword":"p"}"#)
+                .get("bindPassword")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn redact_secret_fields_handles_empty_config() {
+        let redacted = redact_secret_fields("feishu", "");
+        assert_eq!(redacted, serde_json::json!({}));
     }
 
     #[test]
