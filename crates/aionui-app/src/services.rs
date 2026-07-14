@@ -40,8 +40,12 @@ pub struct AppServices {
     pub agent_registry: Arc<AgentRegistry>,
     pub conversation_repo: Arc<dyn IConversationRepository>,
     pub acp_session_sync: Arc<AcpSessionSyncService>,
-    /// Raw JWT secret string, used to derive encryption keys.
+    /// Raw JWT secret string, used for auth token signing. NOT for data
+    /// encryption — auth flows rotate this to invalidate sessions.
     pub jwt_secret_raw: String,
+    /// Raw data-at-rest encryption secret, used to derive the AES key for all
+    /// stored API keys. Stable across auth/session-invalidation rotations.
+    pub data_secret_raw: String,
     pub data_dir: PathBuf,
     pub dump_prompts: bool,
     pub work_dir: PathBuf,
@@ -118,7 +122,36 @@ impl AppServices {
             tracing::info!("Generated and persisted new JWT secret");
         }
 
-        let encryption_key = derive_encryption_key(&secret);
+        // Resolve the data-at-rest encryption secret. This is deliberately
+        // SEPARATE from `jwt_secret`: auth flows (org join/leave/create/reset,
+        // password change) rotate `jwt_secret` to invalidate sessions, and if
+        // the encryption key were derived from it, every such rotation would
+        // silently orphan all stored provider/team/mcp/channel API keys.
+        //
+        // Back-compat: existing installs have no `data_secret` yet. Seed it
+        // from the CURRENT `jwt_secret` so any key still decryptable with the
+        // current jwt-derived key stays readable after the upgrade. From then
+        // on `data_secret` is stable and untouched by auth rotations. Keys
+        // that were already orphaned by a past rotation cannot be recovered.
+        let db_data_secret = system_user
+            .as_ref()
+            .and_then(|u| u.data_secret.as_deref())
+            .filter(|s| !s.is_empty());
+        let data_secret = match db_data_secret {
+            Some(existing) => existing.to_owned(),
+            None => {
+                if let Some(user) = &system_user {
+                    user_repo
+                        .update_data_secret(&user.id, &secret)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Failed to persist data secret: {e}"))?;
+                    tracing::info!("Seeded data encryption secret from current JWT secret (one-time backfill)");
+                }
+                secret.clone()
+            }
+        };
+
+        let encryption_key = derive_encryption_key(&data_secret);
 
         let provider_repo = Arc::new(SqliteProviderRepository::new(database.pool().clone()));
         let event_bus = Arc::new(BroadcastEventBus::new(256));
@@ -219,6 +252,7 @@ impl AppServices {
             conversation_repo,
             acp_session_sync: acp_agent_service,
             jwt_secret_raw: secret,
+            data_secret_raw: data_secret,
             data_dir,
             dump_prompts,
             work_dir,
@@ -309,6 +343,54 @@ mod tests {
         let jwt_secret = system_user.unwrap().jwt_secret;
         assert!(jwt_secret.is_some());
         assert!(!jwt_secret.unwrap().is_empty());
+
+        services.database.close().await;
+    }
+
+    #[tokio::test]
+    async fn data_secret_is_seeded_from_jwt_on_first_init() {
+        let db = aionui_db::init_database_memory().await.unwrap();
+        let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+
+        // On a fresh install the data secret is backfilled from the current
+        // jwt secret so pre-existing (jwt-encrypted) data stays decryptable.
+        assert!(!services.data_secret_raw.is_empty());
+        assert_eq!(services.data_secret_raw, services.jwt_secret_raw);
+
+        // And it is persisted to the users row.
+        let system_user = services.user_repo.get_system_user().await.unwrap().unwrap();
+        assert_eq!(system_user.data_secret.as_deref(), Some(services.data_secret_raw.as_str()));
+
+        services.database.close().await;
+    }
+
+    #[tokio::test]
+    async fn data_secret_survives_jwt_secret_rotation() {
+        // Regression: org join/leave/create/reset and password change rotate
+        // the jwt secret to invalidate sessions. The data-encryption key must
+        // NOT follow it, otherwise every such rotation orphans stored API keys.
+        let db = aionui_db::init_database_memory().await.unwrap();
+        let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+        let original_data_secret = services.data_secret_raw.clone();
+
+        // Simulate an auth/session-invalidation rotation (as one-org does).
+        services
+            .user_repo
+            .update_jwt_secret("system_default_user", "a-freshly-rotated-jwt-secret")
+            .await
+            .unwrap();
+
+        let system_user = services.user_repo.get_system_user().await.unwrap().unwrap();
+        assert_eq!(
+            system_user.jwt_secret.as_deref(),
+            Some("a-freshly-rotated-jwt-secret"),
+            "jwt secret should have rotated"
+        );
+        assert_eq!(
+            system_user.data_secret.as_deref(),
+            Some(original_data_secret.as_str()),
+            "data secret must be untouched by jwt rotation"
+        );
 
         services.database.close().await;
     }

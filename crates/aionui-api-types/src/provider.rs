@@ -117,6 +117,19 @@ pub struct BedrockConfig {
 
 /// Provider response for `GET /api/providers` and single-provider endpoints.
 ///
+/// Whether a provider's stored API key could be read back.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKeyStatus {
+    /// API key decrypted successfully.
+    #[default]
+    Ok,
+    /// API key could not be decrypted (it was encrypted under an encryption
+    /// key that has since changed). The plaintext is unrecoverable; the user
+    /// must re-enter the key. Surfaced instead of silently hiding the row.
+    Unrecoverable,
+}
+
 /// The `api_key` field is returned in plaintext (decrypted on read). Storage
 /// remains encrypted at rest. Pre-launch convention for the frontend
 /// local-store → backend migration; no masking applied.
@@ -146,6 +159,10 @@ pub struct ProviderResponse {
     pub bedrock_config: Option<BedrockConfig>,
     #[serde(default)]
     pub is_full_url: bool,
+    /// Read-back status of the stored API key. `Unrecoverable` means the key
+    /// is present in storage but could not be decrypted and must be re-entered.
+    #[serde(default)]
+    pub key_status: ProviderKeyStatus,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -479,6 +496,7 @@ mod tests {
             model_max_tokens: None,
             bedrock_config: None,
             is_full_url: false,
+            key_status: ProviderKeyStatus::default(),
             created_at: 1712345678000,
             updated_at: 1712345678000,
         };
@@ -514,6 +532,7 @@ mod tests {
             model_max_tokens: None,
             bedrock_config: None,
             is_full_url: false,
+            key_status: ProviderKeyStatus::default(),
             created_at: 0,
             updated_at: 0,
         };
@@ -637,6 +656,7 @@ mod tests {
             model_max_tokens: Some(HashMap::from([("deepseek-v4-pro".into(), 65536u32)])),
             bedrock_config: None,
             is_full_url: false,
+            key_status: ProviderKeyStatus::default(),
             created_at: 0,
             updated_at: 0,
         };
@@ -671,6 +691,7 @@ mod tests {
             model_max_tokens: None,
             bedrock_config: None,
             is_full_url: false,
+            key_status: ProviderKeyStatus::default(),
             created_at: 0,
             updated_at: 0,
         };

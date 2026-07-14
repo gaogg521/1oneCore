@@ -102,6 +102,7 @@ impl IUserRepository for SqliteUserRepository {
             password_hash: password_hash.to_string(),
             avatar_path: None,
             jwt_secret: None,
+            data_secret: None,
             created_at: now,
             updated_at: now,
             last_login: None,
@@ -200,6 +201,22 @@ impl IUserRepository for SqliteUserRepository {
         let now = aionui_common::now_ms();
         let result = sqlx::query("UPDATE users SET jwt_secret = ?, updated_at = ? WHERE id = ?")
             .bind(jwt_secret)
+            .bind(now)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound(format!("User '{user_id}' not found")));
+        }
+
+        Ok(())
+    }
+
+    async fn update_data_secret(&self, user_id: &str, data_secret: &str) -> Result<(), DbError> {
+        let now = aionui_common::now_ms();
+        let result = sqlx::query("UPDATE users SET data_secret = ?, updated_at = ? WHERE id = ?")
+            .bind(data_secret)
             .bind(now)
             .bind(user_id)
             .execute(&self.pool)
@@ -455,6 +472,27 @@ mod tests {
 
         let updated = repo.find_by_id(&user.id).await.unwrap().unwrap();
         assert_eq!(updated.jwt_secret.as_deref(), Some("secret123"));
+    }
+
+    #[tokio::test]
+    async fn update_data_secret_succeeds_and_is_independent_of_jwt_secret() {
+        let (repo, _db) = setup().await;
+        let user = repo.create_user("mike", "h").await.unwrap();
+        assert!(user.data_secret.is_none());
+
+        repo.update_data_secret(&user.id, "data-key-abc").await.unwrap();
+        repo.update_jwt_secret(&user.id, "jwt-xyz").await.unwrap();
+
+        let updated = repo.find_by_id(&user.id).await.unwrap().unwrap();
+        assert_eq!(updated.data_secret.as_deref(), Some("data-key-abc"));
+        assert_eq!(updated.jwt_secret.as_deref(), Some("jwt-xyz"));
+    }
+
+    #[tokio::test]
+    async fn update_data_secret_nonexistent_user() {
+        let (repo, _db) = setup().await;
+        let err = repo.update_data_secret("ghost", "x").await.unwrap_err();
+        assert!(matches!(err, DbError::NotFound(_)));
     }
 
     #[tokio::test]

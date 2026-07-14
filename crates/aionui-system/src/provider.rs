@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use aionui_api_types::{CreateProviderRequest, ProviderResponse, UpdateProviderRequest};
+use aionui_api_types::{CreateProviderRequest, ProviderKeyStatus, ProviderResponse, UpdateProviderRequest};
 use aionui_common::{decrypt_string, encrypt_string};
 use aionui_db::{CreateProviderParams, IProviderRepository, UpdateProviderParams, models::Provider};
 use serde::de::DeserializeOwned;
@@ -20,26 +20,30 @@ impl ProviderService {
         Self { repo, encryption_key }
     }
 
-    /// List all providers with masked API keys.
+    /// List all providers with their plaintext API keys.
     ///
-    /// Rows whose API key cannot be decrypted (for example after a JWT secret
-    /// rotation or a partially migrated install) are skipped with a warning so
-    /// one corrupt provider does not fail the entire list endpoint.
+    /// Rows whose API key cannot be decrypted (for example because the
+    /// encryption key changed) are returned with an empty `api_key` and
+    /// `key_status = Unrecoverable` rather than being silently dropped, so the
+    /// UI can prompt the user to re-enter the key instead of the provider
+    /// appearing to vanish. A JSON-parse failure on the non-encrypted columns
+    /// is still a real error and fails the request.
     pub async fn list(&self) -> Result<Vec<ProviderResponse>, SystemError> {
         let rows = self.repo.list().await?;
         let mut providers = Vec::with_capacity(rows.len());
         for row in rows {
             let id = row.id.clone();
-            match self.row_to_response(row) {
-                Ok(provider) => providers.push(provider),
-                Err(SystemError::BadRequest(reason)) => {
+            match decrypt_string(&row.api_key_encrypted, &self.encryption_key) {
+                Ok(api_key) => providers.push(self.build_response(row, api_key, ProviderKeyStatus::Ok)?),
+                Err(crypto_err) if crypto_err.is_bad_request() => {
                     tracing::warn!(
                         provider_id = %id,
-                        reason = %reason,
-                        "Skipping provider with undecryptable API key"
+                        reason = %crypto_err,
+                        "Provider API key could not be decrypted; surfacing as unrecoverable (re-entry required)"
                     );
+                    providers.push(self.build_response(row, String::new(), ProviderKeyStatus::Unrecoverable)?);
                 }
-                Err(error) => return Err(error),
+                Err(crypto_err) => return Err(SystemError::from(crypto_err)),
             }
         }
         Ok(providers)
@@ -142,7 +146,20 @@ impl ProviderService {
     /// the key on re-read. Storage remains encrypted at rest.
     fn row_to_response(&self, row: Provider) -> Result<ProviderResponse, SystemError> {
         let api_key = decrypt_string(&row.api_key_encrypted, &self.encryption_key)?;
+        self.build_response(row, api_key, ProviderKeyStatus::Ok)
+    }
 
+    /// Build the response DTO from a row, given an already-resolved API key and
+    /// key status. Parses the (non-encrypted) JSON columns. Split out from
+    /// [`row_to_response`](Self::row_to_response) so `list` can surface rows
+    /// whose key failed to decrypt with an empty key + `Unrecoverable` status
+    /// instead of hiding them.
+    fn build_response(
+        &self,
+        row: Provider,
+        api_key: String,
+        key_status: ProviderKeyStatus,
+    ) -> Result<ProviderResponse, SystemError> {
         let models: Vec<String> = serde_json::from_str(&row.models)
             .map_err(|e| SystemError::Internal(format!("Failed to parse models JSON: {e}")))?;
         let capabilities = serde_json::from_str(&row.capabilities)
@@ -170,6 +187,7 @@ impl ProviderService {
             model_max_tokens,
             bedrock_config,
             is_full_url: row.is_full_url,
+            key_status,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -526,7 +544,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_skips_undecryptable_provider_rows() {
+    async fn list_surfaces_undecryptable_provider_rows_as_unrecoverable() {
         let db = init_database_memory().await.unwrap();
         let repo: Arc<dyn aionui_db::IProviderRepository> =
             Arc::new(SqliteProviderRepository::new(db.pool().clone()));
@@ -535,7 +553,7 @@ mod tests {
         let foreign_key_svc = ProviderService::new(repo, [0x99u8; 32]);
 
         let good = svc.create(sample_create_request()).await.unwrap();
-        let _undecryptable = foreign_key_svc
+        let undecryptable = foreign_key_svc
             .create(CreateProviderRequest {
                 name: "Undecryptable".into(),
                 ..sample_create_request()
@@ -543,9 +561,22 @@ mod tests {
             .await
             .unwrap();
 
+        // Both rows are returned. The one encrypted under a different key is
+        // surfaced with an empty api_key + Unrecoverable status (not hidden),
+        // so the UI can prompt the user to re-enter it rather than the
+        // provider silently vanishing.
         let all = svc.list().await.unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].id, good.id);
+        assert_eq!(all.len(), 2);
+
+        let good_resp = all.iter().find(|p| p.id == good.id).unwrap();
+        assert_eq!(good_resp.key_status, ProviderKeyStatus::Ok);
+        assert_eq!(good_resp.api_key, "sk-ant-api03-test1234");
+
+        let broken_resp = all.iter().find(|p| p.id == undecryptable.id).unwrap();
+        assert_eq!(broken_resp.key_status, ProviderKeyStatus::Unrecoverable);
+        assert!(broken_resp.api_key.is_empty());
+        // Non-encrypted metadata (name/models) is still readable.
+        assert_eq!(broken_resp.name, "Undecryptable");
     }
 
     #[tokio::test]

@@ -57,4 +57,11 @@ pub trait IUserRepository: Send + Sync {
 
     /// Updates a user's JWT secret.
     async fn update_jwt_secret(&self, user_id: &str, jwt_secret: &str) -> Result<(), DbError>;
+
+    /// Updates a user's data-at-rest encryption secret.
+    ///
+    /// Distinct from [`update_jwt_secret`](Self::update_jwt_secret): this
+    /// secret backs API-key encryption and must NOT be rotated by auth or
+    /// session-invalidation flows, otherwise stored keys become undecryptable.
+    async fn update_data_secret(&self, user_id: &str, data_secret: &str) -> Result<(), DbError>;
 }

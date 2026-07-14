@@ -1,0 +1,13 @@
+-- Dedicated data-at-rest encryption secret, decoupled from `jwt_secret`.
+--
+-- `jwt_secret` is an AUTH credential that is intentionally rotated to
+-- invalidate sessions (org join/leave/create/reset, password change). The
+-- provider/team/mcp/channel API keys are encrypted with a key derived from
+-- the secret, so rotating `jwt_secret` used to silently orphan every stored
+-- key. `data_secret` is generated once and never rotated by auth flows, so
+-- session invalidation no longer destroys encrypted data.
+--
+-- Existing installs backfill `data_secret` from the current `jwt_secret` at
+-- next boot (see AppServices::from_config) so data still decryptable with the
+-- current key stays readable; the column starts NULL here.
+ALTER TABLE users ADD COLUMN data_secret TEXT;
