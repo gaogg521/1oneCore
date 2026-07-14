@@ -24,7 +24,9 @@ pub enum OrgError {
     #[error("{0}")]
     Forbidden(String),
 
-    #[error("This server already hosts an enterprise; a server can host only one. Members should join via invite code.")]
+    #[error(
+        "This server already hosts an enterprise; a server can host only one. Members should join via invite code."
+    )]
     AlreadyHostsEnterprise,
 
     #[error("Enterprise name is required")]
@@ -35,6 +37,11 @@ pub enum OrgError {
 
     #[error("Incorrect exit code")]
     WrongExitCode,
+
+    #[error(
+        "You are the last administrator of this enterprise. Promote another member to admin before leaving or stepping down, or the tenant will be left with no one who can manage it."
+    )]
+    LastAdminCannotLeave,
 
     #[error("Bad request: {0}")]
     BadRequest(String),
@@ -56,6 +63,7 @@ impl OrgError {
             Self::NameRequired => "NAME_REQUIRED",
             Self::NoExitPasswordSet => "NO_EXIT_PASSWORD_SET",
             Self::WrongExitCode => "WRONG_EXIT_CODE",
+            Self::LastAdminCannotLeave => "LAST_ADMIN_CANNOT_LEAVE",
             Self::BadRequest(_) => "BAD_REQUEST",
             Self::Internal(_) => "INTERNAL_ERROR",
         }

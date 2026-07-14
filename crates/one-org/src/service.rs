@@ -21,7 +21,7 @@ use aionui_db::IUserRepository;
 use crate::error::OrgError;
 use crate::models::{
     AdminUserDto, AuditLogRow, DEFAULT_TENANT_ID, InviteDto, InviteRow, OrgContextDto, ROLE_MEMBER, ROLE_SYSTEM_ADMIN,
-    ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, TenantRow, UserOrgRow,
+    ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, TenantRow, UserOrgRow, is_admin_role,
     is_enterprise_tenant_id, is_system_admin_role,
 };
 
@@ -64,7 +64,11 @@ fn short_id(prefix: &str) -> String {
 
 impl OrgService {
     pub fn new(pool: SqlitePool, user_repo: Arc<dyn IUserRepository>, data_dir: PathBuf) -> Self {
-        Self { pool, user_repo, data_dir }
+        Self {
+            pool,
+            user_repo,
+            data_dir,
+        }
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -395,8 +399,13 @@ impl OrgService {
         for affected_user_id in &affected_user_ids {
             self.invalidate_user_tokens(affected_user_id).await?;
         }
-        self.audit(DEFAULT_TENANT_ID, Some(user_id), "org.reset_local", Some(&archive_path_str))
-            .await;
+        self.audit(
+            DEFAULT_TENANT_ID,
+            Some(user_id),
+            "org.reset_local",
+            Some(&archive_path_str),
+        )
+        .await;
 
         Ok(ResetLocalResult {
             archived_tenant_count,
@@ -412,10 +421,14 @@ impl OrgService {
         };
 
         let tenant = self.get_tenant(&membership.tenant_id).await?;
-        if let Some(hash) = tenant.and_then(|t| t.exit_password_hash) {
-            if !verify_password(exit_code, &hash)? {
-                return Err(OrgError::WrongExitCode);
-            }
+        if let Some(hash) = tenant.and_then(|t| t.exit_password_hash)
+            && !verify_password(exit_code, &hash)?
+        {
+            return Err(OrgError::WrongExitCode);
+        }
+
+        if is_admin_role(&membership.role) {
+            self.ensure_not_last_admin(&membership.tenant_id, user_id).await?;
         }
 
         sqlx::query("DELETE FROM one_user_org WHERE user_id = ?")
@@ -425,6 +438,37 @@ impl OrgService {
         self.invalidate_user_tokens(user_id).await?;
         self.audit(&membership.tenant_id, Some(user_id), "org.exit", None).await;
         Ok(())
+    }
+
+    /// Reject an admin removal/demotion when it would leave the tenant with
+    /// zero admins while other members remain — with no admin left, no one
+    /// can invite, configure SSO, or promote a replacement, permanently
+    /// orphaning the tenant. Allowed when the departing admin is also the
+    /// tenant's last member (the tenant simply becomes empty, not orphaned).
+    async fn ensure_not_last_admin(&self, tenant_id: &str, excluding_user_id: &str) -> Result<(), OrgError> {
+        let remaining_admins: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM one_user_org \
+             WHERE tenant_id = ? AND user_id != ? AND role IN ('system_admin', 'org_admin', 'admin')",
+        )
+        .bind(tenant_id)
+        .bind(excluding_user_id)
+        .fetch_one(&self.pool)
+        .await?;
+        if remaining_admins > 0 {
+            return Ok(());
+        }
+
+        let remaining_members: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ? AND user_id != ?")
+                .bind(tenant_id)
+                .bind(excluding_user_id)
+                .fetch_one(&self.pool)
+                .await?;
+        if remaining_members == 0 {
+            return Ok(());
+        }
+
+        Err(OrgError::LastAdminCannotLeave)
     }
 
     // --- exit password (admin) ---
@@ -556,6 +600,19 @@ impl OrgService {
     /// `member`/`org_admin`/`system_admin` — validated by the caller (route
     /// handler) so we keep the service free of string validation.
     pub async fn set_user_role(&self, tenant_id: &str, user_id: &str, role: &str) -> Result<(), OrgError> {
+        // Demoting the tenant's last admin to a non-admin role would leave no
+        // one who can invite, configure SSO, or promote a replacement —
+        // same guard as `leave()`.
+        let current_role: Option<String> =
+            sqlx::query_scalar("SELECT role FROM one_user_org WHERE tenant_id = ? AND user_id = ?")
+                .bind(tenant_id)
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        if current_role.is_some_and(|r| is_admin_role(&r)) && !is_admin_role(role) {
+            self.ensure_not_last_admin(tenant_id, user_id).await?;
+        }
+
         let result =
             sqlx::query("UPDATE one_user_org SET role = ?, updated_at = ? WHERE tenant_id = ? AND user_id = ?")
                 .bind(role)
@@ -663,6 +720,7 @@ impl OrgService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::ROLE_ORG_ADMIN;
     use aionui_db::SqliteUserRepository;
 
     async fn setup() -> (aionui_db::Database, Arc<OrgService>, Arc<dyn IUserRepository>) {
@@ -913,6 +971,111 @@ mod tests {
         let listed = service.list_invites(&tenant_id).await.unwrap();
         assert_eq!(listed.len(), 2);
         let _ = invite;
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn last_admin_cannot_leave_while_other_members_remain() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let (_, code) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+        let member = create_user(&user_repo, "member1").await;
+        service.join_with_invite(&member, &code).await.unwrap();
+
+        // SYSTEM_DEFAULT_USER_ID is the tenant's sole admin; member1 is a
+        // plain member. Leaving now would orphan member1 with no one who can
+        // invite, configure SSO, or promote a replacement.
+        let err = service.leave(SYSTEM_DEFAULT_USER_ID, "").await.unwrap_err();
+        assert_eq!(err.code(), "LAST_ADMIN_CANNOT_LEAVE");
+        assert_eq!(service.member_count(&tenant_id).await.unwrap(), 2);
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn admin_can_leave_when_another_admin_remains() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let (_, code) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+        let member = create_user(&user_repo, "member1").await;
+        service.join_with_invite(&member, &code).await.unwrap();
+        service
+            .set_user_role(&tenant_id, &member, ROLE_ORG_ADMIN)
+            .await
+            .unwrap();
+
+        // Two admins now — SYSTEM_DEFAULT_USER_ID leaving is fine, member1
+        // stays behind as org_admin.
+        service.leave(SYSTEM_DEFAULT_USER_ID, "").await.unwrap();
+        assert_eq!(service.member_count(&tenant_id).await.unwrap(), 1);
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn last_admin_can_leave_when_no_other_members_remain() {
+        let (db, service, _user_repo) = setup().await;
+        service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        // Sole admin, sole member — leaving just empties the tenant, no one
+        // is orphaned.
+        service.leave(SYSTEM_DEFAULT_USER_ID, "").await.unwrap();
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn cannot_demote_last_admin_to_member() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let (_, code) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+        let member = create_user(&user_repo, "member1").await;
+        service.join_with_invite(&member, &code).await.unwrap();
+
+        // Demoting the sole admin (SYSTEM_DEFAULT_USER_ID) to member would
+        // leave member1 with no admin at all.
+        let err = service
+            .set_user_role(&tenant_id, SYSTEM_DEFAULT_USER_ID, ROLE_MEMBER)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "LAST_ADMIN_CANNOT_LEAVE");
+        assert_eq!(
+            service.effective_role(SYSTEM_DEFAULT_USER_ID).await.unwrap(),
+            ROLE_SYSTEM_ADMIN
+        );
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn can_demote_admin_when_another_admin_remains() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let (_, code) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+        let member = create_user(&user_repo, "member1").await;
+        service.join_with_invite(&member, &code).await.unwrap();
+        service
+            .set_user_role(&tenant_id, &member, ROLE_ORG_ADMIN)
+            .await
+            .unwrap();
+
+        // Two admins — demoting member1 back to plain member is fine since
+        // SYSTEM_DEFAULT_USER_ID is still an admin.
+        service.set_user_role(&tenant_id, &member, ROLE_MEMBER).await.unwrap();
+        assert_eq!(service.effective_role(&member).await.unwrap(), ROLE_MEMBER);
+
         db.close().await;
     }
 }

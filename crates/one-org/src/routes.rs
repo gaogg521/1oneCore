@@ -30,7 +30,10 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         .route("/api/one/org/exit", post(org_exit))
         .route("/api/one/org/create", post(org_create))
         .route("/api/one/org/reset-local", post(org_reset_local))
-        .route("/api/one/admin/invites", get(admin_list_invites).post(admin_create_invite))
+        .route(
+            "/api/one/admin/invites",
+            get(admin_list_invites).post(admin_create_invite),
+        )
         .route("/api/one/admin/invites/{invite_id}/revoke", post(admin_revoke_invite))
         .route(
             "/api/one/admin/exit-password",
@@ -209,7 +212,12 @@ async fn admin_create_invite(
         .await?;
     state
         .service
-        .audit(&actor.tenant_id, Some(&actor.user_id), "org.invite.create", Some(&invite.id))
+        .audit(
+            &actor.tenant_id,
+            Some(&actor.user_id),
+            "org.invite.create",
+            Some(&invite.id),
+        )
         .await;
     Ok(Json(ApiResponse::ok(CreatedInviteDto { invite, display_code })))
 }
@@ -222,7 +230,12 @@ async fn admin_revoke_invite(
     state.service.revoke_invite(&actor.tenant_id, &invite_id).await?;
     state
         .service
-        .audit(&actor.tenant_id, Some(&actor.user_id), "org.invite.revoke", Some(&invite_id))
+        .audit(
+            &actor.tenant_id,
+            Some(&actor.user_id),
+            "org.invite.revoke",
+            Some(&invite_id),
+        )
         .await;
     Ok(Json(ApiResponse::ok(())))
 }
@@ -251,7 +264,10 @@ async fn admin_set_exit_password(
     RequireOrgAdmin(actor): RequireOrgAdmin,
     Json(body): Json<SetExitPasswordBody>,
 ) -> Result<Json<ApiResponse<()>>, OrgError> {
-    state.service.set_exit_password(&actor.tenant_id, &body.password).await?;
+    state
+        .service
+        .set_exit_password(&actor.tenant_id, &body.password)
+        .await?;
     state
         .service
         .audit(&actor.tenant_id, Some(&actor.user_id), "org.exit_password.set", None)
@@ -299,12 +315,11 @@ async fn admin_set_user_role(
     }
     // system_admin can only be set by an existing system_admin.
     if role == "system_admin" && !is_system_admin_role(&actor.role) {
-        return Err(OrgError::Forbidden("only system_admin can promote to system_admin".into()));
+        return Err(OrgError::Forbidden(
+            "only system_admin can promote to system_admin".into(),
+        ));
     }
-    state
-        .service
-        .set_user_role(&actor.tenant_id, &user_id, role)
-        .await?;
+    state.service.set_user_role(&actor.tenant_id, &user_id, role).await?;
     Ok(Json(ApiResponse::ok(())))
 }
 
