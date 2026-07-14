@@ -215,6 +215,7 @@ async fn admin_create_invite(
         .audit(
             &actor.tenant_id,
             Some(&actor.user_id),
+            Some(&actor.username),
             "org.invite.create",
             Some(&invite.id),
         )
@@ -233,6 +234,7 @@ async fn admin_revoke_invite(
         .audit(
             &actor.tenant_id,
             Some(&actor.user_id),
+            Some(&actor.username),
             "org.invite.revoke",
             Some(&invite_id),
         )
@@ -270,7 +272,13 @@ async fn admin_set_exit_password(
         .await?;
     state
         .service
-        .audit(&actor.tenant_id, Some(&actor.user_id), "org.exit_password.set", None)
+        .audit(
+            &actor.tenant_id,
+            Some(&actor.user_id),
+            Some(&actor.username),
+            "org.exit_password.set",
+            None,
+        )
         .await;
     Ok(Json(ApiResponse::ok(())))
 }
@@ -282,7 +290,13 @@ async fn admin_clear_exit_password(
     state.service.clear_exit_password(&actor.tenant_id).await?;
     state
         .service
-        .audit(&actor.tenant_id, Some(&actor.user_id), "org.exit_password.clear", None)
+        .audit(
+            &actor.tenant_id,
+            Some(&actor.user_id),
+            Some(&actor.username),
+            "org.exit_password.clear",
+            None,
+        )
         .await;
     Ok(Json(ApiResponse::ok(())))
 }
@@ -319,7 +333,10 @@ async fn admin_set_user_role(
             "only system_admin can promote to system_admin".into(),
         ));
     }
-    state.service.set_user_role(&actor.tenant_id, &user_id, role).await?;
+    state
+        .service
+        .set_user_role(&actor.tenant_id, &actor.user_id, &user_id, role)
+        .await?;
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -370,11 +387,19 @@ struct HeartbeatDto {
     node_id: String,
 }
 
+// Any enterprise member's machine reports in here, not just admins' — the
+// whole point of the runtime-node roster is fleet-wide visibility (which
+// machines have which agents installed). Gating this to `RequireOrgAdmin`
+// meant a regular member's machine could never heartbeat at all (403), so
+// the roster could only ever show admins' own machines.
 async fn admin_runtime_heartbeat(
     State(state): State<OneOrgRouterState>,
-    RequireOrgAdmin(actor): RequireOrgAdmin,
+    actor: OrgActor,
     Json(body): Json<HeartbeatBody>,
 ) -> Result<Json<ApiResponse<HeartbeatDto>>, OrgError> {
+    if !is_enterprise_tenant_id(&actor.tenant_id) {
+        return Err(OrgError::NotInEnterprise);
+    }
     let machine_id = body.machine_id.trim();
     if machine_id.is_empty() {
         return Err(OrgError::BadRequest("machineId is required".into()));

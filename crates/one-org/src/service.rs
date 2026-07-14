@@ -253,8 +253,15 @@ impl OrgService {
         tx.commit().await?;
 
         self.invalidate_user_tokens(user_id).await?;
-        self.audit(&invite.tenant_id, Some(user_id), "org.join", Some(&invite.id))
-            .await;
+        let username = self.lookup_username(user_id).await;
+        self.audit(
+            &invite.tenant_id,
+            Some(user_id),
+            username.as_deref(),
+            "org.join",
+            Some(&invite.id),
+        )
+        .await;
 
         let tenant = self
             .get_tenant(&invite.tenant_id)
@@ -319,7 +326,9 @@ impl OrgService {
         tx.commit().await?;
 
         self.invalidate_user_tokens(user_id).await?;
-        self.audit(&tenant_id, Some(user_id), "org.create", Some(name)).await;
+        let username = self.lookup_username(user_id).await;
+        self.audit(&tenant_id, Some(user_id), username.as_deref(), "org.create", Some(name))
+            .await;
 
         Ok((tenant_id, name.to_string()))
     }
@@ -399,9 +408,11 @@ impl OrgService {
         for affected_user_id in &affected_user_ids {
             self.invalidate_user_tokens(affected_user_id).await?;
         }
+        let username = self.lookup_username(user_id).await;
         self.audit(
             DEFAULT_TENANT_ID,
             Some(user_id),
+            username.as_deref(),
             "org.reset_local",
             Some(&archive_path_str),
         )
@@ -436,7 +447,15 @@ impl OrgService {
             .execute(&self.pool)
             .await?;
         self.invalidate_user_tokens(user_id).await?;
-        self.audit(&membership.tenant_id, Some(user_id), "org.exit", None).await;
+        let username = self.lookup_username(user_id).await;
+        self.audit(
+            &membership.tenant_id,
+            Some(user_id),
+            username.as_deref(),
+            "org.exit",
+            None,
+        )
+        .await;
         Ok(())
     }
 
@@ -547,15 +566,27 @@ impl OrgService {
 
     // --- audit ---
 
-    /// Best-effort audit write; failures are logged, never surfaced.
-    pub async fn audit(&self, tenant_id: &str, user_id: Option<&str>, action: &str, resource: Option<&str>) {
+    /// Best-effort audit write; failures are logged, never surfaced. The
+    /// `username` column exists precisely so the audit tab reads as "who did
+    /// this" without a raw user id — callers should always resolve it via
+    /// `lookup_username`/an already-in-scope actor username rather than
+    /// leaving it `None`.
+    pub async fn audit(
+        &self,
+        tenant_id: &str,
+        user_id: Option<&str>,
+        username: Option<&str>,
+        action: &str,
+        resource: Option<&str>,
+    ) {
         let result = sqlx::query(
-            "INSERT INTO one_audit_logs (id, tenant_id, user_id, action, resource, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO one_audit_logs (id, tenant_id, user_id, username, action, resource, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(short_id("audit"))
         .bind(tenant_id)
         .bind(user_id)
+        .bind(username)
         .bind(action)
         .bind(resource)
         .bind(now_ms() as i64)
@@ -564,6 +595,18 @@ impl OrgService {
         if let Err(e) = result {
             tracing::warn!(error = %e, action, "one-org audit write failed");
         }
+    }
+
+    /// Resolve a user id to its display username for an audit entry.
+    /// Best-effort: an unresolvable id (deleted user, bad data) just leaves
+    /// the audit row's username blank rather than failing the whole action.
+    async fn lookup_username(&self, user_id: &str) -> Option<String> {
+        self.user_repo
+            .find_by_id(user_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.username)
     }
 
     pub async fn list_audit_logs(&self, tenant_id: &str, limit: i64) -> Result<Vec<AuditLogRow>, OrgError> {
@@ -599,18 +642,28 @@ impl OrgService {
     /// Promote/demote a user's role within a tenant. `role` must be one of
     /// `member`/`org_admin`/`system_admin` — validated by the caller (route
     /// handler) so we keep the service free of string validation.
-    pub async fn set_user_role(&self, tenant_id: &str, user_id: &str, role: &str) -> Result<(), OrgError> {
+    /// `actor_user_id` is the admin performing the change; `target_user_id`
+    /// is whose role is being changed. They differ in the common case (an
+    /// admin promotes/demotes someone else), so the audit row below must
+    /// attribute the action to the actor — see the doc comment on `audit`.
+    pub async fn set_user_role(
+        &self,
+        tenant_id: &str,
+        actor_user_id: &str,
+        target_user_id: &str,
+        role: &str,
+    ) -> Result<(), OrgError> {
         // Demoting the tenant's last admin to a non-admin role would leave no
         // one who can invite, configure SSO, or promote a replacement —
         // same guard as `leave()`.
         let current_role: Option<String> =
             sqlx::query_scalar("SELECT role FROM one_user_org WHERE tenant_id = ? AND user_id = ?")
                 .bind(tenant_id)
-                .bind(user_id)
+                .bind(target_user_id)
                 .fetch_optional(&self.pool)
                 .await?;
         if current_role.is_some_and(|r| is_admin_role(&r)) && !is_admin_role(role) {
-            self.ensure_not_last_admin(tenant_id, user_id).await?;
+            self.ensure_not_last_admin(tenant_id, target_user_id).await?;
         }
 
         let result =
@@ -618,12 +671,12 @@ impl OrgService {
                 .bind(role)
                 .bind(now_ms() as i64)
                 .bind(tenant_id)
-                .bind(user_id)
+                .bind(target_user_id)
                 .execute(&self.pool)
                 .await?;
         if result.rows_affected() == 0 {
             return Err(OrgError::BadRequest(format!(
-                "user {user_id} not in tenant {tenant_id}"
+                "user {target_user_id} not in tenant {tenant_id}"
             )));
         }
         // Note: upstream `users` table has no role column — role lives
@@ -631,7 +684,20 @@ impl OrgService {
         // reads from `CurrentUser`, which is populated from the JWT payload
         // (no role). RBAC for `/api/one/*` is handled by the `RequireOrgAdmin`
         // extractor reading `one_user_org` directly.
-        self.audit(tenant_id, Some(user_id), "set_role", Some(role)).await;
+        //
+        // Audit row is attributed to the ACTOR (who made the change), not the
+        // target — the target + new role go into `resource` instead. Getting
+        // this backwards would make every promotion/demotion look
+        // self-inflicted in the audit log, hiding who actually did it.
+        let actor_username = self.lookup_username(actor_user_id).await;
+        self.audit(
+            tenant_id,
+            Some(actor_user_id),
+            actor_username.as_deref(),
+            "set_role",
+            Some(&format!("user={target_user_id} role={role}")),
+        )
+        .await;
         Ok(())
     }
 
@@ -1006,7 +1072,7 @@ mod tests {
         let member = create_user(&user_repo, "member1").await;
         service.join_with_invite(&member, &code).await.unwrap();
         service
-            .set_user_role(&tenant_id, &member, ROLE_ORG_ADMIN)
+            .set_user_role(&tenant_id, SYSTEM_DEFAULT_USER_ID, &member, ROLE_ORG_ADMIN)
             .await
             .unwrap();
 
@@ -1044,7 +1110,7 @@ mod tests {
         // Demoting the sole admin (SYSTEM_DEFAULT_USER_ID) to member would
         // leave member1 with no admin at all.
         let err = service
-            .set_user_role(&tenant_id, SYSTEM_DEFAULT_USER_ID, ROLE_MEMBER)
+            .set_user_role(&tenant_id, SYSTEM_DEFAULT_USER_ID, SYSTEM_DEFAULT_USER_ID, ROLE_MEMBER)
             .await
             .unwrap_err();
         assert_eq!(err.code(), "LAST_ADMIN_CANNOT_LEAVE");
@@ -1067,14 +1133,73 @@ mod tests {
         let member = create_user(&user_repo, "member1").await;
         service.join_with_invite(&member, &code).await.unwrap();
         service
-            .set_user_role(&tenant_id, &member, ROLE_ORG_ADMIN)
+            .set_user_role(&tenant_id, SYSTEM_DEFAULT_USER_ID, &member, ROLE_ORG_ADMIN)
             .await
             .unwrap();
 
         // Two admins — demoting member1 back to plain member is fine since
         // SYSTEM_DEFAULT_USER_ID is still an admin.
-        service.set_user_role(&tenant_id, &member, ROLE_MEMBER).await.unwrap();
+        service
+            .set_user_role(&tenant_id, SYSTEM_DEFAULT_USER_ID, &member, ROLE_MEMBER)
+            .await
+            .unwrap();
         assert_eq!(service.effective_role(&member).await.unwrap(), ROLE_MEMBER);
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn audit_log_records_actor_username() {
+        // `username` used to be left NULL on every write (the column existed
+        // but no INSERT ever populated it) — the audit tab could only show a
+        // raw user id, never a name. `ensure_system_user` seeds
+        // SYSTEM_DEFAULT_USER_ID with username "admin".
+        let (db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        let logs = service.list_audit_logs(&tenant_id, 10).await.unwrap();
+        let create_entry = logs.iter().find(|l| l.action == "org.create").unwrap();
+        assert_eq!(create_entry.user_id.as_deref(), Some(SYSTEM_DEFAULT_USER_ID));
+        assert_eq!(create_entry.username.as_deref(), Some("admin"));
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn set_user_role_audit_attributes_to_actor_not_target() {
+        // The audit row for a role change used to be attributed to the
+        // TARGET user (whose role changed), not the ADMIN who changed it —
+        // making every promotion/demotion look self-inflicted in the log.
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let (_, code) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+        let member = create_user(&user_repo, "member1").await;
+        service.join_with_invite(&member, &code).await.unwrap();
+
+        service
+            .set_user_role(&tenant_id, SYSTEM_DEFAULT_USER_ID, &member, ROLE_ORG_ADMIN)
+            .await
+            .unwrap();
+
+        let logs = service.list_audit_logs(&tenant_id, 10).await.unwrap();
+        let role_entry = logs.iter().find(|l| l.action == "set_role").unwrap();
+        // Attributed to the actor (SYSTEM_DEFAULT_USER_ID/"admin")...
+        assert_eq!(role_entry.user_id.as_deref(), Some(SYSTEM_DEFAULT_USER_ID));
+        assert_eq!(role_entry.username.as_deref(), Some("admin"));
+        // ...not the target member, whose id/role instead land in `resource`.
+        assert_ne!(role_entry.user_id.as_deref(), Some(member.as_str()));
+        let resource = role_entry.resource.as_deref().unwrap();
+        assert!(
+            resource.contains(&member),
+            "resource should name the target: {resource}"
+        );
+        assert!(
+            resource.contains(ROLE_ORG_ADMIN),
+            "resource should name the new role: {resource}"
+        );
 
         db.close().await;
     }
