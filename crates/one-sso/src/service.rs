@@ -122,6 +122,27 @@ impl SsoService {
         &self.state_store
     }
 
+    /// Effective role for the admin-route role gate (`rbac::RequireSsoAdmin`).
+    ///
+    /// `one-sso` doesn't own the `one_user_org` table (`one-org` does, and
+    /// same-layer domain crates can't depend on each other per the workspace
+    /// layering rules) but reads it directly here — same table, same
+    /// semantics as `one_org::OrgService::effective_role`, duplicated rather
+    /// than shared to avoid a cross-crate dependency for one query.
+    pub async fn effective_role(&self, user_id: &str) -> Result<String, SsoError> {
+        let role: Option<String> = sqlx::query_scalar("SELECT role FROM one_user_org WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        if let Some(role) = role {
+            return Ok(role);
+        }
+        if user_id == crate::rbac::SYSTEM_DEFAULT_USER_ID {
+            return Ok(crate::rbac::ROLE_SYSTEM_ADMIN.to_string());
+        }
+        Ok(crate::rbac::ROLE_MEMBER.to_string())
+    }
+
     /// Load a provider config row. Returns `ProviderNotConfigured` when no
     /// row exists.
     pub async fn get_provider_row(&self, provider: SsoProviderKind) -> Result<Option<SsoProviderRow>, SsoError> {
@@ -641,6 +662,67 @@ mod tests {
             updated_by: None,
         };
         assert!(parse_feishu_config(&row).is_none());
+    }
+
+    async fn service_with_memory_db() -> SsoService {
+        let db = aionui_db::init_database_memory().await.unwrap();
+        // one-sso doesn't own one_user_org (one-org does); recreate the
+        // minimal shape here so `effective_role` has a table to query
+        // against, same as one-org's own migration.
+        sqlx::query(
+            "CREATE TABLE one_user_org (\
+                 user_id TEXT PRIMARY KEY, \
+                 tenant_id TEXT NOT NULL, \
+                 role TEXT NOT NULL DEFAULT 'member', \
+                 created_at INTEGER NOT NULL, \
+                 updated_at INTEGER NOT NULL\
+             )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
+        SsoService::new(
+            db.pool().clone(),
+            user_repo,
+            Arc::new(JwtService::new("test-secret".into())),
+            Arc::new(CookieConfig {
+                secure: false,
+                same_site: "Lax",
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn effective_role_uses_explicit_membership_row() {
+        let service = service_with_memory_db().await;
+        sqlx::query(
+            "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) \
+             VALUES ('u1', 'tenant_a', 'org_admin', 0, 0)",
+        )
+        .execute(&service.pool)
+        .await
+        .unwrap();
+        assert_eq!(service.effective_role("u1").await.unwrap(), "org_admin");
+    }
+
+    #[tokio::test]
+    async fn effective_role_defaults_desktop_operator_to_system_admin() {
+        let service = service_with_memory_db().await;
+        // No one_user_org row for the desktop-operator sentinel user.
+        assert_eq!(
+            service
+                .effective_role(crate::rbac::SYSTEM_DEFAULT_USER_ID)
+                .await
+                .unwrap(),
+            "system_admin"
+        );
+    }
+
+    #[tokio::test]
+    async fn effective_role_defaults_unknown_user_to_member() {
+        let service = service_with_memory_db().await;
+        assert_eq!(service.effective_role("some_other_user").await.unwrap(), "member");
     }
 
     #[tokio::test]

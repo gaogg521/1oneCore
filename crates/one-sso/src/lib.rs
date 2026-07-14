@@ -11,6 +11,7 @@ pub mod error;
 pub mod migrate;
 pub mod models;
 pub mod providers;
+pub mod rbac;
 pub mod routes;
 pub mod service;
 pub mod state;

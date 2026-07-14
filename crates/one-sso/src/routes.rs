@@ -17,6 +17,7 @@ use aionui_auth::CurrentUser;
 
 use crate::error::SsoError;
 use crate::models::{SsoProviderConfigDto, SsoProviderKind, SsoProviderStatusDto, UpdateProviderBody};
+use crate::rbac::RequireSsoAdmin;
 use crate::state::OneSsoRouterState;
 
 pub fn one_sso_public_routes(state: OneSsoRouterState) -> Router {
@@ -340,6 +341,7 @@ async fn ldap_login(
 /// pre-fill fields the admin already saved instead of always starting blank.
 async fn list_provider_configs(
     State(state): State<OneSsoRouterState>,
+    _admin: RequireSsoAdmin,
 ) -> Result<Json<ApiResponse<Vec<SsoProviderConfigDto>>>, SsoError> {
     let dtos = state.service.list_provider_configs().await?;
     Ok(Json(ApiResponse::ok(dtos)))
@@ -347,6 +349,7 @@ async fn list_provider_configs(
 
 async fn upsert_provider(
     State(state): State<OneSsoRouterState>,
+    _admin: RequireSsoAdmin,
     Extension(user): Extension<CurrentUser>,
     Path(provider): Path<String>,
     Json(body): Json<UpdateProviderBody>,
