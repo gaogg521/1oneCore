@@ -45,6 +45,28 @@ struct AuthorizeQuery {
     desktop: Option<String>,
     #[serde(default)]
     format: Option<String>,
+    /// Which OS protocol scheme the caller's desktop deep-link handler is
+    /// registered under (dev and packaged builds claim different schemes so
+    /// they don't fight over the same OS-level registration — see
+    /// `sanitize_deep_link_scheme`). Only read when `desktop=1`.
+    #[serde(default)]
+    scheme: Option<String>,
+}
+
+/// Restrict the client-supplied `scheme` query param to a closed allowlist
+/// before it is interpolated into the callback HTML page (as both a raw JS
+/// string literal and an href attribute — see `desktop_callback_page`).
+/// Unlike the rest of the deep-link params, this one is NOT run through
+/// `urlencode` first, so it must never pass through anything other than one
+/// of these two known-safe literals (e.g. a `javascript:` or quote-breaking
+/// value). Anything unrecognized silently falls back to the production
+/// scheme, matching the pre-existing hardcoded behavior for older clients
+/// that don't send `scheme` at all.
+fn sanitize_deep_link_scheme(raw: Option<&str>) -> &'static str {
+    match raw {
+        Some("aionui-dev") => "aionui-dev",
+        _ => "aionui",
+    }
 }
 
 #[derive(Serialize)]
@@ -99,8 +121,17 @@ async fn authorize(
         .map(str::to_owned);
     let desktop = matches!(query.desktop.as_deref(), Some("1") | Some("true"));
     let want_json = matches!(query.format.as_deref(), Some("json"));
+    let deep_link_scheme = sanitize_deep_link_scheme(query.scheme.as_deref());
 
-    let (goto, state_token) = build_authorize_goto(provider, &row, &state.service, redirect_target, desktop).await?;
+    let (goto, state_token) = build_authorize_goto(
+        provider,
+        &row,
+        &state.service,
+        redirect_target,
+        desktop,
+        deep_link_scheme,
+    )
+    .await?;
 
     if want_json {
         return Ok(Json(ApiResponse::ok(AuthorizeRedirectDto {
@@ -120,13 +151,17 @@ async fn build_authorize_goto(
     service: &Arc<crate::service::SsoService>,
     redirect_target: Option<String>,
     desktop: bool,
+    deep_link_scheme: &'static str,
 ) -> Result<(String, String), SsoError> {
     use crate::providers::dingtalk::DingtalkProviderConfig;
     use crate::providers::wecom::WecomProviderConfig;
     use crate::providers::{dingtalk::DingtalkProvider, feishu::FeishuProvider, wecom::WecomProvider};
     use crate::service::parse_feishu_config;
 
-    let state_token = service.state_store().issue(provider, redirect_target, desktop).await;
+    let state_token = service
+        .state_store()
+        .issue(provider, redirect_target, desktop, deep_link_scheme)
+        .await;
     let state_for_goto = state_token.clone();
     let goto = match provider {
         SsoProviderKind::Feishu => {
@@ -214,7 +249,7 @@ async fn callback(
             urlencode(&session.user_id),
             urlencode(&session.username),
         );
-        let deep_link = format!("aionui://sso-callback?{params}");
+        let deep_link = format!("{}://sso-callback?{params}", entry.deep_link_scheme);
         Ok(Html(desktop_callback_page(&deep_link)).into_response())
     } else {
         // Browser: Set-Cookie + redirect to the SPA.
@@ -374,10 +409,12 @@ async fn upsert_provider(
 }
 
 /// Landing page shown in the system browser after a successful desktop SSO
-/// login, right before handing off to the `aionui://` deep link. `deep_link`
-/// is built entirely from `urlencode`'d segments (see `callback`), so it
-/// only ever contains `[A-Za-z0-9\-._~:/?=&]` — safe to interpolate as-is
-/// into both the script string and (with `&` escaped) the href attribute.
+/// login, right before handing off to the `aionui://` (or `aionui-dev://`,
+/// see `sanitize_deep_link_scheme`) deep link. `deep_link` is built entirely
+/// from `urlencode`'d segments plus an allowlisted scheme (see `callback`),
+/// so it only ever contains `[A-Za-z0-9\-._~:/?=&]` — safe to interpolate
+/// as-is into both the script string and (with `&` escaped) the href
+/// attribute.
 fn desktop_callback_page(deep_link: &str) -> String {
     let href = deep_link.replace('&', "&amp;");
     format!(
@@ -438,5 +475,20 @@ mod tests {
         assert!(page.contains("登录成功"));
         assert!(page.contains("Login successful"));
         assert!(page.contains("window.close()"));
+    }
+
+    #[test]
+    fn sanitize_deep_link_scheme_allows_only_the_known_schemes() {
+        assert_eq!(sanitize_deep_link_scheme(Some("aionui-dev")), "aionui-dev");
+        // Anything else — including no param at all — falls back to the
+        // production scheme, matching the old hardcoded behavior.
+        assert_eq!(sanitize_deep_link_scheme(Some("aionui")), "aionui");
+        assert_eq!(sanitize_deep_link_scheme(None), "aionui");
+        assert_eq!(sanitize_deep_link_scheme(Some("")), "aionui");
+        // Injection attempts must not pass through: this value is NOT
+        // urlencoded before being interpolated into the callback HTML as a
+        // JS string literal and an href attribute.
+        assert_eq!(sanitize_deep_link_scheme(Some("javascript")), "aionui");
+        assert_eq!(sanitize_deep_link_scheme(Some("aionui\"; alert(1); //")), "aionui");
     }
 }

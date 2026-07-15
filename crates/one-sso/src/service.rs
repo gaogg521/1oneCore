@@ -42,6 +42,11 @@ pub struct OAuthStateEntry {
     pub provider: SsoProviderKind,
     pub redirect_target: Option<String>,
     pub desktop: bool,
+    /// Scheme for the post-login desktop deep link (e.g. `"aionui"` or
+    /// `"aionui-dev"`). Only meaningful when `desktop` is true. Restricted to
+    /// a closed allowlist by `routes::sanitize_deep_link_scheme` before it
+    /// reaches here — see that function's doc comment for why.
+    pub deep_link_scheme: &'static str,
     issued_at: Instant,
 }
 
@@ -52,12 +57,19 @@ impl OAuthStateStore {
         }
     }
 
-    pub async fn issue(&self, provider: SsoProviderKind, redirect_target: Option<String>, desktop: bool) -> String {
+    pub async fn issue(
+        &self,
+        provider: SsoProviderKind,
+        redirect_target: Option<String>,
+        desktop: bool,
+        deep_link_scheme: &'static str,
+    ) -> String {
         let state = uuid::Uuid::now_v7().simple().to_string();
         let entry = OAuthStateEntry {
             provider,
             redirect_target,
             desktop,
+            deep_link_scheme,
             issued_at: Instant::now(),
         };
         let mut map = self.inner.lock().await;
@@ -735,7 +747,9 @@ mod tests {
     #[tokio::test]
     async fn state_store_issues_and_consumes() {
         let store = OAuthStateStore::new();
-        let state = store.issue(SsoProviderKind::Feishu, Some("/guid".into()), false).await;
+        let state = store
+            .issue(SsoProviderKind::Feishu, Some("/guid".into()), false, "aionui")
+            .await;
         let entry = store.consume(&state).await.expect("state should be present");
         assert_eq!(entry.provider, SsoProviderKind::Feishu);
         assert_eq!(entry.redirect_target.as_deref(), Some("/guid"));
