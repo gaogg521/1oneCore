@@ -107,17 +107,17 @@ impl OrgService {
     }
 
     /// Best-effort read of the most recent SSO profile snapshot for a user
-    /// (`display_name`, `org_unit_path`, provider) — `one-org` doesn't own
-    /// `one_sso_identities` (`one-sso` does, and same-layer domain crates
-    /// can't depend on each other per the workspace layering rules) but
-    /// reads it directly here, mirroring the precedent in
+    /// (`display_name`, `org_unit_path`, `job_title`, provider) — `one-org`
+    /// doesn't own `one_sso_identities` (`one-sso` does, and same-layer
+    /// domain crates can't depend on each other per the workspace layering
+    /// rules) but reads it directly here, mirroring the precedent in
     /// `one-sso::SsoService::effective_role` reading `one_user_org`. Returns
     /// `None` for locally-created members with no SSO identity at all — that
     /// query failing entirely (e.g. table not yet migrated in some odd test
     /// setup) degrades the same way, rather than blocking the join/create.
-    async fn sso_profile_for(&self, user_id: &str) -> Option<(Option<String>, Option<String>, String)> {
-        sqlx::query_as::<_, (Option<String>, Option<String>, String)>(
-            "SELECT display_name, org_unit_path, provider FROM one_sso_identities \
+    async fn sso_profile_for(&self, user_id: &str) -> Option<(Option<String>, Option<String>, Option<String>, String)> {
+        sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, String)>(
+            "SELECT display_name, org_unit_path, job_title, provider FROM one_sso_identities \
              WHERE user_id = ? ORDER BY last_seen_at DESC LIMIT 1",
         )
         .bind(user_id)
@@ -255,13 +255,13 @@ impl OrgService {
 
         let now = now_ms() as i64;
         // Snapshot the joiner's SSO profile (if any) onto the new membership
-        // row — name/department extracted from the identity provider at
-        // login has nowhere else to live once someone actually becomes a
-        // tenant member. Locally-created members (no SSO identity) get NULLs
-        // here, same as before this fix.
-        let (display_name, org_unit_path, org_profile_source) = match self.sso_profile_for(user_id).await {
-            Some((d, o, p)) => (d, o, Some(p)),
-            None => (None, None, None),
+        // row — name/department/job title extracted from the identity
+        // provider at login has nowhere else to live once someone actually
+        // becomes a tenant member. Locally-created members (no SSO identity)
+        // get NULLs here, same as before this fix.
+        let (display_name, org_unit_path, job_title, org_profile_source) = match self.sso_profile_for(user_id).await {
+            Some((d, o, j, p)) => (d, o, j, Some(p)),
+            None => (None, None, None, None),
         };
         let org_profile_synced_at = org_profile_source.as_ref().map(|_| now);
 
@@ -272,12 +272,12 @@ impl OrgService {
             .await?;
         sqlx::query(
             "INSERT INTO one_user_org \
-             (user_id, tenant_id, role, display_name, org_unit_path, org_profile_source, org_profile_synced_at, \
-              created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
+              org_profile_synced_at, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at, \
                  display_name = excluded.display_name, org_unit_path = excluded.org_unit_path, \
-                 org_profile_source = excluded.org_profile_source, \
+                 job_title = excluded.job_title, org_profile_source = excluded.org_profile_source, \
                  org_profile_synced_at = excluded.org_profile_synced_at",
         )
         .bind(user_id)
@@ -285,6 +285,7 @@ impl OrgService {
         .bind(ROLE_MEMBER)
         .bind(&display_name)
         .bind(&org_unit_path)
+        .bind(&job_title)
         .bind(&org_profile_source)
         .bind(org_profile_synced_at)
         .bind(now)
@@ -344,9 +345,9 @@ impl OrgService {
         // Uncommon (the creator is usually already authenticated locally as
         // system_admin before creating the tenant) but cheap to keep
         // consistent.
-        let (display_name, org_unit_path, org_profile_source) = match self.sso_profile_for(user_id).await {
-            Some((d, o, p)) => (d, o, Some(p)),
-            None => (None, None, None),
+        let (display_name, org_unit_path, job_title, org_profile_source) = match self.sso_profile_for(user_id).await {
+            Some((d, o, j, p)) => (d, o, j, Some(p)),
+            None => (None, None, None, None),
         };
         let org_profile_synced_at = org_profile_source.as_ref().map(|_| now);
 
@@ -363,13 +364,13 @@ impl OrgService {
             .await?;
         sqlx::query(
             "INSERT INTO one_user_org \
-             (user_id, tenant_id, role, display_name, org_unit_path, org_profile_source, org_profile_synced_at, \
-              created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
+              org_profile_synced_at, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(user_id) DO UPDATE SET \
                  tenant_id = excluded.tenant_id, role = excluded.role, updated_at = excluded.updated_at, \
                  display_name = excluded.display_name, org_unit_path = excluded.org_unit_path, \
-                 org_profile_source = excluded.org_profile_source, \
+                 job_title = excluded.job_title, org_profile_source = excluded.org_profile_source, \
                  org_profile_synced_at = excluded.org_profile_synced_at",
         )
         .bind(user_id)
@@ -377,6 +378,7 @@ impl OrgService {
         .bind(ROLE_SYSTEM_ADMIN)
         .bind(&display_name)
         .bind(&org_unit_path)
+        .bind(&job_title)
         .bind(&org_profile_source)
         .bind(org_profile_synced_at)
         .bind(now)
@@ -687,7 +689,7 @@ impl OrgService {
     pub async fn list_users(&self, tenant_id: &str) -> Result<Vec<AdminUserDto>, OrgError> {
         let rows = sqlx::query_as::<_, AdminUserDto>(
             "SELECT uo.user_id, u.username, uo.tenant_id, uo.role, uo.display_name, uo.org_unit_path, \
-                    u.last_login, uo.created_at \
+                    uo.job_title, u.last_login, uo.created_at \
              FROM one_user_org uo \
              JOIN users u ON u.id = uo.user_id \
              WHERE uo.tenant_id = ? \
@@ -868,12 +870,18 @@ mod tests {
     /// `one_sso_identities` is one-sso's table, not one-org's — recreate the
     /// minimal shape here (same pattern one-sso's own tests use for
     /// `one_user_org`) so `sso_profile_for` has something to read.
-    async fn seed_sso_identity(pool: &SqlitePool, user_id: &str, display_name: &str, org_unit_path: &str) {
+    async fn seed_sso_identity(
+        pool: &SqlitePool,
+        user_id: &str,
+        display_name: &str,
+        org_unit_path: &str,
+        job_title: &str,
+    ) {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS one_sso_identities (\
                  id TEXT PRIMARY KEY, provider TEXT NOT NULL, external_id TEXT NOT NULL, \
                  user_id TEXT NOT NULL, tenant_id TEXT NOT NULL DEFAULT 'default', \
-                 display_name TEXT, org_unit_path TEXT, \
+                 display_name TEXT, org_unit_path TEXT, job_title TEXT, \
                  last_seen_at INTEGER, created_at INTEGER NOT NULL)",
         )
         .execute(pool)
@@ -881,14 +889,15 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO one_sso_identities \
-             (id, provider, external_id, user_id, display_name, org_unit_path, created_at, last_seen_at) \
-             VALUES (?, 'feishu', ?, ?, ?, ?, 0, 0)",
+             (id, provider, external_id, user_id, display_name, org_unit_path, job_title, created_at, last_seen_at) \
+             VALUES (?, 'feishu', ?, ?, ?, ?, ?, 0, 0)",
         )
         .bind(uuid::Uuid::now_v7().simple().to_string())
         .bind(format!("ext_{user_id}"))
         .bind(user_id)
         .bind(display_name)
         .bind(org_unit_path)
+        .bind(job_title)
         .execute(pool)
         .await
         .unwrap();
@@ -996,7 +1005,7 @@ mod tests {
             .unwrap();
 
         let member = create_user(&user_repo, "member1").await;
-        seed_sso_identity(&service.pool, &member, "张三", "tenant_feishu_abc").await;
+        seed_sso_identity(&service.pool, &member, "张三", "研发中心", "高级工程师").await;
 
         service.join_with_invite(&member, &display).await.unwrap();
 
@@ -1006,7 +1015,8 @@ mod tests {
             .find(|u| u.user_id == member)
             .expect("member should be listed");
         assert_eq!(joined.display_name.as_deref(), Some("张三"));
-        assert_eq!(joined.org_unit_path.as_deref(), Some("tenant_feishu_abc"));
+        assert_eq!(joined.org_unit_path.as_deref(), Some("研发中心"));
+        assert_eq!(joined.job_title.as_deref(), Some("高级工程师"));
 
         db.close().await;
     }
@@ -1031,6 +1041,7 @@ mod tests {
             .expect("member should be listed");
         assert_eq!(joined.display_name, None);
         assert_eq!(joined.org_unit_path, None);
+        assert_eq!(joined.job_title, None);
 
         db.close().await;
     }

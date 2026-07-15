@@ -9,13 +9,13 @@
 //! LDAP is password-based and lives in `ldap.rs`; it exposes
 //! `authenticate(config, username, password) -> LdapAuthSuccess`.
 
-pub mod feishu;
 pub mod dingtalk;
+pub mod feishu;
 pub mod ldap;
 pub mod wecom;
 
-pub use feishu::FeishuProvider;
 pub use dingtalk::DingtalkProvider;
+pub use feishu::FeishuProvider;
 pub use ldap::LdapProvider;
 pub use wecom::WecomProvider;
 
@@ -25,4 +25,8 @@ pub struct ProviderUserInfo {
     pub external_id: String,
     pub preferred_username: String,
     pub org_unit_path: Option<String>,
+    /// Job title — only Feishu populates this today (via its Contact API,
+    /// see `feishu::FeishuProvider::fetch_org_profile`); other providers
+    /// leave it `None`.
+    pub job_title: Option<String>,
 }

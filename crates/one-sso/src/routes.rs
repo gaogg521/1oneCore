@@ -248,10 +248,17 @@ async fn run_provider_oauth(
         SsoProviderKind::Feishu => {
             let cfg = parse_feishu_config(&row).ok_or_else(|| SsoError::ProviderNotConfigured("feishu".into()))?;
             let token = FeishuProvider::exchange_code(&cfg, code).await?;
-            let info = FeishuProvider::fetch_user_info(&token).await?;
+            let info = FeishuProvider::fetch_user_info(&cfg, &token).await?;
             let external_id =
                 FeishuProvider::resolve_external_id(&info, &cfg.external_id_field).ok_or(SsoError::IdentityMissing)?;
-            Ok(FeishuProvider::to_provider_user_info(&info, &external_id))
+            let mut profile = FeishuProvider::to_provider_user_info(&info, &external_id);
+            // Best-effort enrichment (job title + real department name) via
+            // the Contact API — see FeishuProvider::fetch_org_profile's doc
+            // comment for why this can never fail the login.
+            let org_profile = FeishuProvider::fetch_org_profile(&cfg, &external_id, &cfg.external_id_field).await;
+            profile.job_title = org_profile.job_title;
+            profile.org_unit_path = org_profile.department_name;
+            Ok(profile)
         }
         SsoProviderKind::Dingtalk => {
             let cfg: DingtalkProviderConfig = serde_json::from_str(&row.config)
@@ -315,6 +322,7 @@ async fn ldap_login(
         external_id: auth.external_id,
         preferred_username: body.username.trim().to_owned(),
         org_unit_path: auth.org_unit_path,
+        job_title: None,
     };
     let (user_id, username, _created) = state.service.resolve_or_provision_user(provider, profile).await?;
 

@@ -99,9 +99,7 @@ impl DingtalkProvider {
         let status = resp.status();
         let data: DingtalkUserInfo = resp.json().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(SsoError::Internal(format!(
-                "DingTalk user info failed: HTTP {status}"
-            )));
+            return Err(SsoError::Internal(format!("DingTalk user info failed: HTTP {status}")));
         }
         Ok(data)
     }
@@ -115,7 +113,11 @@ impl DingtalkProvider {
         if let Some(v) = primary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             return Some(v.to_owned());
         }
-        fallback.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
+        fallback
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
     }
 
     pub fn to_provider_user_info(info: &DingtalkUserInfo, external_id: &str) -> ProviderUserInfo {
@@ -130,6 +132,7 @@ impl DingtalkProvider {
             external_id: external_id.to_owned(),
             preferred_username: preferred,
             org_unit_path: info.mobile.clone(),
+            job_title: None,
         }
     }
 

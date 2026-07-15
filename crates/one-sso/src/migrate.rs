@@ -13,6 +13,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "sso_002_identity_display",
         include_str!("../migrations/002_identity_display.sql"),
     ),
+    (
+        "sso_003_identity_job_title",
+        include_str!("../migrations/003_identity_job_title.sql"),
+    ),
 ];
 
 /// Run all pending one-sso migrations. Idempotent.

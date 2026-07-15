@@ -336,8 +336,9 @@ impl SsoService {
         let now = now_ms();
         sqlx::query(
             "INSERT INTO one_sso_identities \
-             (id, provider, external_id, user_id, tenant_id, display_name, org_unit_path, created_at, last_seen_at) \
-             VALUES (?, ?, ?, ?, 'default', ?, ?, ?, ?)",
+             (id, provider, external_id, user_id, tenant_id, display_name, org_unit_path, job_title, \
+              created_at, last_seen_at) \
+             VALUES (?, ?, ?, ?, 'default', ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(provider.as_str())
@@ -345,6 +346,7 @@ impl SsoService {
         .bind(user_id)
         .bind(&profile.preferred_username)
         .bind(profile.org_unit_path.as_deref())
+        .bind(profile.job_title.as_deref())
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -354,12 +356,13 @@ impl SsoService {
 
     async fn touch_identity(&self, provider: SsoProviderKind, external_id: &str, profile: &ProviderUserInfo) {
         let _ = sqlx::query(
-            "UPDATE one_sso_identities SET last_seen_at = ?, display_name = ?, org_unit_path = ? \
+            "UPDATE one_sso_identities SET last_seen_at = ?, display_name = ?, org_unit_path = ?, job_title = ? \
              WHERE provider = ? AND external_id = ?",
         )
         .bind(now_ms())
         .bind(&profile.preferred_username)
         .bind(profile.org_unit_path.as_deref())
+        .bind(profile.job_title.as_deref())
         .bind(provider.as_str())
         .bind(external_id)
         .execute(&self.pool)
@@ -538,6 +541,8 @@ pub fn parse_feishu_config(row: &SsoProviderRow) -> Option<FeishuProviderConfig>
         app_secret,
         redirect_uri,
         external_id_field,
+        // Test-only field, never part of stored admin config.
+        base_url: None,
     })
 }
 
@@ -738,9 +743,12 @@ mod tests {
         assert!(store.consume(&state).await.is_none());
     }
 
-    async fn identity_display_columns(pool: &SqlitePool, user_id: &str) -> (String, Option<String>, Option<String>) {
-        sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
-            "SELECT username, display_name, org_unit_path FROM one_sso_identities \
+    async fn identity_display_columns(
+        pool: &SqlitePool,
+        user_id: &str,
+    ) -> (String, Option<String>, Option<String>, Option<String>) {
+        sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
+            "SELECT username, display_name, org_unit_path, job_title FROM one_sso_identities \
              JOIN users ON users.id = one_sso_identities.user_id \
              WHERE one_sso_identities.user_id = ?",
         )
@@ -756,7 +764,8 @@ mod tests {
         let profile = ProviderUserInfo {
             external_id: "ou_zhang".into(),
             preferred_username: "张三".into(),
-            org_unit_path: Some("tenant_abc".into()),
+            org_unit_path: Some("研发中心".into()),
+            job_title: Some("高级工程师".into()),
         };
         let (user_id, username, created) = service
             .resolve_or_provision_user(SsoProviderKind::Feishu, profile)
@@ -766,10 +775,12 @@ mod tests {
         // The ASCII-only login username can't carry "张三" — that's the
         // system-wide validate_username rule, untouched by this fix.
         assert!(username.starts_with("sso_"));
-        let (stored_username, display_name, org_unit_path) = identity_display_columns(&service.pool, &user_id).await;
+        let (stored_username, display_name, org_unit_path, job_title) =
+            identity_display_columns(&service.pool, &user_id).await;
         assert_eq!(stored_username, username);
         assert_eq!(display_name.as_deref(), Some("张三"));
-        assert_eq!(org_unit_path.as_deref(), Some("tenant_abc"));
+        assert_eq!(org_unit_path.as_deref(), Some("研发中心"));
+        assert_eq!(job_title.as_deref(), Some("高级工程师"));
     }
 
     #[tokio::test]
@@ -778,7 +789,8 @@ mod tests {
         let first = ProviderUserInfo {
             external_id: "ou_zhang".into(),
             preferred_username: "张三".into(),
-            org_unit_path: Some("tenant_old".into()),
+            org_unit_path: Some("研发中心".into()),
+            job_title: Some("工程师".into()),
         };
         let (user_id, _, _) = service
             .resolve_or_provision_user(SsoProviderKind::Feishu, first)
@@ -790,7 +802,8 @@ mod tests {
         let second = ProviderUserInfo {
             external_id: "ou_zhang".into(),
             preferred_username: "张三丰".into(),
-            org_unit_path: Some("tenant_new".into()),
+            org_unit_path: Some("产品中心".into()),
+            job_title: Some("高级工程师".into()),
         };
         let (second_user_id, _, created) = service
             .resolve_or_provision_user(SsoProviderKind::Feishu, second)
@@ -802,9 +815,10 @@ mod tests {
             "same external_id must reuse the existing user, not provision a new one"
         );
         assert_eq!(second_user_id, user_id);
-        let (_, display_name, org_unit_path) = identity_display_columns(&service.pool, &user_id).await;
+        let (_, display_name, org_unit_path, job_title) = identity_display_columns(&service.pool, &user_id).await;
         assert_eq!(display_name.as_deref(), Some("张三丰"));
-        assert_eq!(org_unit_path.as_deref(), Some("tenant_new"));
+        assert_eq!(org_unit_path.as_deref(), Some("产品中心"));
+        assert_eq!(job_title.as_deref(), Some("高级工程师"));
     }
 
     #[tokio::test]
@@ -814,13 +828,15 @@ mod tests {
             external_id: "ou_bob".into(),
             preferred_username: "Bob".into(),
             org_unit_path: None,
+            job_title: None,
         };
         let (user_id, _, _) = service
             .resolve_or_provision_user(SsoProviderKind::Feishu, profile)
             .await
             .unwrap();
-        let (_, display_name, org_unit_path) = identity_display_columns(&service.pool, &user_id).await;
+        let (_, display_name, org_unit_path, job_title) = identity_display_columns(&service.pool, &user_id).await;
         assert_eq!(display_name.as_deref(), Some("Bob"));
         assert_eq!(org_unit_path, None);
+        assert_eq!(job_title, None);
     }
 }

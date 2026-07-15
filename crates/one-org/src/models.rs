@@ -134,6 +134,7 @@ pub struct AdminUserDto {
     pub role: String,
     pub display_name: Option<String>,
     pub org_unit_path: Option<String>,
+    pub job_title: Option<String>,
     pub last_login: Option<i64>,
     pub created_at: i64,
 }
