@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use aionui_auth::{CookieConfig, JwtService, hash_password, generate_random_secret_string};
+use aionui_auth::{CookieConfig, JwtService, generate_random_secret_string, hash_password};
 use aionui_common::now_ms;
 use aionui_db::IUserRepository;
 use sqlx::SqlitePool;
@@ -52,12 +52,7 @@ impl OAuthStateStore {
         }
     }
 
-    pub async fn issue(
-        &self,
-        provider: SsoProviderKind,
-        redirect_target: Option<String>,
-        desktop: bool,
-    ) -> String {
+    pub async fn issue(&self, provider: SsoProviderKind, redirect_target: Option<String>, desktop: bool) -> String {
         let state = uuid::Uuid::now_v7().simple().to_string();
         let entry = OAuthStateEntry {
             provider,
@@ -232,9 +227,7 @@ impl SsoService {
                 .await?;
             }
             None => {
-                let config_str = config
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "{}".into());
+                let config_str = config.map(|v| v.to_string()).unwrap_or_else(|| "{}".into());
                 let enabled_val = enabled.unwrap_or(false);
                 sqlx::query(
                     "INSERT INTO one_sso_providers (provider, enabled, config, updated_at, updated_by) \
@@ -264,7 +257,10 @@ impl SsoService {
             return Err(SsoError::IdentityMissing);
         }
 
-        // 1. Existing identity binding → reuse user.
+        // 1. Existing identity binding → reuse user. Refresh the profile
+        // snapshot on every login (not just the first bind) — display name /
+        // department can change upstream, and org_profile_synced_at implies
+        // "kept current", not "captured once".
         if let Some(identity) = self.find_identity(provider, external_id).await? {
             let user = self
                 .user_repo
@@ -272,7 +268,7 @@ impl SsoService {
                 .await
                 .map_err(|e| SsoError::Internal(format!("find user: {e}")))?
                 .ok_or_else(|| SsoError::Internal("identity points to missing user".into()))?;
-            self.touch_identity(provider, external_id).await;
+            self.touch_identity(provider, external_id, &profile).await;
             return Ok((user.id, user.username, false));
         }
 
@@ -285,7 +281,7 @@ impl SsoService {
             .create_user(&username, &password_hash)
             .await
             .map_err(|e| SsoError::Internal(format!("create_user: {e}")))?;
-        self.bind_identity(provider, external_id, &user.id).await?;
+        self.bind_identity(provider, external_id, &user.id, &profile).await?;
         Ok((user.id, user.username, true))
     }
 
@@ -334,17 +330,21 @@ impl SsoService {
         provider: SsoProviderKind,
         external_id: &str,
         user_id: &str,
+        profile: &ProviderUserInfo,
     ) -> Result<(), SsoError> {
         let id = uuid::Uuid::now_v7().simple().to_string();
         let now = now_ms();
         sqlx::query(
-            "INSERT INTO one_sso_identities (id, provider, external_id, user_id, tenant_id, created_at, last_seen_at) \
-             VALUES (?, ?, ?, ?, 'default', ?, ?)",
+            "INSERT INTO one_sso_identities \
+             (id, provider, external_id, user_id, tenant_id, display_name, org_unit_path, created_at, last_seen_at) \
+             VALUES (?, ?, ?, ?, 'default', ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(provider.as_str())
         .bind(external_id)
         .bind(user_id)
+        .bind(&profile.preferred_username)
+        .bind(profile.org_unit_path.as_deref())
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -352,11 +352,14 @@ impl SsoService {
         Ok(())
     }
 
-    async fn touch_identity(&self, provider: SsoProviderKind, external_id: &str) {
+    async fn touch_identity(&self, provider: SsoProviderKind, external_id: &str, profile: &ProviderUserInfo) {
         let _ = sqlx::query(
-            "UPDATE one_sso_identities SET last_seen_at = ? WHERE provider = ? AND external_id = ?",
+            "UPDATE one_sso_identities SET last_seen_at = ?, display_name = ?, org_unit_path = ? \
+             WHERE provider = ? AND external_id = ?",
         )
         .bind(now_ms())
+        .bind(&profile.preferred_username)
+        .bind(profile.org_unit_path.as_deref())
         .bind(provider.as_str())
         .bind(external_id)
         .execute(&self.pool)
@@ -366,10 +369,7 @@ impl SsoService {
 
 /// Allocate a unique username, falling back to `provider_ext123` shape
 /// when the preferred name is taken. Mirrors the TS `allocateUniqueUsername`.
-async fn allocate_unique_username(
-    preferred: &str,
-    user_repo: &Arc<dyn IUserRepository>,
-) -> Result<String, SsoError> {
+async fn allocate_unique_username(preferred: &str, user_repo: &Arc<dyn IUserRepository>) -> Result<String, SsoError> {
     let base = sanitize_username(preferred);
     let base = if base.is_empty() {
         format!("sso_{}", &uuid::Uuid::now_v7().simple().to_string()[..8])
@@ -398,10 +398,7 @@ async fn allocate_unique_username(
             return Ok(candidate);
         }
     }
-    Ok(format!(
-        "{base}_{}",
-        &uuid::Uuid::now_v7().simple().to_string()[..6]
-    ))
+    Ok(format!("{base}_{}", &uuid::Uuid::now_v7().simple().to_string()[..6]))
 }
 
 /// Lower-case, ASCII-clean username. Non-ASCII display names fall back to
@@ -643,7 +640,8 @@ mod tests {
         let row = SsoProviderRow {
             provider: "feishu".into(),
             enabled: true,
-            config: r#"{"appId":"cli_a","appSecret":"s","redirectUri":"https://x/cb","externalIdField":"open_id"}"#.to_owned(),
+            config: r#"{"appId":"cli_a","appSecret":"s","redirectUri":"https://x/cb","externalIdField":"open_id"}"#
+                .to_owned(),
             updated_at: 0,
             updated_by: None,
         };
@@ -681,6 +679,10 @@ mod tests {
         .execute(db.pool())
         .await
         .unwrap();
+        // one-sso's own tables (one_sso_providers/one_sso_identities) — real
+        // migrations, so display_name/org_unit_path etc. stay in sync with
+        // production schema instead of a hand-rolled CREATE TABLE drifting.
+        crate::migrate::run_one_sso_migrations(db.pool()).await.unwrap();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
         SsoService::new(
             db.pool().clone(),
@@ -734,5 +736,91 @@ mod tests {
         assert_eq!(entry.redirect_target.as_deref(), Some("/guid"));
         // Second consume returns None.
         assert!(store.consume(&state).await.is_none());
+    }
+
+    async fn identity_display_columns(pool: &SqlitePool, user_id: &str) -> (String, Option<String>, Option<String>) {
+        sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+            "SELECT username, display_name, org_unit_path FROM one_sso_identities \
+             JOIN users ON users.id = one_sso_identities.user_id \
+             WHERE one_sso_identities.user_id = ?",
+        )
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn jit_provisioning_keeps_the_real_name_even_when_the_login_username_is_sanitized() {
+        let service = service_with_memory_db().await;
+        let profile = ProviderUserInfo {
+            external_id: "ou_zhang".into(),
+            preferred_username: "张三".into(),
+            org_unit_path: Some("tenant_abc".into()),
+        };
+        let (user_id, username, created) = service
+            .resolve_or_provision_user(SsoProviderKind::Feishu, profile)
+            .await
+            .unwrap();
+        assert!(created);
+        // The ASCII-only login username can't carry "张三" — that's the
+        // system-wide validate_username rule, untouched by this fix.
+        assert!(username.starts_with("sso_"));
+        let (stored_username, display_name, org_unit_path) = identity_display_columns(&service.pool, &user_id).await;
+        assert_eq!(stored_username, username);
+        assert_eq!(display_name.as_deref(), Some("张三"));
+        assert_eq!(org_unit_path.as_deref(), Some("tenant_abc"));
+    }
+
+    #[tokio::test]
+    async fn repeat_login_refreshes_the_stored_display_name_and_org_unit_path() {
+        let service = service_with_memory_db().await;
+        let first = ProviderUserInfo {
+            external_id: "ou_zhang".into(),
+            preferred_username: "张三".into(),
+            org_unit_path: Some("tenant_old".into()),
+        };
+        let (user_id, _, _) = service
+            .resolve_or_provision_user(SsoProviderKind::Feishu, first)
+            .await
+            .unwrap();
+
+        // Same external_id logs in again with an updated name/department —
+        // e.g. the person got renamed or moved teams upstream.
+        let second = ProviderUserInfo {
+            external_id: "ou_zhang".into(),
+            preferred_username: "张三丰".into(),
+            org_unit_path: Some("tenant_new".into()),
+        };
+        let (second_user_id, _, created) = service
+            .resolve_or_provision_user(SsoProviderKind::Feishu, second)
+            .await
+            .unwrap();
+
+        assert!(
+            !created,
+            "same external_id must reuse the existing user, not provision a new one"
+        );
+        assert_eq!(second_user_id, user_id);
+        let (_, display_name, org_unit_path) = identity_display_columns(&service.pool, &user_id).await;
+        assert_eq!(display_name.as_deref(), Some("张三丰"));
+        assert_eq!(org_unit_path.as_deref(), Some("tenant_new"));
+    }
+
+    #[tokio::test]
+    async fn jit_provisioning_leaves_org_unit_path_null_when_the_provider_has_none() {
+        let service = service_with_memory_db().await;
+        let profile = ProviderUserInfo {
+            external_id: "ou_bob".into(),
+            preferred_username: "Bob".into(),
+            org_unit_path: None,
+        };
+        let (user_id, _, _) = service
+            .resolve_or_provision_user(SsoProviderKind::Feishu, profile)
+            .await
+            .unwrap();
+        let (_, display_name, org_unit_path) = identity_display_columns(&service.pool, &user_id).await;
+        assert_eq!(display_name.as_deref(), Some("Bob"));
+        assert_eq!(org_unit_path, None);
     }
 }

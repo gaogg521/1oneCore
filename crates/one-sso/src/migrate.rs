@@ -7,7 +7,13 @@ use sqlx::SqlitePool;
 
 use crate::error::SsoError;
 
-const MIGRATIONS: &[(&str, &str)] = &[("sso_001_init", include_str!("../migrations/001_init.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("sso_001_init", include_str!("../migrations/001_init.sql")),
+    (
+        "sso_002_identity_display",
+        include_str!("../migrations/002_identity_display.sql"),
+    ),
+];
 
 /// Run all pending one-sso migrations. Idempotent.
 pub async fn run_one_sso_migrations(pool: &SqlitePool) -> Result<(), SsoError> {

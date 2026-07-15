@@ -124,7 +124,7 @@ pub struct OrgContextDto {
 }
 
 /// Admin view of a user — joins upstream `users` (id/username) with
-/// `one_user_org` (tenant/role/org_unit_path).
+/// `one_user_org` (tenant/role/display_name/org_unit_path).
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminUserDto {
@@ -132,6 +132,7 @@ pub struct AdminUserDto {
     pub username: String,
     pub tenant_id: String,
     pub role: String,
+    pub display_name: Option<String>,
     pub org_unit_path: Option<String>,
     pub last_login: Option<i64>,
     pub created_at: i64,

@@ -106,6 +106,27 @@ impl OrgService {
             .unwrap_or_else(|| DEFAULT_TENANT_ID.to_string()))
     }
 
+    /// Best-effort read of the most recent SSO profile snapshot for a user
+    /// (`display_name`, `org_unit_path`, provider) — `one-org` doesn't own
+    /// `one_sso_identities` (`one-sso` does, and same-layer domain crates
+    /// can't depend on each other per the workspace layering rules) but
+    /// reads it directly here, mirroring the precedent in
+    /// `one-sso::SsoService::effective_role` reading `one_user_org`. Returns
+    /// `None` for locally-created members with no SSO identity at all — that
+    /// query failing entirely (e.g. table not yet migrated in some odd test
+    /// setup) degrades the same way, rather than blocking the join/create.
+    async fn sso_profile_for(&self, user_id: &str) -> Option<(Option<String>, Option<String>, String)> {
+        sqlx::query_as::<_, (Option<String>, Option<String>, String)>(
+            "SELECT display_name, org_unit_path, provider FROM one_sso_identities \
+             WHERE user_id = ? ORDER BY last_seen_at DESC LIMIT 1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+    }
+
     async fn get_tenant(&self, tenant_id: &str) -> Result<Option<TenantRow>, OrgError> {
         let row = sqlx::query_as::<_, TenantRow>("SELECT * FROM one_tenants WHERE id = ?")
             .bind(tenant_id)
@@ -233,19 +254,39 @@ impl OrgService {
             .ok_or(OrgError::InvalidCode)?;
 
         let now = now_ms() as i64;
+        // Snapshot the joiner's SSO profile (if any) onto the new membership
+        // row — name/department extracted from the identity provider at
+        // login has nowhere else to live once someone actually becomes a
+        // tenant member. Locally-created members (no SSO identity) get NULLs
+        // here, same as before this fix.
+        let (display_name, org_unit_path, org_profile_source) = match self.sso_profile_for(user_id).await {
+            Some((d, o, p)) => (d, o, Some(p)),
+            None => (None, None, None),
+        };
+        let org_profile_synced_at = org_profile_source.as_ref().map(|_| now);
+
         let mut tx = self.pool.begin().await?;
         sqlx::query("UPDATE one_tenant_invites SET use_count = use_count + 1 WHERE id = ?")
             .bind(&invite.id)
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?) \
-             ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at",
+            "INSERT INTO one_user_org \
+             (user_id, tenant_id, role, display_name, org_unit_path, org_profile_source, org_profile_synced_at, \
+              created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at, \
+                 display_name = excluded.display_name, org_unit_path = excluded.org_unit_path, \
+                 org_profile_source = excluded.org_profile_source, \
+                 org_profile_synced_at = excluded.org_profile_synced_at",
         )
         .bind(user_id)
         .bind(&invite.tenant_id)
         .bind(ROLE_MEMBER)
+        .bind(&display_name)
+        .bind(&org_unit_path)
+        .bind(&org_profile_source)
+        .bind(org_profile_synced_at)
         .bind(now)
         .bind(now)
         .execute(&mut *tx)
@@ -299,6 +340,16 @@ impl OrgService {
 
         let tenant_id = short_id("tenant");
         let now = now_ms() as i64;
+        // Same SSO-profile snapshot as join_with_invite — see its comment.
+        // Uncommon (the creator is usually already authenticated locally as
+        // system_admin before creating the tenant) but cheap to keep
+        // consistent.
+        let (display_name, org_unit_path, org_profile_source) = match self.sso_profile_for(user_id).await {
+            Some((d, o, p)) => (d, o, Some(p)),
+            None => (None, None, None),
+        };
+        let org_profile_synced_at = org_profile_source.as_ref().map(|_| now);
+
         // Creator keeps system_admin (instance-level governance) — same
         // rationale as the TS reference: downgrading to org_admin here would
         // leave the instance with no system_admin.
@@ -311,14 +362,23 @@ impl OrgService {
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?) \
+            "INSERT INTO one_user_org \
+             (user_id, tenant_id, role, display_name, org_unit_path, org_profile_source, org_profile_synced_at, \
+              created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(user_id) DO UPDATE SET \
-                 tenant_id = excluded.tenant_id, role = excluded.role, updated_at = excluded.updated_at",
+                 tenant_id = excluded.tenant_id, role = excluded.role, updated_at = excluded.updated_at, \
+                 display_name = excluded.display_name, org_unit_path = excluded.org_unit_path, \
+                 org_profile_source = excluded.org_profile_source, \
+                 org_profile_synced_at = excluded.org_profile_synced_at",
         )
         .bind(user_id)
         .bind(&tenant_id)
         .bind(ROLE_SYSTEM_ADMIN)
+        .bind(&display_name)
+        .bind(&org_unit_path)
+        .bind(&org_profile_source)
+        .bind(org_profile_synced_at)
         .bind(now)
         .bind(now)
         .execute(&mut *tx)
@@ -626,7 +686,7 @@ impl OrgService {
 
     pub async fn list_users(&self, tenant_id: &str) -> Result<Vec<AdminUserDto>, OrgError> {
         let rows = sqlx::query_as::<_, AdminUserDto>(
-            "SELECT uo.user_id, u.username, uo.tenant_id, uo.role, uo.org_unit_path, \
+            "SELECT uo.user_id, u.username, uo.tenant_id, uo.role, uo.display_name, uo.org_unit_path, \
                     u.last_login, uo.created_at \
              FROM one_user_org uo \
              JOIN users u ON u.id = uo.user_id \
@@ -805,6 +865,35 @@ mod tests {
         user_repo.create_user(username, "x").await.unwrap().id
     }
 
+    /// `one_sso_identities` is one-sso's table, not one-org's — recreate the
+    /// minimal shape here (same pattern one-sso's own tests use for
+    /// `one_user_org`) so `sso_profile_for` has something to read.
+    async fn seed_sso_identity(pool: &SqlitePool, user_id: &str, display_name: &str, org_unit_path: &str) {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS one_sso_identities (\
+                 id TEXT PRIMARY KEY, provider TEXT NOT NULL, external_id TEXT NOT NULL, \
+                 user_id TEXT NOT NULL, tenant_id TEXT NOT NULL DEFAULT 'default', \
+                 display_name TEXT, org_unit_path TEXT, \
+                 last_seen_at INTEGER, created_at INTEGER NOT NULL)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO one_sso_identities \
+             (id, provider, external_id, user_id, display_name, org_unit_path, created_at, last_seen_at) \
+             VALUES (?, 'feishu', ?, ?, ?, ?, 0, 0)",
+        )
+        .bind(uuid::Uuid::now_v7().simple().to_string())
+        .bind(format!("ext_{user_id}"))
+        .bind(user_id)
+        .bind(display_name)
+        .bind(org_unit_path)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     #[test]
     fn normalize_strips_dashes_and_uppercases() {
         assert_eq!(normalize_invite_code(" ab-12 cd\t"), "AB12CD");
@@ -893,6 +982,55 @@ mod tests {
         assert_eq!(service.member_count(&tenant_id).await.unwrap(), 1);
         let err = service.leave(member, "s3cret").await.unwrap_err();
         assert_eq!(err.code(), "NOT_IN_ENTERPRISE");
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn join_with_invite_copies_the_joiner_sso_profile_onto_the_membership_row() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme Inc").await.unwrap();
+        let (_, display) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+
+        let member = create_user(&user_repo, "member1").await;
+        seed_sso_identity(&service.pool, &member, "张三", "tenant_feishu_abc").await;
+
+        service.join_with_invite(&member, &display).await.unwrap();
+
+        let users = service.list_users(&tenant_id).await.unwrap();
+        let joined = users
+            .iter()
+            .find(|u| u.user_id == member)
+            .expect("member should be listed");
+        assert_eq!(joined.display_name.as_deref(), Some("张三"));
+        assert_eq!(joined.org_unit_path.as_deref(), Some("tenant_feishu_abc"));
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn join_with_invite_leaves_the_profile_null_for_a_locally_created_member() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme Inc").await.unwrap();
+        let (_, display) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+
+        // No matching one_sso_identities row at all for this member.
+        let member = create_user(&user_repo, "local_member").await;
+        service.join_with_invite(&member, &display).await.unwrap();
+
+        let users = service.list_users(&tenant_id).await.unwrap();
+        let joined = users
+            .iter()
+            .find(|u| u.user_id == member)
+            .expect("member should be listed");
+        assert_eq!(joined.display_name, None);
+        assert_eq!(joined.org_unit_path, None);
 
         db.close().await;
     }

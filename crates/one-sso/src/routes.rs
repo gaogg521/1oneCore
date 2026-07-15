@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, header};
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
@@ -121,17 +121,16 @@ async fn build_authorize_goto(
     redirect_target: Option<String>,
     desktop: bool,
 ) -> Result<(String, String), SsoError> {
-    use crate::providers::{dingtalk::DingtalkProvider, feishu::FeishuProvider, wecom::WecomProvider};
-    use crate::service::parse_feishu_config;
     use crate::providers::dingtalk::DingtalkProviderConfig;
     use crate::providers::wecom::WecomProviderConfig;
+    use crate::providers::{dingtalk::DingtalkProvider, feishu::FeishuProvider, wecom::WecomProvider};
+    use crate::service::parse_feishu_config;
 
     let state_token = service.state_store().issue(provider, redirect_target, desktop).await;
     let state_for_goto = state_token.clone();
     let goto = match provider {
         SsoProviderKind::Feishu => {
-            let cfg = parse_feishu_config(row)
-                .ok_or_else(|| SsoError::ProviderNotConfigured("feishu".into()))?;
+            let cfg = parse_feishu_config(row).ok_or_else(|| SsoError::ProviderNotConfigured("feishu".into()))?;
             FeishuProvider::build_authorize_url(&cfg, &state_for_goto)
         }
         SsoProviderKind::Dingtalk => {
@@ -189,28 +188,34 @@ async fn callback(
     }
 
     let profile = run_provider_oauth(provider, &state.service, code).await?;
-    let (user_id, username, _created) = state
+    let (user_id, username, _created) = state.service.resolve_or_provision_user(provider, profile).await?;
+    let session = state
         .service
-        .resolve_or_provision_user(provider, profile)
-        .await?;
-    let session = state.service.issue_session(
-        &user_id,
-        &username,
-        entry.redirect_target.clone(),
-        entry.desktop,
-    )?;
+        .issue_session(&user_id, &username, entry.redirect_target.clone(), entry.desktop)?;
 
     if entry.desktop {
         // Desktop deep-link: pass token via OS protocol handler.
         // No Set-Cookie — the browser cookie jar isn't shared with the
         // desktop renderer (cross-origin cookie restrictions would block it).
+        //
+        // A raw redirect here left the system-browser tab stuck forever: a
+        // 3xx Location to a non-http(s) scheme just makes the browser pop an
+        // "open 1One Work?" prompt — it can't actually navigate the tab
+        // anywhere, so whatever was on screen (often the OAuth consent page)
+        // stays put with no way to tell the user it's safe to close it.
+        // Render a small landing page instead: trigger the deep link via
+        // script, say the login succeeded, and best-effort try to close the
+        // tab (browsers may block `window.close()` on tabs they didn't open
+        // via script — harmless no-op if so, the text still tells the user
+        // what to do).
         let params = format!(
             "token={}&userId={}&username={}",
             urlencode(&session.token),
             urlencode(&session.user_id),
             urlencode(&session.username),
         );
-        Ok(Redirect::to(&format!("aionui://sso-callback?{params}")).into_response())
+        let deep_link = format!("aionui://sso-callback?{params}");
+        Ok(Html(desktop_callback_page(&deep_link)).into_response())
     } else {
         // Browser: Set-Cookie + redirect to the SPA.
         let target = session
@@ -219,11 +224,7 @@ async fn callback(
             .filter(|s| !s.is_empty())
             .unwrap_or("/guid");
         let location = format!("/#{target}");
-        Ok((
-            [(header::SET_COOKIE, session.cookie)],
-            Redirect::to(&location),
-        )
-            .into_response())
+        Ok(([(header::SET_COOKIE, session.cookie)], Redirect::to(&location)).into_response())
     }
 }
 
@@ -233,10 +234,10 @@ async fn run_provider_oauth(
     service: &Arc<crate::service::SsoService>,
     code: &str,
 ) -> Result<crate::providers::ProviderUserInfo, SsoError> {
-    use crate::providers::{dingtalk::DingtalkProvider, feishu::FeishuProvider, wecom::WecomProvider};
-    use crate::service::parse_feishu_config;
     use crate::providers::dingtalk::DingtalkProviderConfig;
     use crate::providers::wecom::WecomProviderConfig;
+    use crate::providers::{dingtalk::DingtalkProvider, feishu::FeishuProvider, wecom::WecomProvider};
+    use crate::service::parse_feishu_config;
 
     let row = service
         .get_provider_row(provider)
@@ -245,12 +246,11 @@ async fn run_provider_oauth(
 
     match provider {
         SsoProviderKind::Feishu => {
-            let cfg = parse_feishu_config(&row)
-                .ok_or_else(|| SsoError::ProviderNotConfigured("feishu".into()))?;
+            let cfg = parse_feishu_config(&row).ok_or_else(|| SsoError::ProviderNotConfigured("feishu".into()))?;
             let token = FeishuProvider::exchange_code(&cfg, code).await?;
             let info = FeishuProvider::fetch_user_info(&token).await?;
-            let external_id = FeishuProvider::resolve_external_id(&info, &cfg.external_id_field)
-                .ok_or(SsoError::IdentityMissing)?;
+            let external_id =
+                FeishuProvider::resolve_external_id(&info, &cfg.external_id_field).ok_or(SsoError::IdentityMissing)?;
             Ok(FeishuProvider::to_provider_user_info(&info, &external_id))
         }
         SsoProviderKind::Dingtalk => {
@@ -307,8 +307,8 @@ async fn ldap_login(
     if !row.enabled {
         return Err(SsoError::ProviderDisabled("ldap".into()));
     }
-    let cfg: crate::providers::ldap::LdapProviderConfig = serde_json::from_str(&row.config)
-        .map_err(|e| SsoError::Internal(format!("parse ldap config: {e}")))?;
+    let cfg: crate::providers::ldap::LdapProviderConfig =
+        serde_json::from_str(&row.config).map_err(|e| SsoError::Internal(format!("parse ldap config: {e}")))?;
 
     let auth = crate::providers::LdapProvider::authenticate(&cfg, &body.username, &body.password).await?;
     let profile = crate::providers::ProviderUserInfo {
@@ -324,7 +324,9 @@ async fn ldap_login(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
-    let session = state.service.issue_session(&user_id, &username, redirect_target, false)?;
+    let session = state
+        .service
+        .issue_session(&user_id, &username, redirect_target, false)?;
 
     Ok((
         [(header::SET_COOKIE, session.cookie.clone())],
@@ -363,6 +365,34 @@ async fn upsert_provider(
     Ok(Json(ApiResponse::ok(())))
 }
 
+/// Landing page shown in the system browser after a successful desktop SSO
+/// login, right before handing off to the `aionui://` deep link. `deep_link`
+/// is built entirely from `urlencode`'d segments (see `callback`), so it
+/// only ever contains `[A-Za-z0-9\-._~:/?=&]` — safe to interpolate as-is
+/// into both the script string and (with `&` escaped) the href attribute.
+fn desktop_callback_page(deep_link: &str) -> String {
+    let href = deep_link.replace('&', "&amp;");
+    format!(
+        r#"<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>1One Work</title>
+</head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f5f5f7;color:#1d1d1f;">
+<div style="text-align:center;">
+<p style="font-size:16px;margin:0 0 8px;">登录成功，可以关闭此页面。<br>Login successful — you can close this tab.</p>
+<p style="font-size:13px;color:#86868b;margin:0;">若应用没有自动打开，<a href="{href}">点击这里</a>。<br>If the app didn't open automatically, <a href="{href}">click here</a>.</p>
+</div>
+<script>
+location.href = "{deep_link}";
+setTimeout(function () {{ try {{ window.close(); }} catch (e) {{}} }}, 1200);
+</script>
+</body>
+</html>"#
+    )
+}
+
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for &b in s.as_bytes() {
@@ -380,3 +410,25 @@ fn urlencode(s: &str) -> String {
 const _: fn() = || {
     let _ = std::marker::PhantomData::<HeaderMap>;
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_callback_page_embeds_deep_link_for_script_redirect_and_manual_fallback() {
+        let deep_link = "aionui://sso-callback?token=abc&userId=u1&username=sso_12345678";
+        let page = desktop_callback_page(deep_link);
+
+        // Script-driven redirect uses the raw deep link (safe: built entirely
+        // from urlencode'd segments, no HTML/JS-sensitive characters).
+        assert!(page.contains(&format!("location.href = \"{deep_link}\";")));
+        // Manual fallback link HTML-escapes the query-string separators.
+        assert!(page.contains("href=\"aionui://sso-callback?token=abc&amp;userId=u1&amp;username=sso_12345678\""));
+        // Friendly copy in both languages so the user knows the login already
+        // succeeded even if the deep link/auto-close don't fire.
+        assert!(page.contains("登录成功"));
+        assert!(page.contains("Login successful"));
+        assert!(page.contains("window.close()"));
+    }
+}
