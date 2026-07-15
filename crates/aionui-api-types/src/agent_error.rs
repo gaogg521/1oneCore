@@ -49,6 +49,10 @@ pub enum AgentErrorCode {
     UserLlmProviderBillingRequired,
     UserLlmProviderConfigError,
     UserLlmProviderModelNotFound,
+    /// The provider config a conversation was built with has been deleted or
+    /// replaced since. Distinct from `UserLlmProviderModelNotFound` (provider
+    /// exists but rejects the model) — here the provider row itself is gone.
+    ProviderNotFound,
     UserLlmProviderUnsupportedModel,
     UserLlmProviderEndpointNotFound,
     UserLlmProviderInvalidRequest,

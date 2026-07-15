@@ -77,6 +77,9 @@ pub enum ConversationError {
     #[error("Workspace path is unavailable during execution: {path}")]
     WorkspacePathRuntimeUnavailable { path: String },
 
+    #[error("Provider '{provider_id}' not found")]
+    ProviderNotFound { provider_id: String },
+
     #[error("OpenClaw Gateway is not reachable: {detail}")]
     OpenClawGatewayUnreachable { detail: String },
 
@@ -125,6 +128,7 @@ impl ConversationError {
             Self::WorkspacePathRuntimeUnavailable { path } => {
                 AgentError::workspace_path_runtime_unavailable(path.clone())
             }
+            Self::ProviderNotFound { provider_id } => AgentError::provider_not_found(provider_id.clone()),
             Self::OpenClawGatewayUnreachable { detail } => AgentError::bad_gateway(detail.clone()),
             Self::Acp(err) => AgentError::bad_gateway(err.to_string()),
         }
@@ -152,6 +156,7 @@ impl ConversationError {
             Self::Archived { .. } => "CONVERSATION_ARCHIVED",
             Self::WorkspacePathUnavailable { .. } => "WORKSPACE_PATH_UNAVAILABLE",
             Self::WorkspacePathRuntimeUnavailable { .. } => "WORKSPACE_PATH_RUNTIME_UNAVAILABLE",
+            Self::ProviderNotFound { .. } => "PROVIDER_NOT_FOUND",
             Self::OpenClawGatewayUnreachable { .. } => "USER_AGENT_OPENCLAW_GATEWAY_UNREACHABLE",
         }
     }
@@ -174,6 +179,7 @@ impl From<AgentError> for ConversationError {
                 reason,
             },
             AgentError::WorkspacePathRuntimeUnavailable(path) => Self::WorkspacePathRuntimeUnavailable { path },
+            AgentError::ProviderNotFound(provider_id) => Self::ProviderNotFound { provider_id },
             AgentError::Acp(err) => Self::Acp(err),
             _ => Self::Internal {
                 reason: error.to_string(),
@@ -230,5 +236,26 @@ mod tests {
     #[test]
     fn conversation_error_has_db_from_impl() {
         assert_from_db::<ConversationError>();
+    }
+
+    #[test]
+    fn provider_not_found_agent_error_converts_and_reports_dedicated_code() {
+        let converted: ConversationError = AgentError::provider_not_found("ff9e8905").into();
+        match &converted {
+            ConversationError::ProviderNotFound { provider_id } => assert_eq!(provider_id, "ff9e8905"),
+            other => panic!("expected ProviderNotFound, got {other:?}"),
+        }
+        assert_eq!(converted.error_code(), "PROVIDER_NOT_FOUND");
+    }
+
+    #[test]
+    fn provider_not_found_round_trips_back_to_agent_error() {
+        let conversation_error = ConversationError::ProviderNotFound {
+            provider_id: "38302ea7".to_owned(),
+        };
+        match conversation_error.to_agent_error() {
+            AgentError::ProviderNotFound(id) => assert_eq!(id, "38302ea7"),
+            other => panic!("expected AgentError::ProviderNotFound, got {other:?}"),
+        }
     }
 }

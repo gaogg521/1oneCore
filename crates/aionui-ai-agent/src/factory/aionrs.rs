@@ -81,7 +81,7 @@ pub(super) async fn build(
         .find_by_id(provider_id)
         .await
         .map_err(|e| AgentError::internal(format!("Failed to load provider config: {e}")))?
-        .ok_or_else(|| AgentError::bad_request(format!("Provider '{provider_id}' not found")))?;
+        .ok_or_else(|| AgentError::provider_not_found(provider_id.clone()))?;
 
     let api_key = aionui_common::decrypt_string(&row.api_key_encrypted, &deps.encryption_key)
         .map_err(|e| AgentError::internal(e.to_string()))?;

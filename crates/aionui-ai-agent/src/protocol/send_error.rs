@@ -89,6 +89,18 @@ impl AgentSendError {
                     )),
                 },
             },
+            AgentError::ProviderNotFound(_) => Self::new(
+                "The model configured for this conversation no longer exists",
+                AgentErrorCode::ProviderNotFound,
+                AgentErrorOwnership::UserLlmProvider,
+                Some(detail),
+                false,
+                false,
+                resolution(
+                    AgentErrorResolutionKind::ChangeModel,
+                    Some(AgentErrorResolutionTarget::ProviderSettings),
+                ),
+            ),
             AgentError::Internal(_) => Self::new(
                 "AionUI failed while sending the message",
                 AgentErrorCode::AionuiInternalError,

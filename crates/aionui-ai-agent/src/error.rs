@@ -25,6 +25,12 @@ pub enum AgentError {
     ConversationArchived(String),
     #[error("Workspace path is unavailable during execution: {0}")]
     WorkspacePathRuntimeUnavailable(String),
+    /// The provider config a conversation was built with no longer exists
+    /// (deleted or replaced since). Carries just the provider id so callers
+    /// can surface a friendly "model was removed" message instead of the raw
+    /// lookup failure. See `factory::aionrs::build`.
+    #[error("Provider '{0}' not found")]
+    ProviderNotFound(String),
     #[error("Internal error: {0}")]
     Internal(String),
     #[error(transparent)]
@@ -68,6 +74,10 @@ impl AgentError {
         Self::WorkspacePathRuntimeUnavailable(path.into())
     }
 
+    pub fn provider_not_found(provider_id: impl Into<String>) -> Self {
+        Self::ProviderNotFound(provider_id.into())
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self::Internal(message.into())
     }
@@ -85,7 +95,19 @@ impl AgentError {
             | Self::WorkspacePathRuntimeUnavailable(message)
             | Self::Internal(message) => message.clone(),
             Self::RateLimited => "Rate limited".to_owned(),
+            Self::ProviderNotFound(_) => self.to_string(),
             Self::Acp(err) => err.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_not_found_public_message_includes_the_id_in_a_full_sentence() {
+        let err = AgentError::provider_not_found("ff9e8905");
+        assert_eq!(err.public_message(), "Provider 'ff9e8905' not found");
     }
 }

@@ -86,6 +86,12 @@ impl From<ConversationError> for ApiError {
             ConversationError::WorkspacePathRuntimeUnavailable { path } => {
                 ApiError::WorkspacePathRuntimeUnavailable(path)
             }
+            ConversationError::ProviderNotFound { provider_id } => ApiError::coded(
+                StatusCode::BAD_REQUEST,
+                "PROVIDER_NOT_FOUND",
+                format!("Provider '{provider_id}' not found"),
+                Some(serde_json::json!({ "provider_id": provider_id })),
+            ),
             ConversationError::OpenClawGatewayUnreachable { detail } => ApiError::coded(
                 StatusCode::BAD_GATEWAY,
                 "USER_AGENT_OPENCLAW_GATEWAY_UNREACHABLE",

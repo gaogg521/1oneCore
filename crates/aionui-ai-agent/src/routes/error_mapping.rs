@@ -1,5 +1,7 @@
 #![allow(clippy::disallowed_types)]
 
+use axum::http::StatusCode;
+
 use aionui_common::ApiError;
 
 use crate::error::AgentError;
@@ -17,6 +19,12 @@ pub(crate) fn agent_error_to_api_error(err: AgentError) -> ApiError {
         AgentError::RateLimited => ApiError::RateLimited,
         AgentError::ConversationArchived(message) => ApiError::ConversationArchived(message),
         AgentError::WorkspacePathRuntimeUnavailable(path) => ApiError::WorkspacePathRuntimeUnavailable(path),
+        AgentError::ProviderNotFound(provider_id) => ApiError::coded(
+            StatusCode::BAD_REQUEST,
+            "PROVIDER_NOT_FOUND",
+            format!("Provider '{provider_id}' not found"),
+            Some(serde_json::json!({ "provider_id": provider_id })),
+        ),
         AgentError::Internal(message) => ApiError::Internal(message),
         AgentError::Acp(err) => acp_error_to_api_error(err),
     }
