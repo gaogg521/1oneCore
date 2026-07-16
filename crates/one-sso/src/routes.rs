@@ -223,7 +223,25 @@ async fn callback(
     }
 
     let profile = run_provider_oauth(provider, &state.service, code).await?;
+    // Human-readable display name (e.g. Feishu's 赵高). The login `username` is
+    // sanitized to ASCII and often collapses to `sso_<id>` for CJK names, so
+    // the desktop needs this separately to show a real name instead of the code.
+    let display_name = profile.preferred_username.clone();
+    // Company identifier (Feishu tenant_key etc.), captured before the profile
+    // is consumed — drives the real-enterprise auto-join below.
+    let org_external_id = profile.org_external_id.clone();
     let (user_id, username, _created) = state.service.resolve_or_provision_user(provider, profile).await?;
+
+    // Real-enterprise tier: a colleague signing in with the company IdP joins
+    // the enterprise bound to that company (no invite code). Join-only and
+    // best-effort — it never creates a tenant and never fails the login, so a
+    // personal-edition install is unaffected. Runs before `issue_session` so
+    // the freshly-signed token reflects the new membership (auto-join rotates
+    // the user's jwt secret).
+    if let (Some(joiner), Some(org_id)) = (state.auto_joiner.as_ref(), org_external_id.as_deref()) {
+        joiner.try_auto_join(&user_id, provider.as_str(), org_id).await;
+    }
+
     let session = state
         .service
         .issue_session(&user_id, &username, entry.redirect_target.clone(), entry.desktop)?;
@@ -244,10 +262,11 @@ async fn callback(
         // via script — harmless no-op if so, the text still tells the user
         // what to do).
         let params = format!(
-            "token={}&userId={}&username={}",
+            "token={}&userId={}&username={}&name={}",
             urlencode(&session.token),
             urlencode(&session.user_id),
             urlencode(&session.username),
+            urlencode(&display_name),
         );
         let deep_link = format!("{}://sso-callback?{params}", entry.deep_link_scheme);
         Ok(Html(desktop_callback_page(&deep_link)).into_response())
@@ -358,6 +377,8 @@ async fn ldap_login(
         preferred_username: body.username.trim().to_owned(),
         org_unit_path: auth.org_unit_path,
         job_title: None,
+        // LDAP/local password login carries no SSO company identifier.
+        org_external_id: None,
     };
     let (user_id, username, _created) = state.service.resolve_or_provision_user(provider, profile).await?;
 
@@ -425,13 +446,20 @@ fn desktop_callback_page(deep_link: &str) -> String {
 <title>1One Work</title>
 </head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f5f5f7;color:#1d1d1f;">
-<div style="text-align:center;">
-<p style="font-size:16px;margin:0 0 8px;">登录成功，可以关闭此页面。<br>Login successful — you can close this tab.</p>
-<p style="font-size:13px;color:#86868b;margin:0;">若应用没有自动打开，<a href="{href}">点击这里</a>。<br>If the app didn't open automatically, <a href="{href}">click here</a>.</p>
+<div style="text-align:center;max-width:360px;padding:24px;">
+<p style="font-size:17px;font-weight:600;margin:0 0 8px;">登录成功<br>Login successful</p>
+<p style="font-size:14px;color:#555;margin:0 0 20px;">正在打开 1One Work…<br>Opening 1One Work…</p>
+<a href="{href}" style="display:inline-block;padding:12px 32px;background:#4E5969;color:#fff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:500;">打开应用 · Open the app</a>
+<p style="font-size:12px;color:#86868b;margin:20px 0 0;line-height:1.6;">若浏览器弹出「是否打开」确认框，请点击「打开」。之后可关闭此页面。<br>If a prompt appears, click "Open". You can close this tab afterwards.</p>
 </div>
 <script>
-location.href = "{deep_link}";
-setTimeout(function () {{ try {{ window.close(); }} catch (e) {{}} }}, 1200);
+// Fire the deep link automatically, then auto-close the tab — but only after a
+// generous 5s. The old 1.2s raced the browser's "open this app?" permission
+// prompt and closed the tab (with the prompt) before the user could confirm,
+// so the desktop never received the callback. 5s leaves time to confirm; the
+// visible button above is the manual fallback.
+setTimeout(function () {{ location.href = "{deep_link}"; }}, 200);
+setTimeout(function () {{ try {{ window.close(); }} catch (e) {{}} }}, 5000);
 </script>
 </body>
 </html>"#
@@ -471,10 +499,16 @@ mod tests {
         // Manual fallback link HTML-escapes the query-string separators.
         assert!(page.contains("href=\"aionui://sso-callback?token=abc&amp;userId=u1&amp;username=sso_12345678\""));
         // Friendly copy in both languages so the user knows the login already
-        // succeeded even if the deep link/auto-close don't fire.
+        // succeeded even if the deep link doesn't auto-fire.
         assert!(page.contains("登录成功"));
         assert!(page.contains("Login successful"));
+        // Auto-close is kept for a tidy UX, but delayed to 5s so it no longer
+        // races the browser's protocol permission prompt (the old 1.2s closed
+        // the tab, and the prompt with it, before the user could confirm).
+        // The visible manual "open the app" button is the reliable fallback.
         assert!(page.contains("window.close()"));
+        assert!(page.contains("5000"));
+        assert!(page.contains("打开应用"));
     }
 
     #[test]

@@ -111,6 +111,7 @@ impl WecomProvider {
             preferred_username: format!("wecom_{}", &user_id[..user_id.len().min(16)]),
             org_unit_path: None,
             job_title: None,
+            org_external_id: None,
         }
     }
 

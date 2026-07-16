@@ -29,4 +29,10 @@ pub struct ProviderUserInfo {
     /// see `feishu::FeishuProvider::fetch_org_profile`); other providers
     /// leave it `None`.
     pub job_title: Option<String>,
+    /// Company/organization identifier from the IdP (Feishu `tenant_key`,
+    /// DingTalk `corp_id`, WeCom `corpid`). Used to bind/auto-join the SSO
+    /// "real enterprise" tenant — same-company logins resolve to the same
+    /// enterprise without an invite code. `None` for LDAP/local logins and
+    /// providers that don't surface it yet.
+    pub org_external_id: Option<String>,
 }

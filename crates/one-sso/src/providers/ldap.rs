@@ -170,7 +170,10 @@ impl LdapProvider {
             }
         } else {
             let _ = user_conn.unbind().await;
-            return Err(SsoError::Internal(format!("ldap user bind failed (rc={})", bind_result.rc)));
+            return Err(SsoError::Internal(format!(
+                "ldap user bind failed (rc={})",
+                bind_result.rc
+            )));
         };
         let _ = user_conn.unbind().await;
 
@@ -225,7 +228,11 @@ fn build_search_filter(config: &LdapProviderConfig, username: &str, login_attr: 
     };
     let raw = {
         let configured = config.search_filter.trim();
-        if configured.is_empty() { default_filter } else { configured.to_owned() }
+        if configured.is_empty() {
+            default_filter
+        } else {
+            configured.to_owned()
+        }
     };
     let safe = escape_filter_value(username);
     replace_username_placeholder(&raw, &safe)
@@ -288,7 +295,11 @@ fn base_dn_to_dns_domain(base_dn: &str) -> Option<String> {
         .map(|part| part[3..].trim().to_owned())
         .filter(|label| !label.is_empty())
         .collect();
-    if labels.is_empty() { None } else { Some(labels.join(".")) }
+    if labels.is_empty() {
+        None
+    } else {
+        Some(labels.join("."))
+    }
 }
 
 fn lowercase_attr_map(attrs: &HashMap<String, Vec<String>>) -> HashMap<String, Vec<String>> {
@@ -326,7 +337,11 @@ pub fn resolve_org_unit_path(dn: &str, record: &HashMap<String, Vec<String>>) ->
     let company = pick_attr(record, "company");
     let ou_path = {
         let chain = parse_ou_chain_from_dn(dn);
-        if chain.is_empty() { None } else { Some(chain.join(" / ")) }
+        if chain.is_empty() {
+            None
+        } else {
+            Some(chain.join(" / "))
+        }
     };
 
     let path = department.or(ou_path);
@@ -358,7 +373,10 @@ mod tests {
     fn default_filter_switches_on_email_style_logins() {
         let config = LdapProviderConfig::default();
         let plain = build_search_filter(&config, "zhang.san", "sAMAccountName");
-        assert_eq!(plain, "(|(sAMAccountName=zhang.san)(sAMAccountName=zhang.san)(uid=zhang.san))");
+        assert_eq!(
+            plain,
+            "(|(sAMAccountName=zhang.san)(sAMAccountName=zhang.san)(uid=zhang.san))"
+        );
         let mail = build_search_filter(&config, "zhang@corp.com", "sAMAccountName");
         assert!(mail.contains("(userPrincipalName=zhang@corp.com)"));
         assert!(mail.contains("(mail=zhang@corp.com)"));
@@ -403,13 +421,13 @@ mod tests {
     fn org_unit_path_prefers_department_and_prefixes_company() {
         let dn = "CN=Zhang San,OU=Dev,OU=Engineering,DC=corp,DC=com";
         let with_dept = record(&[("department", &["Platform"]), ("company", &["Acme"])]);
-        assert_eq!(resolve_org_unit_path(dn, &with_dept).as_deref(), Some("Acme / Platform"));
+        assert_eq!(
+            resolve_org_unit_path(dn, &with_dept).as_deref(),
+            Some("Acme / Platform")
+        );
 
         let empty = record(&[]);
-        assert_eq!(
-            resolve_org_unit_path(dn, &empty).as_deref(),
-            Some("Engineering / Dev")
-        );
+        assert_eq!(resolve_org_unit_path(dn, &empty).as_deref(), Some("Engineering / Dev"));
 
         let company_only = record(&[("company", &["Acme"])]);
         assert_eq!(

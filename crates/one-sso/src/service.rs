@@ -349,8 +349,8 @@ impl SsoService {
         sqlx::query(
             "INSERT INTO one_sso_identities \
              (id, provider, external_id, user_id, tenant_id, display_name, org_unit_path, job_title, \
-              created_at, last_seen_at) \
-             VALUES (?, ?, ?, ?, 'default', ?, ?, ?, ?, ?)",
+              org_external_id, created_at, last_seen_at) \
+             VALUES (?, ?, ?, ?, 'default', ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(provider.as_str())
@@ -359,6 +359,7 @@ impl SsoService {
         .bind(&profile.preferred_username)
         .bind(profile.org_unit_path.as_deref())
         .bind(profile.job_title.as_deref())
+        .bind(profile.org_external_id.as_deref())
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -368,13 +369,15 @@ impl SsoService {
 
     async fn touch_identity(&self, provider: SsoProviderKind, external_id: &str, profile: &ProviderUserInfo) {
         let _ = sqlx::query(
-            "UPDATE one_sso_identities SET last_seen_at = ?, display_name = ?, org_unit_path = ?, job_title = ? \
+            "UPDATE one_sso_identities SET last_seen_at = ?, display_name = ?, org_unit_path = ?, job_title = ?, \
+             org_external_id = ? \
              WHERE provider = ? AND external_id = ?",
         )
         .bind(now_ms())
         .bind(&profile.preferred_username)
         .bind(profile.org_unit_path.as_deref())
         .bind(profile.job_title.as_deref())
+        .bind(profile.org_external_id.as_deref())
         .bind(provider.as_str())
         .bind(external_id)
         .execute(&self.pool)
@@ -780,6 +783,7 @@ mod tests {
             preferred_username: "张三".into(),
             org_unit_path: Some("研发中心".into()),
             job_title: Some("高级工程师".into()),
+            org_external_id: None,
         };
         let (user_id, username, created) = service
             .resolve_or_provision_user(SsoProviderKind::Feishu, profile)
@@ -805,6 +809,7 @@ mod tests {
             preferred_username: "张三".into(),
             org_unit_path: Some("研发中心".into()),
             job_title: Some("工程师".into()),
+            org_external_id: None,
         };
         let (user_id, _, _) = service
             .resolve_or_provision_user(SsoProviderKind::Feishu, first)
@@ -818,6 +823,7 @@ mod tests {
             preferred_username: "张三丰".into(),
             org_unit_path: Some("产品中心".into()),
             job_title: Some("高级工程师".into()),
+            org_external_id: None,
         };
         let (second_user_id, _, created) = service
             .resolve_or_provision_user(SsoProviderKind::Feishu, second)
@@ -843,6 +849,7 @@ mod tests {
             preferred_username: "Bob".into(),
             org_unit_path: None,
             job_title: None,
+            org_external_id: None,
         };
         let (user_id, _, _) = service
             .resolve_or_provision_user(SsoProviderKind::Feishu, profile)

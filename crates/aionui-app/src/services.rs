@@ -359,7 +359,10 @@ mod tests {
 
         // And it is persisted to the users row.
         let system_user = services.user_repo.get_system_user().await.unwrap().unwrap();
-        assert_eq!(system_user.data_secret.as_deref(), Some(services.data_secret_raw.as_str()));
+        assert_eq!(
+            system_user.data_secret.as_deref(),
+            Some(services.data_secret_raw.as_str())
+        );
 
         services.database.close().await;
     }

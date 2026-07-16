@@ -53,6 +53,30 @@ impl one_employee::TenantResolver for OrgTenantResolver {
     }
 }
 
+/// Adapts one-org's `OrgService::auto_provision_enterprise` to the
+/// `one_sso::EnterpriseAutoJoiner` trait, so an SSO login can join the
+/// enterprise bound to the caller's company without one-sso depending on
+/// one-org. Join-only by construction (see the OrgService method); errors are
+/// logged and swallowed so a failed lookup can never block a valid login.
+struct OrgEnterpriseAutoJoiner(std::sync::Arc<one_org::OrgService>);
+
+#[async_trait::async_trait]
+impl one_sso::EnterpriseAutoJoiner for OrgEnterpriseAutoJoiner {
+    async fn try_auto_join(&self, user_id: &str, provider: &str, org_external_id: &str) -> bool {
+        match self
+            .0
+            .auto_provision_enterprise(user_id, provider, org_external_id)
+            .await
+        {
+            Ok(joined) => joined,
+            Err(error) => {
+                tracing::warn!(%error, user_id, provider, "SSO enterprise auto-join failed; login continues");
+                false
+            }
+        }
+    }
+}
+
 use super::health::health_check;
 use super::state::{ModuleStates, RouterBuildError, build_module_states, build_ws_state};
 use super::trace::with_access_log;
@@ -96,7 +120,9 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
     // decoupled from the upstream sqlx migrator — see crates/one-org.
     one_org::run_one_migrations(services.database.pool())
         .await
-        .map_err(|e| RouterBuildError::new("router.one_org.migrate", "failed to run one-org migrations").with_source(e))?;
+        .map_err(|e| {
+            RouterBuildError::new("router.one_org.migrate", "failed to run one-org migrations").with_source(e)
+        })?;
     one_employee::run_one_employee_migrations(services.database.pool())
         .await
         .map_err(|e| {
@@ -298,14 +324,16 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // one-sso routes. Public half (providers/authorize/callback) is
     // unauthenticated so OAuth can run before the user has a session;
     // admin half (upsert provider) sits behind the auth middleware.
-    let one_sso_state = one_sso::OneSsoRouterState::new(std::sync::Arc::new(
-        one_sso::SsoService::new(
-            services.database.pool().clone(),
-            services.user_repo.clone(),
-            services.jwt_service.clone(),
-            services.cookie_config.clone(),
-        ),
-    ));
+    let one_sso_state = one_sso::OneSsoRouterState::new(std::sync::Arc::new(one_sso::SsoService::new(
+        services.database.pool().clone(),
+        services.user_repo.clone(),
+        services.jwt_service.clone(),
+        services.cookie_config.clone(),
+    )))
+    // Real-enterprise tier: same-company SSO logins auto-join the enterprise
+    // bound to that company. No-op unless such a binding exists, so personal
+    // edition is unaffected.
+    .with_auto_joiner(std::sync::Arc::new(OrgEnterpriseAutoJoiner(one_org_service.clone())));
     let one_sso_public = one_sso::one_sso_public_routes(one_sso_state.clone());
     let one_sso_admin = one_sso::one_sso_admin_routes(one_sso_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));

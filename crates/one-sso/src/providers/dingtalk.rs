@@ -133,6 +133,9 @@ impl DingtalkProvider {
             preferred_username: preferred,
             org_unit_path: info.mobile.clone(),
             job_title: None,
+            // DingTalk corp_id is available but not threaded through yet — the
+            // auto-join enterprise path currently targets Feishu only.
+            org_external_id: None,
         }
     }
 

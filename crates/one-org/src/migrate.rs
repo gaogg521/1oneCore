@@ -22,6 +22,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "003_membership_job_title",
         include_str!("../migrations/003_membership_job_title.sql"),
     ),
+    (
+        "004_tenant_sso_binding",
+        include_str!("../migrations/004_tenant_sso_binding.sql"),
+    ),
 ];
 
 /// Run all pending one-org migrations. Idempotent; call once at startup

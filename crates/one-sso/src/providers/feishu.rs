@@ -232,6 +232,15 @@ impl FeishuProvider {
             preferred_username: preferred,
             org_unit_path: None,
             job_title: None,
+            // Feishu tenant_key is the company identifier — used to bind/auto-join
+            // the SSO enterprise tenant (not a department; org_unit_path comes
+            // from fetch_org_profile).
+            org_external_id: info
+                .tenant_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
         }
     }
 
@@ -521,6 +530,41 @@ mod tests {
         let p = FeishuProvider::to_provider_user_info(&info, "ou_abc");
         assert_eq!(p.org_unit_path, None);
         assert_eq!(p.job_title, None);
+        // It is the company id though — that's what binds/auto-joins the
+        // enterprise tenant.
+        assert_eq!(p.org_external_id.as_deref(), Some("tenant_should_not_leak"));
+    }
+
+    #[test]
+    fn to_provider_user_info_captures_tenant_key_as_the_company_id() {
+        let info = FeishuUserInfo {
+            name: Some("赵高".into()),
+            en_name: None,
+            open_id: Some("ou_abc".into()),
+            union_id: None,
+            tenant_key: Some("tenant_huanle".into()),
+            avatar_url: None,
+        };
+        let p = FeishuProvider::to_provider_user_info(&info, "ou_abc");
+        assert_eq!(p.org_external_id.as_deref(), Some("tenant_huanle"));
+    }
+
+    #[test]
+    fn to_provider_user_info_leaves_company_id_none_without_tenant_key() {
+        // Blank/absent tenant_key must not produce an empty-string company id —
+        // that would match nothing and could bind an enterprise to "".
+        for tenant_key in [None, Some("   ".to_string())] {
+            let info = FeishuUserInfo {
+                name: Some("赵高".into()),
+                en_name: None,
+                open_id: Some("ou_abc".into()),
+                union_id: None,
+                tenant_key,
+                avatar_url: None,
+            };
+            let p = FeishuProvider::to_provider_user_info(&info, "ou_abc");
+            assert_eq!(p.org_external_id, None);
+        }
     }
 
     use wiremock::matchers::{method, path};

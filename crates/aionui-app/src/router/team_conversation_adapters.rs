@@ -337,12 +337,10 @@ fn map_conversation_update_error(error: ConversationError) -> TeamError {
         ConversationError::ActiveAgentNotFound { conversation_id } => TeamError::RuntimeNotReady { conversation_id },
         ConversationError::NotFound { id } => TeamError::InvalidRequest(format!("conversation not found: {id}")),
         ConversationError::NotFoundReason { reason } => TeamError::InvalidRequest(reason),
-        ConversationError::BadRequest { reason } if is_stale_provider_binding(&reason) => {
-            TeamError::InvalidRequest(
-                "this teammate has no valid model/provider configured; please remove and re-add it with a model selected"
-                    .to_owned(),
-            )
-        }
+        ConversationError::BadRequest { reason } if is_stale_provider_binding(&reason) => TeamError::InvalidRequest(
+            "this teammate has no valid model/provider configured; please remove and re-add it with a model selected"
+                .to_owned(),
+        ),
         other => TeamError::InvalidRequest(other.to_string()),
     }
 }

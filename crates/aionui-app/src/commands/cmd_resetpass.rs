@@ -58,7 +58,9 @@ pub async fn run_resetpass(cli: &Cli, args: &ResetpassArgs) -> Result<ExitCode, 
             )
         })?;
 
-    repo.update_password(&user.id, &new_hash).await.map_err(|_| database_error())?;
+    repo.update_password(&user.id, &new_hash)
+        .await
+        .map_err(|_| database_error())?;
     database.close().await;
 
     println!("Password reset for user: {}", user.username);
