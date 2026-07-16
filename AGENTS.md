@@ -109,9 +109,21 @@ New subprocess spawn sites must use `aionui_runtime::Builder::agent(program)` or
 
 ### Pushing Code
 
-Always use `just push` instead of `git push`.
-It runs fmt → clippy → test before pushing, preventing CI failures.
-Supports the same arguments as `git push` (e.g. `just push -u origin feat/branch`).
+`just push` is the convenient path: it runs fmt → clippy → test before pushing,
+preventing CI failures, and supports the same arguments as `git push`
+(e.g. `just push -u origin feat/branch`).
+
+Plain `git push` is also fine — use it when `just` isn't installed, or when
+`just push`'s workspace-wide `clippy -- -D warnings` gate would abort on
+pre-existing warnings unrelated to your change (per the ratchet rule, you are
+not expected to fix those). If you push with plain `git push`, first run the
+equivalent checks yourself for the crates you touched:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy -p <changed-crate> -- -D warnings
+cargo test -p <changed-crate>
+```
 
 ### Add Endpoint to Existing Crate
 
@@ -226,4 +238,6 @@ cargo test -p aionui-<crate1> -p aionui-<crate2>                               #
 
 ```bash
 just push                                             # fmt → clippy → test → git push
+# or, if `just` is unavailable / its -D-warnings gate trips on pre-existing warnings:
+cargo fmt --all -- --check && cargo test -p <changed-crate> && git push
 ```
