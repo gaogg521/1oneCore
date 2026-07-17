@@ -335,6 +335,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // edition is unaffected.
     .with_auto_joiner(std::sync::Arc::new(OrgEnterpriseAutoJoiner(one_org_service.clone())));
     let one_sso_public = one_sso::one_sso_public_routes(one_sso_state.clone());
+    let one_sso_member = one_sso::one_sso_member_routes(one_sso_state.clone())
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
     let one_sso_admin = one_sso::one_sso_admin_routes(one_sso_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -381,6 +383,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(one_employee_authenticated)
         .merge(one_devops_authenticated)
         .merge(one_sso_public)
+        .merge(one_sso_member)
         .merge(one_sso_admin);
 
     // Conditionally merge WeChat login SSE route (feature-gated)

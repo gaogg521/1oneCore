@@ -20,6 +20,6 @@ pub mod state;
 pub use enterprise::EnterpriseAutoJoiner;
 pub use error::SsoError;
 pub use migrate::run_one_sso_migrations;
-pub use routes::{one_sso_admin_routes, one_sso_public_routes};
+pub use routes::{one_sso_admin_routes, one_sso_member_routes, one_sso_public_routes};
 pub use service::SsoService;
 pub use state::OneSsoRouterState;

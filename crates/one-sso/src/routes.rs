@@ -16,7 +16,7 @@ use aionui_api_types::ApiResponse;
 use aionui_auth::CurrentUser;
 
 use crate::error::SsoError;
-use crate::models::{SsoProviderConfigDto, SsoProviderKind, SsoProviderStatusDto, UpdateProviderBody};
+use crate::models::{SsoIdentityDto, SsoProviderConfigDto, SsoProviderKind, SsoProviderStatusDto, UpdateProviderBody};
 use crate::rbac::RequireSsoAdmin;
 use crate::state::OneSsoRouterState;
 
@@ -34,6 +34,24 @@ pub fn one_sso_admin_routes(state: OneSsoRouterState) -> Router {
         .route("/api/one/admin/sso/providers", get(list_provider_configs))
         .route("/api/one/admin/sso/{provider}", put(upsert_provider))
         .with_state(state)
+}
+
+/// Member-facing SSO routes (need `CurrentUser`, so mount behind auth). Unlike
+/// the admin group these are not role-gated: any authenticated user may read
+/// their own SSO identity.
+pub fn one_sso_member_routes(state: OneSsoRouterState) -> Router {
+    Router::new().route("/api/one/sso/me", get(sso_me)).with_state(state)
+}
+
+/// The caller's own SSO identity (the "enterprise org" dimension), or `null`
+/// for a local/LDAP account with no OAuth identity. Independent of any
+/// tenant/project-group membership.
+async fn sso_me(
+    State(state): State<OneSsoRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Option<SsoIdentityDto>>>, SsoError> {
+    let identity = state.service.identity_of(&user.id).await?;
+    Ok(Json(ApiResponse::ok(identity)))
 }
 
 #[derive(Deserialize)]

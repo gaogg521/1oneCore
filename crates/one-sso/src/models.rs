@@ -55,6 +55,24 @@ pub struct SsoIdentityRow {
     pub created_at: i64,
 }
 
+/// The caller's own SSO identity — the "enterprise org" dimension, read
+/// straight from `one_sso_identities` and **independent of any tenant /
+/// project-group membership**. A user can belong to their SSO company here and
+/// separately (or not) be in an invite-code project group. Every field beyond
+/// `provider` is optional: whatever the IdP didn't supply comes back null —
+/// notably `department`/`job_title`, which Feishu only returns with a
+/// Contacts-scope grant, and `company_id`, which is the raw IdP company id
+/// (e.g. Feishu `tenant_key`), not a human-readable company name.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SsoIdentityDto {
+    pub provider: String,
+    pub company_id: Option<String>,
+    pub display_name: Option<String>,
+    pub department: Option<String>,
+    pub job_title: Option<String>,
+}
+
 /// Public provider status (returned to the login page so it can show which
 /// SSO buttons to render). Secrets are stripped.
 #[derive(Debug, Clone, Serialize)]

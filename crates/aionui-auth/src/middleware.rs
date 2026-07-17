@@ -49,8 +49,28 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    // In local mode, skip JWT verification and inject a fixed default user.
+    // Local mode is the desktop's co-located backend: the no-login operator is
+    // resolved to `system_default_user`. But that SAME backend is what a
+    // "本机作为服务器" deployment exposes to remote clients (web-host proxies
+    // `/api/*` from `0.0.0.0` to this `--local` backend). Those clients present
+    // their SSO-issued JWT and MUST resolve to their real identity — otherwise
+    // every remote member collapses to `system_default_user` (seeing that
+    // operator's tenant/members, and silently gaining its admin role). So in
+    // local mode we still honor a *valid* bearer token when one is present, and
+    // only fall back to the operator when there is no token (the local desktop
+    // never sends one) or it fails to resolve. This never returns 401 in local
+    // mode, preserving the no-auth convenience for the desktop operator.
     if state.local {
+        if let Some(token) = extract_token_from_headers(request.headers())
+            && let Ok(payload) = state.jwt_service.verify(&token)
+            && let Ok(Some(user)) = state.user_repo.find_by_id(&payload.user_id).await
+        {
+            request.extensions_mut().insert(CurrentUser {
+                id: user.id,
+                username: user.username,
+            });
+            return Ok(next.run(request).await);
+        }
         request.extensions_mut().insert(CurrentUser {
             id: "system_default_user".to_string(),
             username: "system_default_user".to_string(),
@@ -127,5 +147,91 @@ mod tests {
             std::str::from_utf8(&body).unwrap(),
             "system_default_user:system_default_user"
         );
+    }
+
+    async fn local_auth_app(user_repo: Arc<dyn IUserRepository>, jwt_service: Arc<JwtService>) -> Router {
+        let state = AuthState {
+            jwt_service,
+            user_repo,
+            local: true,
+        };
+        Router::new()
+            .route("/test", get(echo_user))
+            .route_layer(axum::middleware::from_fn_with_state(state, auth_middleware))
+    }
+
+    async fn body_string(response: Response) -> String {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    /// A "本机作为服务器" deployment proxies remote clients to the SAME
+    /// `--local` backend. A client presenting a valid SSO-issued JWT must
+    /// resolve to their real identity, not collapse to the operator.
+    #[tokio::test]
+    async fn local_mode_honors_a_valid_bearer_token() {
+        let db = aionui_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
+        let user = user_repo.create_user("zhaogao", "pw").await.unwrap();
+        let jwt = Arc::new(JwtService::new("test-secret".to_string()));
+        let token = jwt.sign(&user.id, &user.username).unwrap();
+
+        let app = local_auth_app(user_repo, jwt).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_string(response).await, format!("{}:{}", user.id, user.username));
+    }
+
+    /// The desktop operator (no token) still resolves to `system_default_user`
+    /// in local mode — the no-login convenience is preserved.
+    #[tokio::test]
+    async fn local_mode_without_a_token_falls_back_to_default_user() {
+        let db = aionui_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
+        let jwt = Arc::new(JwtService::new("test-secret".to_string()));
+
+        let app = local_auth_app(user_repo, jwt).await;
+        let response = app
+            .oneshot(Request::builder().uri("/test").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_string(response).await, "system_default_user:system_default_user");
+    }
+
+    /// An invalid/forged token in local mode does not 401 — it falls back to
+    /// the operator, so a malformed client request never hard-fails the
+    /// desktop's own no-auth path.
+    #[tokio::test]
+    async fn local_mode_with_an_invalid_token_falls_back_to_default_user() {
+        let db = aionui_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
+        let jwt = Arc::new(JwtService::new("test-secret".to_string()));
+
+        let app = local_auth_app(user_repo, jwt).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("Authorization", "Bearer not-a-real-jwt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_string(response).await, "system_default_user:system_default_user");
     }
 }
