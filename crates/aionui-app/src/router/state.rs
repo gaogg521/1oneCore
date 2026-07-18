@@ -706,11 +706,11 @@ pub fn build_cron_state(services: &AppServices) -> CronRouterState {
     let tick_service_ref: Arc<CronServiceTickRef> = Arc::new(CronServiceTickRef::default());
     let tick_ref = tick_service_ref.clone();
     let scheduler = Arc::new(aionui_cron::scheduler::CronScheduler::new(Arc::new(
-        move |job_id: String| {
+        move |tick: aionui_cron::scheduler::ScheduledTick| {
             let svc = tick_ref.0.lock().unwrap().clone();
             tokio::spawn(async move {
                 if let Some(svc) = svc {
-                    svc.tick(&job_id).await;
+                    svc.tick(&tick.job_id, tick.scheduled_at).await;
                 }
             });
         },
@@ -967,8 +967,6 @@ mod tests {
             source: "generated",
             owner_type: "system",
             source_ref: Some("bare-channel-aionrs"),
-            source_version: None,
-            source_hash: None,
             name: "Bare Channel Aionrs",
             name_i18n: "{}",
             description: Some("Channel state regression assistant"),
@@ -976,9 +974,8 @@ mod tests {
             avatar_type: "emoji",
             avatar_value: Some("A"),
             agent_id: "632f31d2",
-            rule_resource_type: "inline",
+            rule_resource_type: "user_file",
             rule_resource_ref: None,
-            rule_inline_content: Some(""),
             recommended_prompts: "[]",
             recommended_prompts_i18n: "{}",
             default_model_mode: "auto",

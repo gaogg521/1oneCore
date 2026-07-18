@@ -23,7 +23,7 @@ use aionui_db::{
 };
 use aionui_extension::{AssistantClassifier, AssistantRuleDispatcher, ExtensionError};
 use serde_json;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::agent_catalog::AssistantAgentCatalogPort;
 #[cfg(test)]
@@ -177,8 +177,6 @@ impl AssistantService {
                     source: "builtin",
                     owner_type: "system",
                     source_ref: Some(&builtin.id),
-                    source_version: None,
-                    source_hash: None,
                     name: &builtin.name,
                     name_i18n: &name_i18n,
                     description: builtin.description.as_deref(),
@@ -192,7 +190,6 @@ impl AssistantService {
                         "none"
                     },
                     rule_resource_ref: builtin.rule_file.as_ref().map(|_| builtin.id.as_str()),
-                    rule_inline_content: None,
                     recommended_prompts: &recommended_prompts,
                     recommended_prompts_i18n: &recommended_prompts_i18n,
                     default_model_mode,
@@ -251,26 +248,37 @@ impl AssistantService {
 
     async fn sync_legacy_user_assistants_to_new_tables(&self) -> Result<(), AssistantError> {
         for row in self.repo.list().await? {
-            if self.builtin.has(&row.id) {
-                continue;
+            if let Err(error) = self.sync_legacy_user_assistant_to_new_tables(&row).await {
+                warn!(
+                    assistant_id = %row.id,
+                    error = %error,
+                    "skip dirty legacy assistant during startup bootstrap"
+                );
             }
-            if self
-                .definition_repo
-                .get_by_source_ref_including_deleted("user", &row.id)
-                .await
-                .map_err(|e| AssistantError::Internal(format!("get user definition by source_ref: {e}")))?
-                .is_some()
-                || self
-                    .definition_repo
-                    .get_by_assistant_id_including_deleted(&row.id)
-                    .await
-                    .map_err(|e| AssistantError::Internal(format!("get user definition by assistant_id: {e}")))?
-                    .is_some()
-            {
-                continue;
-            }
-            self.upsert_definition_from_legacy_user_row(&row, None).await?;
         }
+        Ok(())
+    }
+
+    async fn sync_legacy_user_assistant_to_new_tables(&self, row: &AssistantRow) -> Result<(), AssistantError> {
+        if self.builtin.has(&row.id) {
+            return Ok(());
+        }
+        if self
+            .definition_repo
+            .get_by_source_ref_including_deleted("user", &row.id)
+            .await
+            .map_err(|e| AssistantError::Internal(format!("get user definition by source_ref: {e}")))?
+            .is_some()
+            || self
+                .definition_repo
+                .get_by_assistant_id_including_deleted(&row.id)
+                .await
+                .map_err(|e| AssistantError::Internal(format!("get user definition by assistant_id: {e}")))?
+                .is_some()
+        {
+            return Ok(());
+        }
+        self.upsert_definition_from_legacy_user_row(row, None).await?;
         Ok(())
     }
 
@@ -330,12 +338,21 @@ impl AssistantService {
                 .await
                 .map_err(|e| AssistantError::Internal(format!("get assistant overlay: {e}")))?;
 
+            // The legacy `assistant_overrides` table only seeds first-time
+            // migration. Once an overlay row exists it is authoritative — it
+            // reflects the user's toggles written via `set_state`. Re-applying
+            // the (never-updated) legacy row on every startup would clobber
+            // those toggles, so skip any assistant that already has an overlay.
+            if existing_state.is_some() {
+                continue;
+            }
+
             self.state_repo
                 .upsert(&UpsertAssistantOverlayParams {
                     assistant_definition_id: &definition.id,
                     enabled: override_row.enabled,
                     sort_order: override_row.sort_order,
-                    agent_id_override: existing_state.as_ref().and_then(|row| row.agent_id_override.as_deref()),
+                    agent_id_override: None,
                     last_used_at: override_row.last_used_at,
                 })
                 .await
@@ -400,123 +417,154 @@ impl AssistantService {
 
         let mut missing_index = 0usize;
         for row in generated_rows {
-            let existing_definition = definitions
-                .iter()
-                .find(|definition| {
-                    definition.source == "generated" && definition.source_ref.as_deref() == Some(row.id.as_str())
-                })
-                .cloned();
-            let is_missing = existing_definition.is_none();
-            let assistant_id = format!("bare:{}", row.id);
-            let (definition_id, assistant_id) = self
-                .resolve_definition_identity("generated", Some(&row.id), &assistant_id)
-                .await?;
-            let avatar_value = row.icon.as_deref().filter(|value| !value.trim().is_empty());
-            let (definition, should_upsert) = if let Some(mut definition) = existing_definition {
-                let avatar_type = if avatar_value.is_some() { "emoji" } else { "none" };
-                let should_upgrade_skill_defaults = definition.default_skills_mode == "auto"
-                    && decode_str_list(Some(definition.default_skill_ids.as_str()))?.is_empty()
-                    && decode_str_list(Some(definition.default_disabled_builtin_skill_ids.as_str()))?.is_empty();
-                let identity_changed = definition.name != row.name
-                    || definition.avatar_type != avatar_type
-                    || definition.avatar_value.as_deref() != avatar_value
-                    || definition.agent_id != row.id
-                    || definition.source_ref.as_deref() != Some(row.id.as_str());
-
-                definition.name = row.name.clone();
-                definition.avatar_type = avatar_type.to_string();
-                definition.avatar_value = avatar_value.map(ToOwned::to_owned);
-                definition.agent_id = row.id.clone();
-                definition.source_ref = Some(row.id.clone());
-                if should_upgrade_skill_defaults {
-                    definition.default_skills_mode = "fixed".into();
-                }
-                (definition, identity_changed || should_upgrade_skill_defaults)
-            } else {
-                (
-                    AssistantDefinitionRow {
-                        id: definition_id.clone(),
-                        assistant_id: assistant_id.clone(),
-                        source: "generated".into(),
-                        owner_type: "system".into(),
-                        source_ref: Some(row.id.clone()),
-                        source_version: None,
-                        source_hash: None,
-                        name: row.name.clone(),
-                        name_i18n: "{}".into(),
-                        description: row.description.clone(),
-                        description_i18n: "{}".into(),
-                        avatar_type: if avatar_value.is_some() {
-                            "emoji".into()
-                        } else {
-                            "none".into()
-                        },
-                        avatar_value: avatar_value.map(ToOwned::to_owned),
-                        agent_id: row.id.clone(),
-                        rule_resource_type: "none".into(),
-                        rule_resource_ref: None,
-                        rule_inline_content: None,
-                        recommended_prompts: "[]".into(),
-                        recommended_prompts_i18n: "{}".into(),
-                        default_model_mode: "auto".into(),
-                        default_model_value: None,
-                        default_permission_mode: "auto".into(),
-                        default_permission_value: None,
-                        default_thought_level_mode: "auto".into(),
-                        default_thought_level_value: None,
-                        default_skills_mode: "fixed".into(),
-                        default_skill_ids: "[]".into(),
-                        custom_skill_names: "[]".into(),
-                        default_disabled_builtin_skill_ids: "[]".into(),
-                        default_mcps_mode: "auto".into(),
-                        default_mcp_ids: "[]".into(),
-                        created_at: 0,
-                        updated_at: 0,
-                        deleted_at: None,
-                    },
-                    true,
+            if let Err(error) = self
+                .reconcile_generated_assistant(
+                    row,
+                    &definitions,
+                    has_existing_generated,
+                    existing_min_sort_order,
+                    missing_generated_count,
+                    &mut missing_index,
                 )
-            };
-
-            if should_upsert {
-                self.definition_repo
-                    .upsert(&upsert_params_from_definition(&definition))
-                    .await
-                    .map_err(|e| AssistantError::Internal(format!("upsert generated assistant definition: {e}")))?;
-            }
-
-            if !is_missing {
-                continue;
-            }
-
-            if self
-                .state_repo
-                .get(&definition_id)
                 .await
-                .map_err(|e| AssistantError::Internal(format!("get generated assistant overlay: {e}")))?
-                .is_none()
             {
-                let current_missing_index = missing_index;
-                missing_index += 1;
-                let initial_generated_sort_order = if !has_existing_generated && missing_generated_count > 0 {
-                    existing_min_sort_order as i64 - missing_generated_count as i64 + current_missing_index as i64
-                } else {
-                    row.sort_order
-                };
-                self.state_repo
-                    .upsert(&UpsertAssistantOverlayParams {
-                        assistant_definition_id: &definition_id,
-                        enabled: true,
-                        sort_order: initial_generated_sort_order.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
-                        agent_id_override: None,
-                        last_used_at: None,
-                    })
-                    .await
-                    .map_err(|e| AssistantError::Internal(format!("upsert generated assistant overlay: {e}")))?;
+                warn!(
+                    agent_id = %row.id,
+                    error = %error,
+                    "skip dirty generated assistant during startup bootstrap"
+                );
             }
         }
 
         Ok(rows)
+    }
+
+    async fn reconcile_generated_assistant(
+        &self,
+        row: &AgentManagementRow,
+        definitions: &[AssistantDefinitionRow],
+        has_existing_generated: bool,
+        existing_min_sort_order: i32,
+        missing_generated_count: usize,
+        missing_index: &mut usize,
+    ) -> Result<(), AssistantError> {
+        let existing_definition = definitions
+            .iter()
+            .find(|definition| {
+                definition.source == "generated" && definition.source_ref.as_deref() == Some(row.id.as_str())
+            })
+            .cloned();
+        let is_missing = existing_definition.is_none();
+        let assistant_id = format!("bare:{}", row.id);
+        let (definition_id, assistant_id) = self
+            .resolve_definition_identity("generated", Some(&row.id), &assistant_id)
+            .await?;
+        let avatar_value = row.icon.as_deref().filter(|value| !value.trim().is_empty());
+        let (definition, should_upsert) = if let Some(mut definition) = existing_definition {
+            let avatar_type = if avatar_value.is_some() { "emoji" } else { "none" };
+            let should_upgrade_skill_defaults = definition.default_skills_mode == "auto"
+                && decode_str_list(Some(definition.default_skill_ids.as_str()))?.is_empty()
+                && decode_str_list(Some(definition.default_disabled_builtin_skill_ids.as_str()))?.is_empty();
+            let identity_changed = definition.name != row.name
+                || definition.avatar_type != avatar_type
+                || definition.avatar_value.as_deref() != avatar_value
+                || definition.agent_id != row.id
+                || definition.source_ref.as_deref() != Some(row.id.as_str())
+                || definition.rule_resource_type != "user_file"
+                || definition.rule_resource_ref.as_deref() != Some(assistant_id.as_str());
+
+            definition.name = row.name.clone();
+            definition.avatar_type = avatar_type.to_string();
+            definition.avatar_value = avatar_value.map(ToOwned::to_owned);
+            definition.agent_id = row.id.clone();
+            definition.source_ref = Some(row.id.clone());
+            definition.rule_resource_type = "user_file".into();
+            definition.rule_resource_ref = Some(assistant_id.clone());
+            if should_upgrade_skill_defaults {
+                definition.default_skills_mode = "fixed".into();
+            }
+            (definition, identity_changed || should_upgrade_skill_defaults)
+        } else {
+            (
+                AssistantDefinitionRow {
+                    id: definition_id.clone(),
+                    assistant_id: assistant_id.clone(),
+                    source: "generated".into(),
+                    owner_type: "system".into(),
+                    source_ref: Some(row.id.clone()),
+                    name: row.name.clone(),
+                    name_i18n: "{}".into(),
+                    description: row.description.clone(),
+                    description_i18n: "{}".into(),
+                    avatar_type: if avatar_value.is_some() {
+                        "emoji".into()
+                    } else {
+                        "none".into()
+                    },
+                    avatar_value: avatar_value.map(ToOwned::to_owned),
+                    agent_id: row.id.clone(),
+                    rule_resource_type: "user_file".into(),
+                    rule_resource_ref: Some(assistant_id.clone()),
+                    recommended_prompts: "[]".into(),
+                    recommended_prompts_i18n: "{}".into(),
+                    default_model_mode: "auto".into(),
+                    default_model_value: None,
+                    default_permission_mode: "auto".into(),
+                    default_permission_value: None,
+                    default_thought_level_mode: "auto".into(),
+                    default_thought_level_value: None,
+                    default_skills_mode: "fixed".into(),
+                    default_skill_ids: "[]".into(),
+                    custom_skill_names: "[]".into(),
+                    default_disabled_builtin_skill_ids: "[]".into(),
+                    default_mcps_mode: "auto".into(),
+                    default_mcp_ids: "[]".into(),
+                    created_at: 0,
+                    updated_at: 0,
+                    deleted_at: None,
+                },
+                true,
+            )
+        };
+
+        if should_upsert {
+            self.definition_repo
+                .upsert(&upsert_params_from_definition(&definition))
+                .await
+                .map_err(|e| AssistantError::Internal(format!("upsert generated assistant definition: {e}")))?;
+        }
+
+        if !is_missing {
+            return Ok(());
+        }
+
+        if self
+            .state_repo
+            .get(&definition_id)
+            .await
+            .map_err(|e| AssistantError::Internal(format!("get generated assistant overlay: {e}")))?
+            .is_none()
+        {
+            let current_missing_index = *missing_index;
+            *missing_index += 1;
+            let initial_generated_sort_order = if !has_existing_generated && missing_generated_count > 0 {
+                existing_min_sort_order as i64 - missing_generated_count as i64 + current_missing_index as i64
+            } else {
+                row.sort_order
+            };
+            self.state_repo
+                .upsert(&UpsertAssistantOverlayParams {
+                    assistant_definition_id: &definition_id,
+                    enabled: true,
+                    sort_order: initial_generated_sort_order.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+                    agent_id_override: None,
+                    last_used_at: None,
+                })
+                .await
+                .map_err(|e| AssistantError::Internal(format!("upsert generated assistant overlay: {e}")))?;
+        }
+
+        Ok(())
     }
 
     async fn upsert_definition_from_legacy_user_row(
@@ -555,8 +603,6 @@ impl AssistantService {
                 source: "user",
                 owner_type: "user",
                 source_ref: Some(&row.id),
-                source_version: None,
-                source_hash: None,
                 name: &row.name,
                 name_i18n: &name_i18n,
                 description: row.description.as_deref(),
@@ -566,7 +612,6 @@ impl AssistantService {
                 agent_id: &agent_id,
                 rule_resource_type: "user_file",
                 rule_resource_ref: Some(&row.id),
-                rule_inline_content: None,
                 recommended_prompts: &recommended_prompts,
                 recommended_prompts_i18n: &recommended_prompts_i18n,
                 default_model_mode: "auto",
@@ -1518,12 +1563,20 @@ impl AssistantService {
     /// create the conversation with `assistant: None`, so no UI locale reaches
     /// rule resolution and the localized file would otherwise be missed.
     fn read_user_rule_with_fallback(&self, id: &str, locale: Option<&str>) -> String {
-        let content = read_file_or_empty(&self.user_rule_path(id, locale));
-        if content.is_empty() {
-            read_first_assistant_md(&self.user_rules_dir(), id)
-        } else {
-            content
+        let rules_dir = self.user_rules_dir();
+        let content = read_assistant_md_with_legacy(&rules_dir, id, locale);
+        if !content.is_empty() {
+            return content;
         }
+
+        if locale.is_some_and(|value| !value.is_empty()) {
+            let locale_less = read_assistant_md_with_legacy(&rules_dir, id, None);
+            if !locale_less.is_empty() {
+                return locale_less;
+            }
+        }
+
+        read_first_assistant_md(&rules_dir, id)
     }
 
     /// Write an assistant rule file. User-authored and generated assistants
@@ -1561,8 +1614,7 @@ impl AssistantService {
         match self.classify_source(id).await {
             AssistantSource::Builtin => Ok(String::new()),
             AssistantSource::Generated | AssistantSource::User => {
-                let path = self.user_skill_path(id, locale);
-                Ok(read_file_or_empty(&path))
+                Ok(read_assistant_md_with_legacy(&self.user_skills_dir(), id, locale))
             }
         }
     }
@@ -2133,11 +2185,7 @@ impl AssistantService {
                 agent: projection.agent.clone(),
             },
             rules: AssistantRulesResponse {
-                content: if rules_content.is_empty() {
-                    definition.rule_inline_content.clone().unwrap_or_default()
-                } else {
-                    rules_content.to_owned()
-                },
+                content: rules_content.to_owned(),
                 storage_mode: definition.rule_resource_type.clone(),
             },
             prompts: AssistantPromptsResponse {
@@ -2586,8 +2634,6 @@ fn upsert_params_from_definition(definition: &AssistantDefinitionRow) -> UpsertA
         source: &definition.source,
         owner_type: &definition.owner_type,
         source_ref: definition.source_ref.as_deref(),
-        source_version: definition.source_version.as_deref(),
-        source_hash: definition.source_hash.as_deref(),
         name: &definition.name,
         name_i18n: &definition.name_i18n,
         description: definition.description.as_deref(),
@@ -2597,7 +2643,6 @@ fn upsert_params_from_definition(definition: &AssistantDefinitionRow) -> UpsertA
         agent_id: &definition.agent_id,
         rule_resource_type: &definition.rule_resource_type,
         rule_resource_ref: definition.rule_resource_ref.as_deref(),
-        rule_inline_content: definition.rule_inline_content.as_deref(),
         recommended_prompts: &definition.recommended_prompts,
         recommended_prompts_i18n: &definition.recommended_prompts_i18n,
         default_model_mode: &definition.default_model_mode,
@@ -2720,63 +2765,165 @@ fn normalize_json_array_string(raw: Option<&str>, field: &str) -> Result<String,
 /// `read_dir` never enumerates — so directory-scan deletion/fallback-read could
 /// not find the file. Replacing the Windows-reserved set keeps write, read, and
 /// scan consistent across platforms.
-fn assistant_file_stem(id: &str) -> String {
-    id.replace(['<', '>', ':', '"', '/', '\\', '|', '?', '*'], "_")
-}
-
 fn assistant_md_path(dir: &Path, id: &str, locale: Option<&str>) -> PathBuf {
-    let stem = assistant_file_stem(id);
+    let id = encode_filename_component(id);
     let filename = match locale {
-        Some(loc) if !loc.is_empty() => format!("{stem}.{loc}.md"),
-        _ => format!("{stem}.md"),
+        Some(loc) if !loc.is_empty() => format!("{id}.{}.md", encode_filename_component(loc)),
+        _ => format!("{id}.md"),
     };
     dir.join(filename)
+}
+
+fn legacy_assistant_md_path(dir: &Path, id: &str, locale: Option<&str>) -> PathBuf {
+    let filename = match locale {
+        Some(loc) if !loc.is_empty() => format!("{id}.{loc}.md"),
+        _ => format!("{id}.md"),
+    };
+    dir.join(filename)
+}
+
+fn legacy_filename_component_is_safe(value: &str) -> bool {
+    !value.bytes().any(|byte| matches!(byte, b'/' | b'\\' | b'\0'))
+}
+
+fn encode_filename_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[(byte >> 4) as usize]));
+            encoded.push(char::from(HEX[(byte & 0x0f) as usize]));
+        }
+    }
+    encoded
 }
 
 fn read_file_or_empty(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
-/// Read the first available `{id}.*.md` rule file in `dir`, preferring the
-/// locale-less `{id}.md`. Used as a fallback when a rule is resolved without a
-/// locale (e.g. scheduled/cron runs, which create the conversation with
-/// `assistant: None`) and the exact `{id}.{locale}.md` file is therefore not
-/// found. Returns an empty string when no rule file exists.
+fn read_assistant_md_with_legacy(dir: &Path, id: &str, locale: Option<&str>) -> String {
+    let path = assistant_md_path(dir, id, locale);
+    let content = read_file_or_empty(&path);
+    if !content.is_empty() {
+        return content;
+    }
+
+    if !legacy_filename_component_is_safe(id) || locale.is_some_and(|value| !legacy_filename_component_is_safe(value)) {
+        return String::new();
+    }
+
+    let legacy_path = legacy_assistant_md_path(dir, id, locale);
+    if legacy_path == path {
+        return String::new();
+    }
+    let legacy_content = read_file_or_empty(&legacy_path);
+    if legacy_content.is_empty() {
+        return String::new();
+    }
+
+    match std::fs::write(&path, &legacy_content) {
+        Ok(()) => {
+            info!(
+                assistant_id = id,
+                locale = locale.unwrap_or_default(),
+                "migrated legacy assistant markdown path"
+            );
+            if let Err(error) = std::fs::remove_file(&legacy_path) {
+                warn!(
+                    assistant_id = id,
+                    locale = locale.unwrap_or_default(),
+                    %error,
+                    "failed to remove legacy assistant markdown path after migration"
+                );
+            }
+        }
+        Err(error) => {
+            warn!(
+                assistant_id = id,
+                locale = locale.unwrap_or_default(),
+                %error,
+                "failed to migrate legacy assistant markdown path"
+            );
+        }
+    }
+    legacy_content
+}
+
+/// Read the first available assistant markdown file in `dir`, preferring the
+/// locale-less file. Both encoded filenames and pre-encoding legacy filenames
+/// are recognized.
 fn read_first_assistant_md(dir: &Path, id: &str) -> String {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return String::new();
     };
-    let stem = assistant_file_stem(id);
-    let prefix = format!("{stem}.");
-    let exact = format!("{stem}.md");
-    let mut fallback: Option<PathBuf> = None;
+    let encoded_id = encode_filename_component(id);
+    let encoded_prefix = format!("{encoded_id}.");
+    let encoded_exact = format!("{encoded_id}.md");
+    let legacy_prefix = format!("{id}.");
+    let legacy_exact = format!("{id}.md");
+    let mut candidates = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name == exact {
-            return read_file_or_empty(&entry.path());
-        }
-        if fallback.is_none() && name.starts_with(&prefix) && name.ends_with(".md") {
-            fallback = Some(entry.path());
+        let name = name.to_string_lossy().into_owned();
+        let priority = if name == encoded_exact || name == legacy_exact {
+            0
+        } else if name.starts_with(&encoded_prefix) && name.ends_with(".md") {
+            1
+        } else if name.starts_with(&legacy_prefix) && name.ends_with(".md") {
+            2
+        } else {
+            continue;
+        };
+        candidates.push((priority, name, entry.path()));
+    }
+    candidates.sort_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
+    for (_, _, path) in candidates {
+        let content = read_file_or_empty(&path);
+        if !content.is_empty() {
+            return content;
         }
     }
-    fallback.map(|path| read_file_or_empty(&path)).unwrap_or_default()
+    String::new()
 }
 
-/// Remove every `{id}*.md` file in `dir`. Returns `true` if any file was
-/// deleted.
+/// Remove encoded and pre-encoding legacy markdown files for an assistant.
 fn remove_assistant_md_files(dir: &Path, id: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
     let mut deleted = false;
-    let stem = assistant_file_stem(id);
-    let prefix = format!("{stem}.");
-    let exact = format!("{stem}.md");
+    if legacy_filename_component_is_safe(id) {
+        let legacy_path = legacy_assistant_md_path(dir, id, None);
+        if legacy_path != assistant_md_path(dir, id, None) {
+            match std::fs::remove_file(&legacy_path) {
+                Ok(()) => deleted = true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => warn!(
+                    assistant_id = id,
+                    %error,
+                    "failed to remove legacy assistant markdown path"
+                ),
+            }
+        }
+    }
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return deleted;
+    };
+    let encoded_id = encode_filename_component(id);
+    let encoded_prefix = format!("{encoded_id}.");
+    let encoded_exact = format!("{encoded_id}.md");
+    let legacy_prefix = format!("{id}.");
+    let legacy_exact = format!("{id}.md");
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name == exact || (name.starts_with(&prefix) && name.ends_with(".md")) {
+        if name == encoded_exact
+            || name == legacy_exact
+            || ((name.starts_with(&encoded_prefix) || name.starts_with(&legacy_prefix)) && name.ends_with(".md"))
+        {
             if let Err(e) = std::fs::remove_file(entry.path()) {
                 warn!("failed to remove {}: {e}", entry.path().display());
                 continue;
@@ -2833,7 +2980,7 @@ mod tests {
     use aionui_db::{
         CreateProviderParams, SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository,
         SqliteAssistantOverrideRepository, SqliteAssistantPreferenceRepository, SqliteAssistantRepository,
-        SqliteProviderRepository, init_database_memory,
+        SqliteProviderRepository, UpsertOverrideParams, init_database_memory,
     };
     use std::sync::Mutex;
     use tempfile::TempDir;
@@ -2844,6 +2991,7 @@ mod tests {
         state_repo: Arc<dyn IAssistantOverlayRepository>,
         preference_repo: Arc<dyn IAssistantPreferenceRepository>,
         repo: Arc<dyn IAssistantRepository>,
+        override_repo: Arc<dyn IAssistantOverrideRepository>,
         provider_repo: Arc<dyn IProviderRepository>,
         agent_rows: Arc<Mutex<Vec<aionui_api_types::AgentManagementRow>>>,
         _tmp: TempDir,
@@ -2956,7 +3104,7 @@ mod tests {
                 state_repo: state_repo.clone(),
                 preference_repo: preference_repo.clone(),
                 repo: repo.clone(),
-                override_repo: orepo,
+                override_repo: orepo.clone(),
                 provider_repo: provider_repo.clone(),
                 builtin: builtin_reg,
                 agent_catalog: Some(Arc::new(StubAgentCatalog {
@@ -2973,6 +3121,7 @@ mod tests {
             state_repo,
             preference_repo,
             repo,
+            override_repo: orepo,
             provider_repo,
             agent_rows,
             _tmp: tmp,
@@ -3098,8 +3247,6 @@ mod tests {
                 source: "generated",
                 owner_type: "system",
                 source_ref: Some(agent_id),
-                source_version: None,
-                source_hash: None,
                 name: "Historical generated agent",
                 name_i18n: "{}",
                 description: None,
@@ -3109,7 +3256,6 @@ mod tests {
                 agent_id,
                 rule_resource_type: "none",
                 rule_resource_ref: None,
-                rule_inline_content: None,
                 recommended_prompts: "[]",
                 recommended_prompts_i18n: "{}",
                 default_model_mode: "auto",
@@ -3156,8 +3302,6 @@ mod tests {
                 source: "user",
                 owner_type: "user",
                 source_ref: Some("custom-canonical-only"),
-                source_version: None,
-                source_hash: None,
                 name: "Canonical Only",
                 name_i18n: "{}",
                 description: None,
@@ -3167,7 +3311,6 @@ mod tests {
                 agent_id: "aionrs",
                 rule_resource_type: "user_file",
                 rule_resource_ref: Some("custom-canonical-only"),
-                rule_inline_content: None,
                 recommended_prompts: "[]",
                 recommended_prompts_i18n: "{}",
                 default_model_mode: "auto",
@@ -3189,6 +3332,177 @@ mod tests {
         fx.service.bootstrap_assistant_storage().await.unwrap();
 
         assert!(fx.repo.get("custom-canonical-only").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_skips_dirty_legacy_user_assistant_rows() {
+        let fx = fixture().await;
+
+        fx.repo
+            .create(&CreateAssistantParams {
+                id: "custom-dirty-json",
+                name: "Dirty JSON",
+                description: None,
+                avatar: None,
+                enabled_skills: Some("not json"),
+                custom_skill_names: None,
+                disabled_builtin_skills: None,
+                prompts: None,
+                models: None,
+                name_i18n: None,
+                description_i18n: None,
+                prompts_i18n: None,
+            })
+            .await
+            .unwrap();
+        fx.repo
+            .create(&CreateAssistantParams {
+                id: "custom-valid",
+                name: "Valid",
+                description: None,
+                avatar: None,
+                enabled_skills: Some(r#"["skill-a"]"#),
+                custom_skill_names: None,
+                disabled_builtin_skills: None,
+                prompts: None,
+                models: None,
+                name_i18n: None,
+                description_i18n: None,
+                prompts_i18n: None,
+            })
+            .await
+            .unwrap();
+
+        fx.service.bootstrap_assistant_storage().await.unwrap();
+
+        assert!(
+            fx.definition_repo
+                .get_by_assistant_id("custom-dirty-json")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            fx.definition_repo
+                .get_by_assistant_id("custom-valid")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// Regression for the legacy-override clobber bug: once the user has
+    /// toggled an assistant (writing the authoritative `assistant_overlays`
+    /// row), a subsequent restart must NOT overwrite that value back to the
+    /// stale `assistant_overrides` row. The legacy sync only seeds first-time
+    /// migration; an existing overlay is authoritative.
+    #[tokio::test]
+    async fn bootstrap_does_not_clobber_user_toggle_with_stale_legacy_override() {
+        let fx = fixture_with_builtins(vec![mk_builtin("assistant-a", "Assistant A")]).await;
+
+        // Legacy row written by an older app version: disabled.
+        fx.override_repo
+            .upsert(&UpsertOverrideParams {
+                assistant_id: "assistant-a",
+                enabled: false,
+                sort_order: 0,
+                last_used_at: None,
+            })
+            .await
+            .unwrap();
+
+        // First launch after upgrade: legacy row seeds the overlay (disabled).
+        fx.service.bootstrap_assistant_storage().await.unwrap();
+        let definition = fx
+            .definition_repo
+            .get_by_assistant_id("assistant-a")
+            .await
+            .unwrap()
+            .expect("definition exists");
+        let seeded_enabled = fx.state_repo.get(&definition.id).await.unwrap().unwrap().enabled;
+        assert!(
+            !seeded_enabled,
+            "legacy override should seed the overlay on first migration"
+        );
+
+        // User toggles the assistant ON — writes the authoritative overlay.
+        fx.service
+            .set_state(
+                "assistant-a",
+                SetAssistantStateRequest {
+                    enabled: Some(true),
+                    sort_order: None,
+                    last_used_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        let toggled_enabled = fx.state_repo.get(&definition.id).await.unwrap().unwrap().enabled;
+        assert!(toggled_enabled, "user toggle should be reflected in the overlay");
+
+        // Restart: bootstrap runs again. It must NOT revert the user's toggle.
+        fx.service.bootstrap_assistant_storage().await.unwrap();
+        let after_restart_enabled = fx.state_repo.get(&definition.id).await.unwrap().unwrap().enabled;
+        assert!(
+            after_restart_enabled,
+            "restart must not clobber the user's toggle with the stale legacy override"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_skips_dirty_generated_assistant_definitions() {
+        let fx = fixture().await;
+        {
+            let mut rows = fx.agent_rows.lock().expect("agent rows lock poisoned");
+            *rows = vec![
+                mk_agent_row("agent-dirty", "dirty", aionui_api_types::AgentManagementStatus::Online),
+                mk_agent_row("agent-valid", "valid", aionui_api_types::AgentManagementStatus::Online),
+            ];
+        }
+
+        fx.definition_repo
+            .upsert(&UpsertAssistantDefinitionParams {
+                id: "asstdef_dirty_generated",
+                assistant_id: "bare:agent-dirty",
+                source: "generated",
+                owner_type: "system",
+                source_ref: Some("agent-dirty"),
+                name: "Dirty",
+                name_i18n: "{}",
+                description: None,
+                description_i18n: "{}",
+                avatar_type: "none",
+                avatar_value: None,
+                agent_id: "agent-dirty",
+                rule_resource_type: "none",
+                rule_resource_ref: None,
+                recommended_prompts: "[]",
+                recommended_prompts_i18n: "{}",
+                default_model_mode: "auto",
+                default_model_value: None,
+                default_permission_mode: "auto",
+                default_permission_value: None,
+                default_thought_level_mode: "auto",
+                default_thought_level_value: None,
+                default_skills_mode: "auto",
+                default_skill_ids: "not json",
+                custom_skill_names: "[]",
+                default_disabled_builtin_skill_ids: "[]",
+                default_mcps_mode: "auto",
+                default_mcp_ids: "[]",
+            })
+            .await
+            .unwrap();
+
+        fx.service.bootstrap_assistant_storage().await.unwrap();
+
+        assert!(
+            fx.definition_repo
+                .get_by_assistant_id("bare:agent-valid")
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -3255,8 +3569,6 @@ mod tests {
                 source: "generated",
                 owner_type: "system",
                 source_ref: Some("agent-claude"),
-                source_version: None,
-                source_hash: None,
                 name: "Claude",
                 name_i18n: "{}",
                 description: None,
@@ -3266,7 +3578,6 @@ mod tests {
                 agent_id: "agent-claude",
                 rule_resource_type: "none",
                 rule_resource_ref: None,
-                rule_inline_content: None,
                 recommended_prompts: "[]",
                 recommended_prompts_i18n: "{}",
                 default_model_mode: "auto",
@@ -5391,6 +5702,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_rule_user_fallback_skips_empty_files() {
+        let fx = fixture().await;
+        fx.service
+            .create(CreateAssistantRequest {
+                id: Some("u1".into()),
+                name: "A".into(),
+                ..req_default()
+            })
+            .await
+            .unwrap();
+        fx.service.write_rule("u1", None, "").await.unwrap();
+        fx.service
+            .write_rule("u1", Some("zh-TW"), "available rule")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fx.service.read_rule("u1", Some("en-US")).await.unwrap(),
+            "available rule"
+        );
+    }
+
+    #[tokio::test]
     async fn write_rule_builtin_rejects() {
         let fx = fixture_with_builtins(vec![mk_builtin("builtin-office", "Office")]).await;
         let err = fx
@@ -5418,6 +5752,88 @@ mod tests {
             .unwrap();
         let content = fx.service.read_rule("bare:agent-claude", Some("en-US")).await.unwrap();
         assert_eq!(content, "rule body");
+        assert!(
+            fx._tmp
+                .path()
+                .join("assistant-rules/bare%3Aagent-claude.en-US.md")
+                .is_file()
+        );
+        assert!(
+            !fx._tmp
+                .path()
+                .join("assistant-rules/bare:agent-claude.en-US.md")
+                .exists()
+        );
+
+        let definition = fx
+            .definition_repo
+            .get_by_assistant_id("bare:agent-claude")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(definition.rule_resource_type, "user_file");
+        assert_eq!(definition.rule_resource_ref.as_deref(), Some("bare:agent-claude"));
+    }
+
+    #[test]
+    fn legacy_generated_rule_path_is_migrated_to_encoded_filename() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("assistant-rules");
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy_path = legacy_assistant_md_path(&dir, "bare:632f31d2", None);
+        std::fs::write(&legacy_path, "legacy rule").unwrap();
+
+        assert_eq!(
+            read_assistant_md_with_legacy(&dir, "bare:632f31d2", None),
+            "legacy rule"
+        );
+
+        let encoded_path = assistant_md_path(&dir, "bare:632f31d2", None);
+        assert_eq!(
+            encoded_path.file_name().and_then(|name| name.to_str()),
+            Some("bare%3A632f31d2.md")
+        );
+        assert_eq!(std::fs::read_to_string(encoded_path).unwrap(), "legacy rule");
+        assert!(!legacy_path.exists());
+    }
+
+    #[tokio::test]
+    async fn generated_rule_with_requested_locale_falls_back_to_legacy_locale_less_path() {
+        let fx = fixture_with_options(FixtureOpts {
+            agent_rows: vec![mk_agent_row(
+                "632f31d2",
+                "aionrs",
+                aionui_api_types::AgentManagementStatus::Online,
+            )],
+            ..Default::default()
+        })
+        .await;
+        let dir = fx._tmp.path().join("assistant-rules");
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy_path = legacy_assistant_md_path(&dir, "bare:632f31d2", None);
+        std::fs::write(&legacy_path, "legacy locale-less rule").unwrap();
+
+        assert_eq!(
+            fx.service.read_rule("bare:632f31d2", Some("zh-CN")).await.unwrap(),
+            "legacy locale-less rule"
+        );
+
+        let encoded_path = assistant_md_path(&dir, "bare:632f31d2", None);
+        assert_eq!(
+            std::fs::read_to_string(encoded_path).unwrap(),
+            "legacy locale-less rule"
+        );
+        assert!(!legacy_path.exists());
+    }
+
+    #[test]
+    fn assistant_markdown_path_encodes_path_separators_and_percent() {
+        let path = assistant_md_path(Path::new("rules"), "../bare:%2F", Some(r"en\US"));
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("%2E%2E%2Fbare%3A%252F.en%5CUS.md")
+        );
+        assert_eq!(path.parent(), Some(Path::new("rules")));
     }
 
     #[tokio::test]

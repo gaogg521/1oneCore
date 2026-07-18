@@ -239,6 +239,53 @@ fn confirm_model_aligns_desired_and_current() {
 }
 
 #[test]
+fn confirm_mode_preserves_available_mode_catalog() {
+    let mut session = make_session();
+    session.apply_advertised_modes(SessionModeState::new(
+        "default",
+        vec![SessionMode::new("default", "Default"), SessionMode::new("plan", "Plan")],
+    ));
+    session.drain_events();
+
+    session.confirm_mode(ModeId::new("plan"));
+
+    let snapshot = session.config_snapshot();
+    let mode = snapshot
+        .options
+        .iter()
+        .find(|option| option.id == "mode")
+        .expect("mode option present");
+    assert_eq!(mode.current_value.as_deref(), Some("plan"));
+    // Confirming a value must not shrink the advertised catalog.
+    assert_eq!(mode.options.len(), 2);
+}
+
+#[test]
+fn confirm_model_preserves_available_model_catalog() {
+    use agent_client_protocol::schema::ModelInfo;
+    let mut session = AcpSession::new(None, None, HashMap::new());
+    session.apply_advertised_models(SessionModelState::new(
+        "claude-sonnet-4",
+        vec![
+            ModelInfo::new("claude-sonnet-4", "Sonnet 4"),
+            ModelInfo::new("claude-opus-4", "Opus 4"),
+        ],
+    ));
+    session.drain_events();
+
+    session.confirm_model(ModelId::new("claude-opus-4"));
+
+    let snapshot = session.config_snapshot();
+    let model = snapshot
+        .options
+        .iter()
+        .find(|option| option.id == "model")
+        .expect("model option present");
+    assert_eq!(model.current_value.as_deref(), Some("claude-opus-4"));
+    assert_eq!(model.options.len(), 2);
+}
+
+#[test]
 fn apply_observed_config_emits_on_change_and_is_idempotent() {
     let mut session = make_session();
     session.apply_observed_config(ConfigKey::new("reasoning"), ConfigValue::new("high"));
@@ -902,6 +949,84 @@ fn pending_mode_seed_resolves_category_to_raw_config_key_and_suppresses_legacy_s
         vec![ReconcileAction::SetConfigOption {
             key: ConfigKey::new("mode"),
             value: ConfigValue::new("build"),
+        }]
+    );
+}
+
+#[test]
+fn pending_mode_seed_maps_full_access_to_agent_full_access_when_catalog_selects_it() {
+    let mut session = AcpSession::new(Some(ModeId::new("full-access")), None, HashMap::new());
+    session.seed_pending_startup_config(SessionConfigOptionCategory::Mode, ConfigValue::new("full-access"));
+
+    session.apply_advertised_config_options(vec![
+        SessionConfigOption::select(
+            "mode",
+            "Mode",
+            "auto",
+            vec![
+                SessionConfigSelectOption::new("auto", "Auto"),
+                SessionConfigSelectOption::new("agent-full-access", "Agent Full Access"),
+            ],
+        )
+        .category(SessionConfigOptionCategory::Mode),
+    ]);
+
+    let results = session.resolve_pending_startup_config_seeds_with_mode_normalizer(|requested, available_values| {
+        assert_eq!(requested, "full-access");
+        assert_eq!(available_values, vec!["auto", "agent-full-access"]);
+        "agent-full-access".to_owned()
+    });
+    assert_eq!(
+        results,
+        vec![PendingStartupConfigSeedResult::Applied {
+            category: SessionConfigOptionCategory::Mode,
+            option_id: ConfigKey::new("mode"),
+        }]
+    );
+    assert_eq!(
+        session.plan_reconcile(),
+        vec![ReconcileAction::SetConfigOption {
+            key: ConfigKey::new("mode"),
+            value: ConfigValue::new("agent-full-access"),
+        }]
+    );
+}
+
+#[test]
+fn pending_mode_seed_maps_agent_full_access_to_full_access_when_legacy_catalog_selects_it() {
+    let mut session = AcpSession::new(Some(ModeId::new("agent-full-access")), None, HashMap::new());
+    session.seed_pending_startup_config(SessionConfigOptionCategory::Mode, ConfigValue::new("agent-full-access"));
+
+    session.apply_advertised_config_options(vec![
+        SessionConfigOption::select(
+            "mode",
+            "Mode",
+            "auto",
+            vec![
+                SessionConfigSelectOption::new("auto", "Auto"),
+                SessionConfigSelectOption::new("full-access", "Full Access"),
+            ],
+        )
+        .category(SessionConfigOptionCategory::Mode),
+    ]);
+
+    let results = session.resolve_pending_startup_config_seeds_with_mode_normalizer(|requested, available_values| {
+        assert_eq!(requested, "agent-full-access");
+        assert_eq!(available_values, vec!["auto", "full-access"]);
+        "full-access".to_owned()
+    });
+    assert_eq!(
+        results,
+        vec![PendingStartupConfigSeedResult::Applied {
+            category: SessionConfigOptionCategory::Mode,
+            option_id: ConfigKey::new("mode"),
+        }]
+    );
+    assert_eq!(
+        session.plan_reconcile(),
+        vec![ReconcileAction::SetConfigOption {
+            key: ConfigKey::new("mode"),
+            value: ConfigValue::new("full-access"),
         }]
     );
 }

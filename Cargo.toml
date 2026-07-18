@@ -29,7 +29,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.45-one.1"
+version = "0.1.48-one.1"
 edition = "2024"
 license = "MIT"
 
@@ -61,20 +61,15 @@ one-employee = { path = "crates/one-employee" }
 one-sso = { path = "crates/one-sso" }
 one-devops = { path = "crates/one-devops" }
 
-# Pinned to our fork gaogg521/aionrs (master), which carries fork-only fixes
-# not yet in / not going to upstream iOfficeAI/aionrs (streaming tool_call
-# empty-object bug, textualized tool-history replay for gateways that reject
-# tool_calls history). As of the v0.2.2 sync the fork master IS upstream
-# v0.2.2 + those two fork-only patches, which is exactly the aionrs version
-# this AionCore release (v0.1.45) adapted to. fork is long-lived and
-# independent: we only sync upstream -> fork, never PR back. See fork commit
-# history and 1oneUI docs/guides/session-2026-07-10-thinking-param-and-rename.zh-CN.md.
-aion-agent = { git = "https://github.com/gaogg521/aionrs.git", branch = "master" }
-aion-providers = { git = "https://github.com/gaogg521/aionrs.git", branch = "master" }
-aion-types = { git = "https://github.com/gaogg521/aionrs.git", branch = "master" }
-aion-protocol = { git = "https://github.com/gaogg521/aionrs.git", branch = "master" }
-aion-config = { git = "https://github.com/gaogg521/aionrs.git", branch = "master" }
-aion-mcp = { git = "https://github.com/gaogg521/aionrs.git", branch = "master" }
+# Pinned to fork gaogg521/aionrs (master) = upstream v0.2.5 + fork-only patches
+# (textualize tool replay, empty tool_call args, deferred schema promote, GLM guidance).
+# Never switch to iOfficeAI/aionrs tag. Sync only upstream -> fork.
+aion-agent = { path = "../aionrs-local/crates/aion-agent" }
+aion-providers = { path = "../aionrs-local/crates/aion-providers" }
+aion-types = { path = "../aionrs-local/crates/aion-types" }
+aion-protocol = { path = "../aionrs-local/crates/aion-protocol" }
+aion-config = { path = "../aionrs-local/crates/aion-config" }
+aion-mcp = { path = "../aionrs-local/crates/aion-mcp" }
 
 # Core framework
 tokio = { version = "1", features = ["full"] }
@@ -215,3 +210,4 @@ incremental = false
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
 incremental = false
+

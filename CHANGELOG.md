@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.1.48](https://github.com/iOfficeAI/AionCore/compare/v0.1.47...v0.1.48) (2026-07-17)
+
+
+### Features
+
+* **agents:** add Pi coding agent as builtin ACP agent ([#618](https://github.com/iOfficeAI/AionCore/issues/618)) ([0b9b3a8](https://github.com/iOfficeAI/AionCore/commit/0b9b3a882712f555e60fd33c027b604471df25c7))
+* **ai-agent:** route image attachments by model capability ([82c5bc1](https://github.com/iOfficeAI/AionCore/commit/82c5bc14bcb1fcf4396e033764732adbe63966ef))
+* **aionrs:** inline image attachments for Aion CLI ([aff870b](https://github.com/iOfficeAI/AionCore/commit/aff870bb1d3328abfc3d0c24d8898f0e148790ab))
+* **team:** add CLI fallback collaboration transport ([#629](https://github.com/iOfficeAI/AionCore/issues/629)) ([bbb6fec](https://github.com/iOfficeAI/AionCore/commit/bbb6fec08f7fd818375664bc5bf206805013f7d0))
+
+
+### Bug Fixes
+
+* **acp:** confirm legacy mode/model on ACK instead of awaiting observed update ([#635](https://github.com/iOfficeAI/AionCore/issues/635)) ([ded7a5c](https://github.com/iOfficeAI/AionCore/commit/ded7a5ce7951cad942852488f30382ed7fb909da))
+* **agents:** honor login PATH and validate builtin CLIs ([#622](https://github.com/iOfficeAI/AionCore/issues/622)) ([3190be1](https://github.com/iOfficeAI/AionCore/commit/3190be1fae7e15be98f5f963e57a54fdee87029e))
+* **ai-agent:** pin image-capable aionrs revision ([6687805](https://github.com/iOfficeAI/AionCore/commit/6687805f09042b9a34b4e5ac22900374358d2671))
+* **assistant:** canonicalize rule file storage ([#625](https://github.com/iOfficeAI/AionCore/issues/625)) ([020a27a](https://github.com/iOfficeAI/AionCore/commit/020a27a77aeb2b5be7a2b4380aab8ae2686311c4))
+* **assistant:** stop legacy override sync from clobbering user toggles ([#634](https://github.com/iOfficeAI/AionCore/issues/634)) ([346700e](https://github.com/iOfficeAI/AionCore/commit/346700e1d62470f84eec94b1c58fd3516d1ea90e))
+
+
+### Code Refactoring
+
+* **runtime:** remove legacy Bun runtime support ([#623](https://github.com/iOfficeAI/AionCore/issues/623)) ([01b5eed](https://github.com/iOfficeAI/AionCore/commit/01b5eed0db886e05b652c4633c9acd337087e1ab))
+
+## [0.1.47](https://github.com/iOfficeAI/AionCore/compare/v0.1.46...v0.1.47) (2026-07-14)
+
+
+### Features
+
+* **cron:** deduplicate and protect scheduled executions ([#601](https://github.com/iOfficeAI/AionCore/issues/601)) ([b189de0](https://github.com/iOfficeAI/AionCore/commit/b189de0e0a5a3cb837de8b0237ce6e7f96c8aa3d))
+* **diagnostics:** expand feedback runtime evidence ([#612](https://github.com/iOfficeAI/AionCore/issues/612)) ([08426dc](https://github.com/iOfficeAI/AionCore/commit/08426dcf83290577a2b8ef706bc3c1d21354425c))
+
+
+### Bug Fixes
+
+* **assistant:** skip dirty assistant bootstrap records ([#615](https://github.com/iOfficeAI/AionCore/issues/615)) ([f48cbc7](https://github.com/iOfficeAI/AionCore/commit/f48cbc757f96e3595b00f4f81330dab958f41d28))
+* **managed-resources:** emit bundled resource manifest ([#617](https://github.com/iOfficeAI/AionCore/issues/617)) ([64b5062](https://github.com/iOfficeAI/AionCore/commit/64b506239639c632eb5f6acb4495e58e74c64167))
+
+## [0.1.46](https://github.com/iOfficeAI/AionCore/compare/v0.1.45...v0.1.46) (2026-07-13)
+
+
+### Bug Fixes
+
+* **acp:** normalize Codex full-access mode ([#608](https://github.com/iOfficeAI/AionCore/issues/608)) ([df51fcf](https://github.com/iOfficeAI/AionCore/commit/df51fcf77aa541c78c6eb6af4e987eab92b1ff07))
+* **butler:** correct three breaking field mismatches + update rule to CLI model ([#607](https://github.com/iOfficeAI/AionCore/issues/607)) ([b02bce6](https://github.com/iOfficeAI/AionCore/commit/b02bce62e5b7d847960be8d98e9f3b8c8e163e2c))
+
 ## [0.1.45](https://github.com/iOfficeAI/AionCore/compare/v0.1.44...v0.1.45) (2026-07-10)
 
 

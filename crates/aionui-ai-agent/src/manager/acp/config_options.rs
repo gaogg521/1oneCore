@@ -121,6 +121,20 @@ impl ConfigSnapshot {
             .and_then(|option| option.current_value.clone())
     }
 
+    pub(crate) fn selectable_values(&self, option_id: &str) -> Vec<&str> {
+        self.options
+            .iter()
+            .find(|option| option.id == option_id)
+            .map(|option| {
+                option
+                    .options
+                    .iter()
+                    .map(|select_option| select_option.value.as_str())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub(crate) fn observed_matches(&self, option_id: &str, requested: &str) -> bool {
         self.option_current(option_id).as_deref() == Some(requested)
     }
@@ -131,6 +145,28 @@ pub(crate) enum ConfigSetPath {
     ConfigOption { option_id: String },
     LegacyMode,
     LegacyModel,
+}
+
+impl ConfigSetPath {
+    /// Stable structured-log label so a single log line identifies which
+    /// write path handled the request (avoids inferring the path from a
+    /// sequence of events). Values are a logging contract — do not rename.
+    pub(crate) fn log_label(&self) -> &'static str {
+        match self {
+            ConfigSetPath::ConfigOption { .. } => "config_option",
+            ConfigSetPath::LegacyMode => "legacy_mode",
+            ConfigSetPath::LegacyModel => "legacy_model",
+        }
+    }
+
+    /// The ACP RPC method this path invokes. Logged alongside `log_label`.
+    pub(crate) fn acp_method(&self) -> &'static str {
+        match self {
+            ConfigSetPath::ConfigOption { .. } => "session/set_config_option",
+            ConfigSetPath::LegacyMode => "session/set_mode",
+            ConfigSetPath::LegacyModel => "session/set_model",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,6 +316,21 @@ mod tests {
     };
 
     #[test]
+    fn config_set_path_log_label_and_method_are_stable() {
+        let config_option = ConfigSetPath::ConfigOption {
+            option_id: "mode".to_owned(),
+        };
+        assert_eq!(config_option.log_label(), "config_option");
+        assert_eq!(config_option.acp_method(), "session/set_config_option");
+
+        assert_eq!(ConfigSetPath::LegacyMode.log_label(), "legacy_mode");
+        assert_eq!(ConfigSetPath::LegacyMode.acp_method(), "session/set_mode");
+
+        assert_eq!(ConfigSetPath::LegacyModel.log_label(), "legacy_model");
+        assert_eq!(ConfigSetPath::LegacyModel.acp_method(), "session/set_model");
+    }
+
+    #[test]
     fn dto_uses_snake_case_current_value() {
         let options = vec![
             SessionConfigOption::select(
@@ -346,5 +397,24 @@ mod tests {
             resolve_set_path(&snapshot, "reasoning_effort", "high"),
             Err(ConfigSetPathError::OptionNotFound)
         );
+    }
+
+    #[test]
+    fn config_snapshot_selectable_values_returns_mode_option_values() {
+        let snapshot = ConfigSnapshot::from_real_options(vec![
+            SessionConfigOption::select(
+                "mode",
+                "Mode",
+                "auto",
+                vec![
+                    SessionConfigSelectOption::new("auto", "Auto"),
+                    SessionConfigSelectOption::new("agent-full-access", "Agent Full Access"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::Mode),
+        ]);
+
+        assert_eq!(snapshot.selectable_values("mode"), vec!["auto", "agent-full-access"]);
+        assert!(snapshot.selectable_values("model").is_empty());
     }
 }

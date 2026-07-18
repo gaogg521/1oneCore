@@ -280,9 +280,9 @@ async fn insert_feedback_fixture(db: &aionui_db::Database) {
         json!({
             "error": {
                 "code": "UserLlmProviderAuthFailed",
-                "ownership": "UserLlmProvider",
+                "message": "Provider auth failed",
+                "ownership": "user_llm_provider",
                 "retryable": false,
-                "message": "Missing Authentication header sk-error-secret"
             },
             "resolution": {
                 "kind": "provider_settings",
@@ -296,6 +296,38 @@ async fn insert_feedback_fixture(db: &aionui_db::Database) {
     .bind("error")
     .bind(false)
     .bind(4200_i64)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO messages \
+            (id, conversation_id, msg_id, type, content, position, status, hidden, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("msg-tool-failure")
+    .bind("conv-auth")
+    .bind("turn-tool-failure")
+    .bind("acp_tool_call")
+    .bind(
+        json!({
+            "_meta": {
+                "claudeCode": {"toolName": "Bash"},
+                "terminal_exit": {"exit_code": 127, "terminal_id": "call-tool-1"},
+                "terminal_info": {"cwd": "/tmp/workspace"}
+            },
+            "update": {
+                "content": [{
+                    "content": {"text": "Exit code 127\npython.exe: command not found"}
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .bind("center")
+    .bind("error")
+    .bind(false)
+    .bind(ANCHOR_UPDATED_AT + 500)
     .execute(pool)
     .await
     .unwrap();
@@ -432,21 +464,19 @@ async fn insert_feedback_fixture(db: &aionui_db::Database) {
     ] {
         sqlx::query(
             "INSERT INTO assistant_definitions \
-                (id, assistant_id, source, owner_type, source_ref, source_version, source_hash, \
+                (id, assistant_id, source, owner_type, source_ref, \
                  name, name_i18n, description, description_i18n, avatar_type, avatar_value, \
-                 agent_id, rule_resource_type, rule_resource_ref, rule_inline_content, \
+                 agent_id, rule_resource_type, rule_resource_ref, \
                  recommended_prompts, recommended_prompts_i18n, default_model_mode, default_model_value, \
                  default_permission_mode, default_permission_value, default_skills_mode, default_skill_ids, \
                  custom_skill_names, default_disabled_builtin_skill_ids, default_mcps_mode, default_mcp_ids, \
                  created_at, updated_at, deleted_at, default_thought_level_mode, default_thought_level_value) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(definition_id)
         .bind(assistant_id)
         .bind("user")
         .bind("user")
-        .bind(None::<String>)
-        .bind(None::<String>)
         .bind(None::<String>)
         .bind(assistant_id)
         .bind("{}")
@@ -456,7 +486,6 @@ async fn insert_feedback_fixture(db: &aionui_db::Database) {
         .bind(None::<String>)
         .bind("opencode")
         .bind("none")
-        .bind(None::<String>)
         .bind(None::<String>)
         .bind("[]")
         .bind("{}")
@@ -479,6 +508,39 @@ async fn insert_feedback_fixture(db: &aionui_db::Database) {
         .await
         .unwrap();
     }
+
+    sqlx::query(
+        "INSERT INTO client_preferences (key, value, updated_at) VALUES (?, ?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind("appearance.uiScale")
+    .bind("1.25")
+    .bind(ANCHOR_UPDATED_AT + 100)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO system_settings \
+            (id, language, notification_enabled, cron_notification_enabled, command_queue_enabled, save_upload_to_workspace, updated_at) \
+         VALUES (1, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(id) DO UPDATE SET \
+            language = excluded.language, \
+            notification_enabled = excluded.notification_enabled, \
+            cron_notification_enabled = excluded.cron_notification_enabled, \
+            command_queue_enabled = excluded.command_queue_enabled, \
+            save_upload_to_workspace = excluded.save_upload_to_workspace, \
+            updated_at = excluded.updated_at",
+    )
+    .bind("zh-CN")
+    .bind(true)
+    .bind(false)
+    .bind(true)
+    .bind(true)
+    .bind(ANCHOR_UPDATED_AT + 101)
+    .execute(pool)
+    .await
+    .unwrap();
 
     for (conversation_id, definition_id, assistant_id, resolved_model_id, thought_level) in [
         (
@@ -608,9 +670,24 @@ async fn collects_conversation_auth_signals_without_sensitive_payloads() {
     assert_eq!(conversation.data["conversation"]["model_provider_id"], "prov-secret");
     assert_eq!(conversation.data["messages"]["by_type"]["tips"], 1);
     assert_eq!(
-        conversation.data["messages"]["recent_errors"][0]["code"],
+        conversation.data["messages"]["recent_errors"][1]["code"],
         "UserLlmProviderAuthFailed"
     );
+    let selected_error_details = conversation.data["messages"]["recent_error_details"]
+        .as_array()
+        .expect("selected conversation raw error details should be included");
+    assert!(selected_error_details.iter().any(|item| {
+        item["code"] == "UserLlmProviderAuthFailed" && item["content"]["error"]["message"] == "Provider auth failed"
+    }));
+    let summaries = conversation.data["messages"]["failure_summaries"]
+        .as_array()
+        .expect("failure summaries should be included");
+    assert!(summaries.iter().any(|item| {
+        item["kind"] == "tool"
+            && item["tool_name"] == "Bash"
+            && item["exit_code"] == 127
+            && item["stderr_class"] == "command_not_found"
+    }));
     assert_eq!(conversation.data["acp_session"]["current_mode_id"], "build");
     assert_eq!(conversation.data["acp_session"]["config_selections"]["mode"], "plan");
     assert_eq!(
@@ -650,11 +727,9 @@ async fn collects_conversation_auth_signals_without_sensitive_payloads() {
         "sk-extra-secret",
         "sk-prompt-secret",
         "private content",
-        "sk-error-secret",
         "sk-session-secret",
         "sk-agent-args-secret",
         "sk-agent-env-secret",
-        "Missing Authentication header",
         "Nearby raw provider timeout",
         "Old conversation outside feedback window",
     ] {
@@ -776,7 +851,7 @@ async fn global_summary_includes_recent_diagnostics_without_sensitive_payloads()
         .expect("global summary profile should exist");
     assert_eq!(global.mode, "summary");
     assert_eq!(global.data["conversation_count"], 3);
-    assert_eq!(global.data["message_count"], 3);
+    assert_eq!(global.data["message_count"], 4);
     let status_count_total = global.data["conversation_status_counts"]
         .as_array()
         .expect("conversation status counts should be included")
@@ -823,8 +898,8 @@ async fn global_summary_includes_recent_diagnostics_without_sensitive_payloads()
     assert_eq!(teams[0]["lead_agent_id"], "opencode");
     assert_eq!(teams[0]["agent_count"], 2);
     assert_eq!(teams[0]["conversation_count"], 1);
-    assert_eq!(teams[0]["message_count"], 2);
-    assert_eq!(teams[0]["error_message_count"], 1);
+    assert_eq!(teams[0]["message_count"], 3);
+    assert_eq!(teams[0]["error_message_count"], 2);
 
     let team_conversations = teams[0]["conversations"]["items"]
         .as_array()
@@ -837,32 +912,55 @@ async fn global_summary_includes_recent_diagnostics_without_sensitive_payloads()
     assert_eq!(team_conversations[0]["slot_id"], "slot-1");
     assert_eq!(team_conversations[0]["assistant_id"], "assistant-team");
     assert_eq!(team_conversations[0]["latest_error_code"], "UserLlmProviderAuthFailed");
+    let team_recent_errors = team_conversations[0]["recent_errors"]
+        .as_array()
+        .expect("team conversation recent errors should be included");
+    assert!(team_recent_errors.iter().any(|item| {
+        item["failure_summary"]["kind"] == "tool"
+            && item["failure_summary"]["tool_name"] == "Bash"
+            && item["failure_summary"]["exit_code"] == 127
+    }));
     assert_eq!(
-        team_conversations[0]["recent_errors"][0]["content"]["error"]["message"],
-        "Missing Authentication header sk-error-secret"
+        team_recent_errors
+            .iter()
+            .find(|item| item["code"] == "UserLlmProviderAuthFailed")
+            .expect("provider auth error should be present")["content"]["error"]["message"],
+        "Provider auth failed"
     );
     assert_eq!(
         team_conversations[0]["recent_messages"][0]["content"]["text"]["redacted"],
         true
     );
-    assert_eq!(team_conversations[0]["message_count"], 2);
+    assert_eq!(team_conversations[0]["message_count"], 3);
 
     let recent_errors = global.data["recent_errors"]["items"]
         .as_array()
         .expect("recent errors should be included");
-    assert_eq!(recent_errors[0]["conversation_id"], "conv-nearby");
+    let nearby_error = recent_errors
+        .iter()
+        .find(|item| item["conversation_id"] == "conv-nearby")
+        .expect("nearby provider error should be included");
     assert_eq!(
-        recent_errors[0]["conversation_title"],
+        nearby_error["conversation_title"],
         "Nearby conversation shown in screenshot"
     );
-    assert_eq!(recent_errors[0]["code"], "NearbyProviderTimeout");
+    assert_eq!(nearby_error["code"], "NearbyProviderTimeout");
     assert_eq!(
-        recent_errors[0]["content"]["error"]["message"],
+        nearby_error["content"]["error"]["message"],
         "Nearby raw provider timeout should not leak"
     );
-    assert_eq!(recent_errors[1]["conversation_id"], "conv-auth");
-    assert_eq!(recent_errors[1]["code"], "UserLlmProviderAuthFailed");
-    assert_eq!(recent_errors[1]["resolution_target_id"], "prov-secret");
+    let tool_failure = recent_errors
+        .iter()
+        .find(|item| item["failure_summary"]["tool_name"] == "Bash")
+        .expect("tool failure summary should be included");
+    assert_eq!(tool_failure["conversation_id"], "conv-auth");
+    assert_eq!(tool_failure["failure_summary"]["stderr_class"], "command_not_found");
+    let auth_error = recent_errors
+        .iter()
+        .find(|item| item["code"] == "UserLlmProviderAuthFailed")
+        .expect("auth provider error should be included");
+    assert_eq!(auth_error["conversation_id"], "conv-auth");
+    assert_eq!(auth_error["resolution_target_id"], "prov-secret");
     assert!(
         recent_errors
             .iter()
@@ -910,4 +1008,62 @@ async fn global_summary_includes_recent_diagnostics_without_sensitive_payloads()
             "global diagnostics response leaked sensitive payload: {secret}"
         );
     }
+}
+
+#[tokio::test]
+async fn client_ui_settings_profile_exports_existing_preferences() {
+    let db = init_database_memory().await.unwrap();
+    insert_feedback_fixture(&db).await;
+    let repo = SqliteFeedbackDiagnosticsRepository::new(db.pool().clone());
+
+    let result = repo
+        .collect_feedback_diagnostics(&FeedbackDiagnosticsRequest {
+            user_id: "system_default_user".to_owned(),
+            profiles: vec![FeedbackDiagnosticsProfile::ClientUiSettings],
+            context: FeedbackDiagnosticsDbContext::default(),
+        })
+        .await
+        .unwrap();
+
+    let profile = result
+        .profiles
+        .iter()
+        .find(|profile| profile.name == "client-ui-settings")
+        .expect("client UI settings profile should exist");
+
+    assert_eq!(profile.mode, "summary");
+    assert_eq!(profile.data["preferences"]["items"][0]["key"], "appearance.uiScale");
+    assert_eq!(profile.data["system_settings"]["language"], "zh-CN");
+    assert_eq!(profile.data["system_settings"]["command_queue_enabled"], true);
+}
+
+#[tokio::test]
+async fn workspace_summary_uses_existing_conversation_and_team_context() {
+    let db = init_database_memory().await.unwrap();
+    insert_feedback_fixture(&db).await;
+    let repo = SqliteFeedbackDiagnosticsRepository::new(db.pool().clone());
+
+    let result = repo
+        .collect_feedback_diagnostics(&FeedbackDiagnosticsRequest {
+            user_id: "system_default_user".to_owned(),
+            profiles: vec![FeedbackDiagnosticsProfile::WorkspaceSummary],
+            context: FeedbackDiagnosticsDbContext {
+                conversation_id: Some("conv-auth".to_owned()),
+                ..FeedbackDiagnosticsDbContext::default()
+            },
+        })
+        .await
+        .unwrap();
+
+    let profile = result
+        .profiles
+        .iter()
+        .find(|profile| profile.name == "workspace-summary")
+        .expect("workspace summary profile should exist");
+
+    assert_eq!(profile.mode, "detail");
+    assert_eq!(profile.data["conversation"]["id"], "conv-auth");
+    assert_eq!(profile.data["team"]["team_id"], "team-1");
+    assert_eq!(profile.data["team"]["workspace"], "/tmp/team-workspace");
+    assert_eq!(profile.data["runtime_checks"]["path_exists"], serde_json::Value::Null);
 }
