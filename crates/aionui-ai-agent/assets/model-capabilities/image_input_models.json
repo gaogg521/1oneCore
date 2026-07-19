@@ -467,6 +467,7 @@
       "api": "https://api.moonshot.cn/v1",
       "models": [
         "kimi-k2.6",
+        "kimi-k2-6",
         "kimi-k2.5",
         "moonshot-v1-8k-vision-preview",
         "moonshot-v1-32k-vision-preview",
@@ -477,6 +478,7 @@
       "api": "https://api.moonshot.ai/v1",
       "models": [
         "kimi-k2.6",
+        "kimi-k2-6",
         "kimi-k2.5",
         "moonshot-v1-8k-vision-preview",
         "moonshot-v1-32k-vision-preview",

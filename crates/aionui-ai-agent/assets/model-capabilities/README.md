@@ -4,10 +4,11 @@
 
 The catalog is intentionally a positive allowlist:
 
-- Match both the provider API root and the exact model ID.
+- Match both the provider API root and the model ID (fork: IDs are compared with **loose keys**, not byte-exact equality — case / `.` `_` `-` / spaces / `vendor/` basename / `K2`↔`2` edition letter / trailing `YYYYMMDD` dates).
 - Add a model only when the provider's own documentation confirms image input on the API protocol used by AionCore.
 - Treat an absent provider or model as `Unknown`, not as proof that image input is unsupported.
 - Do not copy a first-party model entry to an aggregator or a custom gateway. Those endpoints may expose different model IDs or capabilities.
+- **Fork:** when the base URL is a custom/private OpenAI-compatible gateway (no catalog API hit), if the model ID loosely matches **any** allowlisted vision model ID, treat as `Supported` so LiteLLM-style proxies are not fail-closed. This still does **not** invent vision for text-only SKUs (e.g. DeepSeek V4 Flash, MiniMax M2.7).
 - Keep an empty `models` array when the preset endpoint is known but no stable model ID can be positively verified for that endpoint. This still records the AionUi preset without claiming image support.
 - Aggregator entries may be refreshed manually from that aggregator's own catalog. The reviewed result must be committed as a static snapshot; AionCore never fetches it at runtime.
 
