@@ -39,7 +39,6 @@ pub struct CreateProviderParams<'a> {
     pub model_protocols: Option<&'a str>,
     pub model_enabled: Option<&'a str>,
     pub model_health: Option<&'a str>,
-    pub model_max_tokens: Option<&'a str>,
     pub bedrock_config: Option<&'a str>,
     pub is_full_url: bool,
 }
@@ -60,7 +59,6 @@ pub struct UpdateProviderParams<'a> {
     pub model_protocols: Option<Option<&'a str>>,
     pub model_enabled: Option<Option<&'a str>>,
     pub model_health: Option<Option<&'a str>>,
-    pub model_max_tokens: Option<Option<&'a str>>,
     pub bedrock_config: Option<Option<&'a str>>,
     pub is_full_url: Option<bool>,
 }

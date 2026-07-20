@@ -64,7 +64,6 @@ impl ProviderService {
         let model_protocols_json = serialize_opt(&req.model_protocols, "model_protocols")?;
         let model_enabled_json = serialize_opt(&req.model_enabled, "model_enabled")?;
         let model_health_json = serialize_opt(&req.model_health, "model_health")?;
-        let model_max_tokens_json = serialize_opt(&req.model_max_tokens, "model_max_tokens")?;
         let bedrock_json = serialize_opt(&req.bedrock_config, "bedrock_config")?;
         let trimmed_id = req.id.as_deref().map(str::trim);
 
@@ -81,7 +80,6 @@ impl ProviderService {
             model_protocols: model_protocols_json.as_deref(),
             model_enabled: model_enabled_json.as_deref(),
             model_health: model_health_json.as_deref(),
-            model_max_tokens: model_max_tokens_json.as_deref(),
             bedrock_config: bedrock_json.as_deref(),
             is_full_url: req.is_full_url,
         };
@@ -104,7 +102,6 @@ impl ProviderService {
         let model_protocols_json = serialize_opt(&req.model_protocols, "model_protocols")?;
         let model_enabled_json = serialize_opt(&req.model_enabled, "model_enabled")?;
         let model_health_json = serialize_opt(&req.model_health, "model_health")?;
-        let model_max_tokens_json = serialize_opt(&req.model_max_tokens, "model_max_tokens")?;
         let bedrock_json = serialize_opt(&req.bedrock_config, "bedrock_config")?;
 
         let params = UpdateProviderParams {
@@ -119,7 +116,6 @@ impl ProviderService {
             model_protocols: model_protocols_json.as_ref().map(|s| Some(s.as_str())),
             model_enabled: model_enabled_json.as_ref().map(|s| Some(s.as_str())),
             model_health: model_health_json.as_ref().map(|s| Some(s.as_str())),
-            model_max_tokens: model_max_tokens_json.as_ref().map(|s| Some(s.as_str())),
             bedrock_config: bedrock_json.as_ref().map(|s| Some(s.as_str())),
             is_full_url: req.is_full_url,
         };
@@ -168,7 +164,6 @@ impl ProviderService {
             deserialize_opt(&row.model_protocols, "model_protocols")?;
         let model_enabled: Option<HashMap<String, bool>> = deserialize_opt(&row.model_enabled, "model_enabled")?;
         let model_health = deserialize_opt(&row.model_health, "model_health")?;
-        let model_max_tokens = deserialize_opt(&row.model_max_tokens, "model_max_tokens")?;
         let bedrock_config = deserialize_opt(&row.bedrock_config, "bedrock_config")?;
 
         Ok(ProviderResponse {
@@ -184,7 +179,6 @@ impl ProviderService {
             model_protocols,
             model_enabled,
             model_health,
-            model_max_tokens,
             bedrock_config,
             is_full_url: row.is_full_url,
             key_status,
@@ -340,7 +334,6 @@ mod tests {
             model_protocols: None,
             model_enabled: None,
             model_health: None,
-            model_max_tokens: None,
             bedrock_config: None,
             is_full_url: false,
         }
@@ -625,7 +618,6 @@ mod tests {
         let req = CreateProviderRequest {
             model_protocols: Some(HashMap::from([("gpt-4".into(), "openai".into())])),
             model_enabled: Some(HashMap::from([("gpt-4".into(), true), ("gpt-3.5".into(), false)])),
-            model_max_tokens: Some(HashMap::from([("gpt-4".into(), 65536)])),
             ..sample_create_request()
         };
         let created = svc.create(req).await.unwrap();
@@ -639,18 +631,10 @@ mod tests {
             created.model_enabled.as_ref().and_then(|m| m.get("gpt-3.5")),
             Some(&false)
         );
-        assert_eq!(
-            created.model_max_tokens.as_ref().and_then(|m| m.get("gpt-4")),
-            Some(&65536)
-        );
 
         // And persist through a fresh read.
         let all = svc.list().await.unwrap();
         assert_eq!(all[0].model_enabled.as_ref().and_then(|m| m.get("gpt-4")), Some(&true));
-        assert_eq!(
-            all[0].model_max_tokens.as_ref().and_then(|m| m.get("gpt-4")),
-            Some(&65536)
-        );
     }
 
     #[tokio::test]
@@ -716,46 +700,6 @@ mod tests {
 
         // Response carries the new plaintext key (encrypted at rest).
         assert_eq!(updated.api_key, "new-key-abcdefgh");
-    }
-
-    #[tokio::test]
-    async fn update_model_max_tokens_persists_and_can_be_emptied() {
-        use std::collections::HashMap;
-        let svc = setup().await;
-        let created = svc.create(sample_create_request()).await.unwrap();
-        assert!(created.model_max_tokens.is_none());
-
-        let with_tokens = svc
-            .update(
-                &created.id,
-                UpdateProviderRequest {
-                    model_max_tokens: Some(HashMap::from([("claude-sonnet-4-20250514".into(), 65536)])),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            with_tokens
-                .model_max_tokens
-                .as_ref()
-                .and_then(|m| m.get("claude-sonnet-4-20250514")),
-            Some(&65536)
-        );
-
-        // An explicit empty map is a valid distinct state from "not supplied"
-        // (None) — it round-trips as an empty object, not null.
-        let emptied = svc
-            .update(
-                &created.id,
-                UpdateProviderRequest {
-                    model_max_tokens: Some(HashMap::new()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(emptied.model_max_tokens, Some(HashMap::new()));
     }
 
     #[tokio::test]

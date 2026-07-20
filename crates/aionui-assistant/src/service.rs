@@ -3143,7 +3143,6 @@ mod tests {
             model_protocols: None,
             model_enabled: None,
             model_health: None,
-            model_max_tokens: None,
             bedrock_config: None,
             is_full_url: false,
         })
@@ -6062,7 +6061,6 @@ mod tests {
                 model_protocols: None,
                 model_enabled: None,
                 model_health: None,
-                model_max_tokens: None,
                 bedrock_config: None,
                 is_full_url: false,
             })
