@@ -33,22 +33,8 @@ pub struct TenantRow {
     pub id: String,
     pub name: String,
     pub exit_password_hash: Option<String>,
-    /// SSO company binding (migration 004). Present => this tenant is a "real
-    /// enterprise" auto-join lands colleagues in; absent => an invite-only
-    /// project group. Populated by `create_tenant` from the creator's SSO
-    /// identity; `None` for locally-created project groups.
-    pub sso_provider: Option<String>,
-    pub sso_org_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
-}
-
-impl TenantRow {
-    /// A tenant bound to an SSO company is a "real enterprise"; an unbound one
-    /// is an invite-code-only project group.
-    pub fn is_sso_bound(&self) -> bool {
-        self.sso_provider.as_deref().is_some_and(|p| !p.is_empty())
-    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -128,7 +114,9 @@ pub struct UserOrgRow {
     pub updated_at: i64,
 }
 
-/// Resolved enterprise context for the current user.
+/// Resolved project-group context for the current user. Pure project-group
+/// (invite-code tenant) info — the SSO-company "enterprise org" dimension is a
+/// separate concern served by one-enterprise (`/api/one/enterprise/me`).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrgContextDto {
@@ -137,16 +125,6 @@ pub struct OrgContextDto {
     pub role: String,
     pub is_enterprise: bool,
     pub member_count: i64,
-    /// `true` when the tenant is bound to an SSO company (a "real enterprise");
-    /// `false` for invite-only project groups and for personal edition. Lets
-    /// the client label the two tiers apart.
-    pub sso_bound: bool,
-    /// The current member's own org profile, as captured at join / SSO sync.
-    /// All `None` in personal edition (no membership row) — the client shows
-    /// nothing extra, so personal-edition behavior is unchanged.
-    pub display_name: Option<String>,
-    pub org_unit_path: Option<String>,
-    pub job_title: Option<String>,
 }
 
 /// Admin view of a user — joins upstream `users` (id/username) with

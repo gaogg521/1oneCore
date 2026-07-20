@@ -40,6 +40,7 @@ one-org.workspace = true
 one-employee.workspace = true
 one-sso.workspace = true
 one-devops.workspace = true
+one-enterprise.workspace = true
 aion-config.workspace = true
 axum.workspace = true
 chrono.workspace = true

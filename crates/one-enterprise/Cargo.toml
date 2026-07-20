@@ -1,0 +1,22 @@
+[package]
+name = "one-enterprise"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aionui-api-types.workspace = true
+aionui-auth.workspace = true
+aionui-common.workspace = true
+aionui-db.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+tokio.workspace = true
+tower = { workspace = true, features = ["util"] }

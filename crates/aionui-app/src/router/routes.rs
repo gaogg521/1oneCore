@@ -53,26 +53,31 @@ impl one_employee::TenantResolver for OrgTenantResolver {
     }
 }
 
-/// Adapts one-org's `OrgService::auto_provision_enterprise` to the
-/// `one_sso::EnterpriseAutoJoiner` trait, so an SSO login can join the
-/// enterprise bound to the caller's company without one-sso depending on
-/// one-org. Join-only by construction (see the OrgService method); errors are
-/// logged and swallowed so a failed lookup can never block a valid login.
-struct OrgEnterpriseAutoJoiner(std::sync::Arc<one_org::OrgService>);
+/// Adapts one-enterprise's `EnterpriseService::sync_member` to the
+/// `one_sso::EnterpriseSync` trait, so an SSO login can sync the caller's
+/// company + membership into the enterprise-org domain without one-sso
+/// depending on one-enterprise. Best-effort by construction (see the service
+/// method); errors are logged and swallowed so a failed sync can never block a
+/// valid login.
+struct EnterpriseSyncAdapter(std::sync::Arc<one_enterprise::EnterpriseService>);
 
 #[async_trait::async_trait]
-impl one_sso::EnterpriseAutoJoiner for OrgEnterpriseAutoJoiner {
-    async fn try_auto_join(&self, user_id: &str, provider: &str, org_external_id: &str) -> bool {
-        match self
+impl one_sso::EnterpriseSync for EnterpriseSyncAdapter {
+    async fn sync_member(
+        &self,
+        user_id: &str,
+        provider: &str,
+        external_id: &str,
+        display_name: Option<&str>,
+        department: Option<&str>,
+        job_title: Option<&str>,
+    ) {
+        if let Err(error) = self
             .0
-            .auto_provision_enterprise(user_id, provider, org_external_id)
+            .sync_member(user_id, provider, external_id, display_name, department, job_title)
             .await
         {
-            Ok(joined) => joined,
-            Err(error) => {
-                tracing::warn!(%error, user_id, provider, "SSO enterprise auto-join failed; login continues");
-                false
-            }
+            tracing::warn!(%error, user_id, provider, "enterprise-org sync failed; login continues");
         }
     }
 }
@@ -138,6 +143,15 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
         .await
         .map_err(|e| {
             RouterBuildError::new("router.one_devops.migrate", "failed to run one-devops migrations").with_source(e)
+        })?;
+    one_enterprise::run_one_enterprise_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new(
+                "router.one_enterprise.migrate",
+                "failed to run one-enterprise migrations",
+            )
+            .with_source(e)
         })?;
 
     // Start channel orchestrator (message loop)
@@ -322,6 +336,15 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let one_employee_authenticated = one_employee::one_employee_routes(one_employee_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // one-enterprise routes (/api/one/enterprise/*) — the SSO-company
+    // "enterprise org" dimension, independent of one-org's invite-code project
+    // groups. Any authenticated user reads their own identity.
+    let one_enterprise_service =
+        std::sync::Arc::new(one_enterprise::EnterpriseService::new(services.database.pool().clone()));
+    let one_enterprise_state = one_enterprise::OneEnterpriseRouterState::new(one_enterprise_service.clone());
+    let one_enterprise_authenticated = one_enterprise::one_enterprise_routes(one_enterprise_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // one-sso routes. Public half (providers/authorize/callback) is
     // unauthenticated so OAuth can run before the user has a session;
     // admin half (upsert provider) sits behind the auth middleware.
@@ -331,13 +354,14 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         services.jwt_service.clone(),
         services.cookie_config.clone(),
     )))
-    // Real-enterprise tier: same-company SSO logins auto-join the enterprise
-    // bound to that company. No-op unless such a binding exists, so personal
-    // edition is unaffected.
-    .with_auto_joiner(std::sync::Arc::new(OrgEnterpriseAutoJoiner(one_org_service.clone())));
+    // Enterprise-org sync: a successful SSO login upserts the caller's company
+    // + membership into one-enterprise. No-op (aside from the upsert) for
+    // personal edition / WebUI-only builds since it never touches
+    // `one_tenants` / project-group membership.
+    .with_enterprise_sync(std::sync::Arc::new(EnterpriseSyncAdapter(
+        one_enterprise_service.clone(),
+    )));
     let one_sso_public = one_sso::one_sso_public_routes(one_sso_state.clone());
-    let one_sso_member = one_sso::one_sso_member_routes(one_sso_state.clone())
-        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
     let one_sso_admin = one_sso::one_sso_admin_routes(one_sso_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -387,8 +411,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(one_org_authenticated)
         .merge(one_employee_authenticated)
         .merge(one_devops_authenticated)
+        .merge(one_enterprise_authenticated)
         .merge(one_sso_public)
-        .merge(one_sso_member)
         .merge(one_sso_admin);
 
     // Conditionally merge WeChat login SSE route (feature-gated)

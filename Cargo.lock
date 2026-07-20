@@ -427,6 +427,7 @@ dependencies = [
  "libc",
  "one-devops",
  "one-employee",
+ "one-enterprise",
  "one-org",
  "one-sso",
  "reqwest",
@@ -3926,6 +3927,26 @@ dependencies = [
  "aionui-db",
  "aionui-team",
  "async-trait",
+ "axum",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.19",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "one-enterprise"
+version = "0.1.48-one.1"
+dependencies = [
+ "aionui-api-types",
+ "aionui-auth",
+ "aionui-common",
+ "aionui-db",
  "axum",
  "http-body-util",
  "serde",

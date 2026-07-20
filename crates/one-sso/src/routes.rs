@@ -16,7 +16,7 @@ use aionui_api_types::ApiResponse;
 use aionui_auth::CurrentUser;
 
 use crate::error::SsoError;
-use crate::models::{SsoIdentityDto, SsoProviderConfigDto, SsoProviderKind, SsoProviderStatusDto, UpdateProviderBody};
+use crate::models::{SsoProviderConfigDto, SsoProviderKind, SsoProviderStatusDto, UpdateProviderBody};
 use crate::rbac::RequireSsoAdmin;
 use crate::state::OneSsoRouterState;
 
@@ -34,24 +34,6 @@ pub fn one_sso_admin_routes(state: OneSsoRouterState) -> Router {
         .route("/api/one/admin/sso/providers", get(list_provider_configs))
         .route("/api/one/admin/sso/{provider}", put(upsert_provider))
         .with_state(state)
-}
-
-/// Member-facing SSO routes (need `CurrentUser`, so mount behind auth). Unlike
-/// the admin group these are not role-gated: any authenticated user may read
-/// their own SSO identity.
-pub fn one_sso_member_routes(state: OneSsoRouterState) -> Router {
-    Router::new().route("/api/one/sso/me", get(sso_me)).with_state(state)
-}
-
-/// The caller's own SSO identity (the "enterprise org" dimension), or `null`
-/// for a local/LDAP account with no OAuth identity. Independent of any
-/// tenant/project-group membership.
-async fn sso_me(
-    State(state): State<OneSsoRouterState>,
-    Extension(user): Extension<CurrentUser>,
-) -> Result<Json<ApiResponse<Option<SsoIdentityDto>>>, SsoError> {
-    let identity = state.service.identity_of(&user.id).await?;
-    Ok(Json(ApiResponse::ok(identity)))
 }
 
 #[derive(Deserialize)]
@@ -245,19 +227,28 @@ async fn callback(
     // sanitized to ASCII and often collapses to `sso_<id>` for CJK names, so
     // the desktop needs this separately to show a real name instead of the code.
     let display_name = profile.preferred_username.clone();
-    // Company identifier (Feishu tenant_key etc.), captured before the profile
-    // is consumed — drives the real-enterprise auto-join below.
+    // Enterprise-org fields, captured before the profile is consumed: company
+    // identifier (Feishu tenant_key), department, job title. Feed the
+    // enterprise-org sync below (independent of project groups).
     let org_external_id = profile.org_external_id.clone();
+    let org_unit_path = profile.org_unit_path.clone();
+    let job_title = profile.job_title.clone();
     let (user_id, username, _created) = state.service.resolve_or_provision_user(provider, profile).await?;
 
-    // Real-enterprise tier: a colleague signing in with the company IdP joins
-    // the enterprise bound to that company (no invite code). Join-only and
-    // best-effort — it never creates a tenant and never fails the login, so a
-    // personal-edition install is unaffected. Runs before `issue_session` so
-    // the freshly-signed token reflects the new membership (auto-join rotates
-    // the user's jwt secret).
-    if let (Some(joiner), Some(org_id)) = (state.auto_joiner.as_ref(), org_external_id.as_deref()) {
-        joiner.try_auto_join(&user_id, provider.as_str(), org_id).await;
+    // Enterprise-org dimension: reflect the user's real SSO company + their
+    // name / department / job title into the one-enterprise domain. Purely
+    // additive and best-effort — it never touches project-group tenants and
+    // never fails the login, so a personal-edition install is unaffected.
+    if let (Some(sync), Some(org_id)) = (state.enterprise_sync.as_ref(), org_external_id.as_deref()) {
+        sync.sync_member(
+            &user_id,
+            provider.as_str(),
+            org_id,
+            Some(display_name.as_str()),
+            org_unit_path.as_deref(),
+            job_title.as_deref(),
+        )
+        .await;
     }
 
     let session = state

@@ -353,27 +353,17 @@ impl OrgService {
 
         // Creator keeps system_admin (instance-level governance) — same
         // rationale as the TS reference: downgrading to org_admin here would
-        // leave the instance with no system_admin.
-        // Bind the tenant to the creator's SSO company (Feishu tenant_key etc.)
-        // when they signed in through an IdP. That binding is what lets later
-        // same-company SSO logins auto-join without an invite code
-        // (`auto_provision_enterprise`). Locally-created enterprises (no SSO
-        // identity) leave it NULL and stay invite-only — a project group.
-        let sso_binding = self.sso_org_binding_for(user_id).await;
-
+        // leave the instance with no system_admin. A project group carries no
+        // SSO-company binding — the SSO company is a separate dimension
+        // (one-enterprise); this is purely an invite-code tenant.
         let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            "INSERT INTO one_tenants (id, name, sso_provider, sso_org_id, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&tenant_id)
-        .bind(name)
-        .bind(sso_binding.as_ref().map(|(p, _)| p.as_str()))
-        .bind(sso_binding.as_ref().map(|(_, o)| o.as_str()))
-        .bind(now)
-        .bind(now)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("INSERT INTO one_tenants (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
+            .bind(&tenant_id)
+            .bind(name)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(
             "INSERT INTO one_user_org \
              (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
@@ -405,113 +395,6 @@ impl OrgService {
             .await;
 
         Ok((tenant_id, name.to_string()))
-    }
-
-    /// The company (provider, org_external_id) the user's most recent SSO
-    /// identity belongs to, if any. `None` for local/LDAP accounts and for
-    /// providers that don't surface a company id.
-    async fn sso_org_binding_for(&self, user_id: &str) -> Option<(String, String)> {
-        sqlx::query_as::<_, (String, String)>(
-            "SELECT provider, org_external_id FROM one_sso_identities \
-             WHERE user_id = ? AND org_external_id IS NOT NULL AND org_external_id <> '' \
-             ORDER BY last_seen_at DESC LIMIT 1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten()
-    }
-
-    /// Auto-join the enterprise bound to this SSO company — the "real
-    /// enterprise" tier: a colleague who signs in with the company IdP lands in
-    /// the same tenant with their real name/department, no invite code needed.
-    ///
-    /// Deliberately **join-only: it never creates a tenant.** Creating an
-    /// enterprise stays an explicit admin action (`create_tenant`, which is what
-    /// records the company binding). Auto-creating here would silently turn a
-    /// standalone install into an enterprise server the moment someone signed in
-    /// with SSO — a behavior change for personal-edition users, which is out of
-    /// bounds. No binding match (different company, an invite-only project
-    /// group, or no enterprise at all) => no change; the user simply stays where
-    /// they were.
-    ///
-    /// Returns whether a membership was actually written.
-    pub async fn auto_provision_enterprise(
-        &self,
-        user_id: &str,
-        provider: &str,
-        org_external_id: &str,
-    ) -> Result<bool, OrgError> {
-        let org_external_id = org_external_id.trim();
-        if org_external_id.is_empty() {
-            return Ok(false);
-        }
-        // Already in an enterprise (this one or another) — leave membership alone.
-        let current = self.tenant_of(user_id).await?;
-        if is_enterprise_tenant_id(&current) {
-            return Ok(false);
-        }
-
-        let tenant_id: Option<String> =
-            sqlx::query_scalar("SELECT id FROM one_tenants WHERE sso_provider = ? AND sso_org_id = ? LIMIT 1")
-                .bind(provider)
-                .bind(org_external_id)
-                .fetch_optional(&self.pool)
-                .await?;
-        let Some(tenant_id) = tenant_id else {
-            return Ok(false);
-        };
-
-        let now = now_ms() as i64;
-        // Same SSO-profile snapshot as join_with_invite — see its comment.
-        let (display_name, org_unit_path, job_title, org_profile_source) = match self.sso_profile_for(user_id).await {
-            Some((d, o, j, p)) => (d, o, j, Some(p)),
-            None => (None, None, None, None),
-        };
-        let org_profile_synced_at = org_profile_source.as_ref().map(|_| now);
-
-        sqlx::query(
-            "INSERT INTO one_user_org \
-             (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
-              org_profile_synced_at, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at, \
-                 display_name = excluded.display_name, org_unit_path = excluded.org_unit_path, \
-                 job_title = excluded.job_title, org_profile_source = excluded.org_profile_source, \
-                 org_profile_synced_at = excluded.org_profile_synced_at",
-        )
-        .bind(user_id)
-        .bind(&tenant_id)
-        .bind(ROLE_MEMBER)
-        .bind(&display_name)
-        .bind(&org_unit_path)
-        .bind(&job_title)
-        .bind(&org_profile_source)
-        .bind(org_profile_synced_at)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-
-        self.invalidate_user_tokens(user_id).await?;
-        let username = self.lookup_username(user_id).await;
-        self.audit(
-            &tenant_id,
-            Some(user_id),
-            username.as_deref(),
-            "org.sso_auto_join",
-            Some(provider),
-        )
-        .await;
-        tracing::info!(
-            user_id,
-            provider,
-            tenant_id,
-            "SSO auto-joined enterprise by company binding"
-        );
-
-        Ok(true)
     }
 
     /// Archive and wipe all local tenant/membership data, so a stale/orphaned
@@ -718,27 +601,15 @@ impl OrgService {
     }
 
     pub async fn context(&self, user_id: &str) -> Result<OrgContextDto, OrgError> {
-        let membership = self.membership(user_id).await?;
-        let tenant_id = membership
-            .as_ref()
-            .map(|m| m.tenant_id.clone())
-            .unwrap_or_else(|| DEFAULT_TENANT_ID.to_string());
+        let tenant_id = self.tenant_of(user_id).await?;
         let role = self.effective_role(user_id).await?;
         let is_enterprise = is_enterprise_tenant_id(&tenant_id);
-        // Enterprise-only fields stay `None`/`false`/`0` in personal edition so
-        // the client's personal-mode rendering is byte-identical to before.
-        let (tenant_name, member_count, sso_bound, display_name, org_unit_path, job_title) = if is_enterprise {
-            let tenant = self.get_tenant(&tenant_id).await?;
-            let name = tenant.as_ref().map(|t| t.name.clone());
-            let sso_bound = tenant.as_ref().is_some_and(|t| t.is_sso_bound());
+        let (tenant_name, member_count) = if is_enterprise {
+            let name = self.get_tenant(&tenant_id).await?.map(|t| t.name);
             let count = self.member_count(&tenant_id).await?;
-            let (display_name, org_unit_path, job_title) = membership
-                .as_ref()
-                .map(|m| (m.display_name.clone(), m.org_unit_path.clone(), m.job_title.clone()))
-                .unwrap_or((None, None, None));
-            (name, count, sso_bound, display_name, org_unit_path, job_title)
+            (name, count)
         } else {
-            (None, 0, false, None, None, None)
+            (None, 0)
         };
         Ok(OrgContextDto {
             tenant_id,
@@ -746,10 +617,6 @@ impl OrgService {
             role,
             is_enterprise,
             member_count,
-            sso_bound,
-            display_name,
-            org_unit_path,
-            job_title,
         })
     }
 
@@ -1038,153 +905,6 @@ mod tests {
         .unwrap();
     }
 
-    /// Like `seed_sso_identity`, but also records the IdP company id — the
-    /// value the enterprise binding and auto-join match on.
-    async fn seed_sso_identity_with_company(
-        pool: &SqlitePool,
-        user_id: &str,
-        display_name: &str,
-        org_unit_path: &str,
-        company: &str,
-    ) {
-        seed_sso_identity(pool, user_id, display_name, org_unit_path, "工程师").await;
-        sqlx::query("UPDATE one_sso_identities SET org_external_id = ? WHERE user_id = ?")
-            .bind(company)
-            .bind(user_id)
-            .execute(pool)
-            .await
-            .unwrap();
-    }
-
-    /// Insert an enterprise already bound to a company, the way `create_tenant`
-    /// records it when its creator signed in through an IdP.
-    async fn seed_bound_enterprise(pool: &SqlitePool, tenant_id: &str, company: &str) {
-        sqlx::query(
-            "INSERT INTO one_tenants (id, name, sso_provider, sso_org_id, created_at, updated_at) \
-             VALUES (?, '欢乐互娱', 'feishu', ?, 0, 0)",
-        )
-        .bind(tenant_id)
-        .bind(company)
-        .execute(pool)
-        .await
-        .unwrap();
-    }
-
-    /// Creating an enterprise while signed in through an IdP records the
-    /// creator's company on the tenant — that binding is what later
-    /// same-company logins auto-join against.
-    #[tokio::test]
-    async fn create_tenant_binds_the_creators_sso_company() {
-        let (db, service, _user_repo) = setup().await;
-        seed_sso_identity_with_company(db.pool(), SYSTEM_DEFAULT_USER_ID, "老板", "总裁办", "tenant_huanle").await;
-
-        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "欢乐互娱").await.unwrap();
-
-        let (provider, company): (Option<String>, Option<String>) =
-            sqlx::query_as("SELECT sso_provider, sso_org_id FROM one_tenants WHERE id = ?")
-                .bind(&tenant_id)
-                .fetch_one(db.pool())
-                .await
-                .unwrap();
-        assert_eq!(provider.as_deref(), Some("feishu"));
-        assert_eq!(company.as_deref(), Some("tenant_huanle"));
-    }
-
-    /// A locally-created enterprise (no SSO identity) stays unbound — it is an
-    /// invite-only project group, and no SSO login can auto-join it.
-    #[tokio::test]
-    async fn create_tenant_leaves_the_binding_null_without_an_sso_identity() {
-        let (db, service, _user_repo) = setup().await;
-
-        let (tenant_id, _) = service
-            .create_tenant(SYSTEM_DEFAULT_USER_ID, "本地项目组")
-            .await
-            .unwrap();
-
-        let (provider, company): (Option<String>, Option<String>) =
-            sqlx::query_as("SELECT sso_provider, sso_org_id FROM one_tenants WHERE id = ?")
-                .bind(&tenant_id)
-                .fetch_one(db.pool())
-                .await
-                .unwrap();
-        assert_eq!(provider, None);
-        assert_eq!(company, None);
-    }
-
-    /// Red line: a personal-edition install must never silently become an
-    /// enterprise server just because someone signed in with SSO. Auto-join is
-    /// join-only — with no enterprise bound to the company, nothing changes.
-    #[tokio::test]
-    async fn auto_provision_enterprise_never_creates_a_tenant() {
-        let (db, service, user_repo) = setup().await;
-        let user = create_user(&user_repo, "zhaogao").await;
-        seed_sso_identity_with_company(db.pool(), &user, "赵高", "研发中心", "tenant_huanle").await;
-
-        let joined = service
-            .auto_provision_enterprise(&user, "feishu", "tenant_huanle")
-            .await
-            .unwrap();
-
-        assert!(!joined, "no enterprise is bound to this company yet");
-        let tenants: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_tenants")
-            .fetch_one(db.pool())
-            .await
-            .unwrap();
-        assert_eq!(tenants, 0, "auto-join must never create a tenant");
-        assert_eq!(service.tenant_of(&user).await.unwrap(), DEFAULT_TENANT_ID);
-    }
-
-    #[tokio::test]
-    async fn auto_provision_enterprise_joins_the_enterprise_bound_to_the_same_company() {
-        let (db, service, user_repo) = setup().await;
-        seed_bound_enterprise(db.pool(), "tenant_x", "tenant_huanle").await;
-        let user = create_user(&user_repo, "zhaogao").await;
-        seed_sso_identity_with_company(db.pool(), &user, "赵高", "研发中心", "tenant_huanle").await;
-
-        let joined = service
-            .auto_provision_enterprise(&user, "feishu", "tenant_huanle")
-            .await
-            .unwrap();
-
-        assert!(joined, "same-company SSO login joins without an invite code");
-        let ctx = service.context(&user).await.unwrap();
-        assert!(ctx.is_enterprise);
-        assert_eq!(ctx.tenant_id, "tenant_x");
-        assert_eq!(ctx.role, ROLE_MEMBER);
-        // A company-bound tenant is a "real enterprise", and the member's real
-        // name / department ride onto the context so the client can show them.
-        assert!(ctx.sso_bound, "an SSO-company-bound tenant is a real enterprise");
-        assert_eq!(ctx.display_name.as_deref(), Some("赵高"));
-        assert_eq!(ctx.org_unit_path.as_deref(), Some("研发中心"));
-    }
-
-    /// The context of a member in an invite-only project group reports
-    /// `sso_bound: false` so the client labels it a project group, not a real
-    /// enterprise — even though it is still `is_enterprise` (a non-default
-    /// tenant).
-    #[tokio::test]
-    async fn context_reports_project_group_as_not_sso_bound() {
-        let (db, service, user_repo) = setup().await;
-        sqlx::query("INSERT INTO one_tenants (id, name, created_at, updated_at) VALUES ('tenant_pg', '项目组', 0, 0)")
-            .execute(db.pool())
-            .await
-            .unwrap();
-        let user = create_user(&user_repo, "member1").await;
-        sqlx::query(
-            "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) \
-             VALUES (?, 'tenant_pg', 'member', 0, 0)",
-        )
-        .bind(&user)
-        .execute(db.pool())
-        .await
-        .unwrap();
-
-        let ctx = service.context(&user).await.unwrap();
-        assert!(ctx.is_enterprise, "a non-default tenant is still an enterprise tenant");
-        assert!(!ctx.sso_bound, "an invite-only project group is not SSO-bound");
-        assert_eq!(ctx.tenant_name.as_deref(), Some("项目组"));
-    }
-
     /// Personal edition (no membership row) reports everything empty — the
     /// red line that this endpoint's personal-mode shape is unchanged.
     #[tokio::test]
@@ -1195,48 +915,7 @@ mod tests {
         let ctx = service.context(&user).await.unwrap();
         assert_eq!(ctx.tenant_id, DEFAULT_TENANT_ID);
         assert!(!ctx.is_enterprise);
-        assert!(!ctx.sso_bound);
         assert_eq!(ctx.member_count, 0);
-        assert!(ctx.display_name.is_none());
-        assert!(ctx.org_unit_path.is_none());
-        assert!(ctx.job_title.is_none());
-    }
-
-    #[tokio::test]
-    async fn auto_provision_enterprise_ignores_a_different_company() {
-        let (db, service, user_repo) = setup().await;
-        seed_bound_enterprise(db.pool(), "tenant_x", "tenant_huanle").await;
-        let outsider = create_user(&user_repo, "stranger").await;
-        seed_sso_identity_with_company(db.pool(), &outsider, "路人", "外部", "tenant_other_corp").await;
-
-        let joined = service
-            .auto_provision_enterprise(&outsider, "feishu", "tenant_other_corp")
-            .await
-            .unwrap();
-
-        assert!(!joined, "another company's employee must not land in this enterprise");
-        assert_eq!(service.tenant_of(&outsider).await.unwrap(), DEFAULT_TENANT_ID);
-    }
-
-    /// An invite-code project group carries no company binding, so SSO logins
-    /// never auto-join it — it stays invite-only.
-    #[tokio::test]
-    async fn auto_provision_enterprise_skips_an_unbound_project_group() {
-        let (db, service, user_repo) = setup().await;
-        sqlx::query("INSERT INTO one_tenants (id, name, created_at, updated_at) VALUES ('tenant_pg', '项目组', 0, 0)")
-            .execute(db.pool())
-            .await
-            .unwrap();
-        let user = create_user(&user_repo, "zhaogao").await;
-        seed_sso_identity_with_company(db.pool(), &user, "赵高", "研发中心", "tenant_huanle").await;
-
-        let joined = service
-            .auto_provision_enterprise(&user, "feishu", "tenant_huanle")
-            .await
-            .unwrap();
-
-        assert!(!joined);
-        assert_eq!(service.tenant_of(&user).await.unwrap(), DEFAULT_TENANT_ID);
     }
 
     #[test]

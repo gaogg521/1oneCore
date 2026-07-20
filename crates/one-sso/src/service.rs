@@ -25,7 +25,7 @@ use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 
 use crate::error::SsoError;
-use crate::models::{SsoIdentityDto, SsoIdentityRow, SsoProviderConfigDto, SsoProviderKind, SsoProviderRow};
+use crate::models::{SsoIdentityRow, SsoProviderConfigDto, SsoProviderKind, SsoProviderRow};
 use crate::providers::{ProviderUserInfo, feishu::FeishuProviderConfig};
 
 /// Lifetime of an OAuth `state` nonce — same as the TS reference (10 min).
@@ -319,31 +319,6 @@ impl SsoService {
             redirect_target,
             desktop,
         })
-    }
-
-    /// The caller's most recent SSO identity profile — the "enterprise org"
-    /// dimension. `None` for a local/LDAP account with no OAuth identity row.
-    /// Read straight from `one_sso_identities` by `user_id`, independent of any
-    /// tenant membership. Mirrors the direct-read precedent in
-    /// `OrgService::sso_profile_for` (same-layer crates can't depend on each
-    /// other, so both read this table directly).
-    pub async fn identity_of(&self, user_id: &str) -> Result<Option<SsoIdentityDto>, SsoError> {
-        let row = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>)>(
-            "SELECT provider, org_external_id, display_name, org_unit_path, job_title \
-             FROM one_sso_identities WHERE user_id = ? ORDER BY last_seen_at DESC LIMIT 1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(
-            |(provider, company_id, display_name, department, job_title)| SsoIdentityDto {
-                provider,
-                company_id,
-                display_name,
-                department,
-                job_title,
-            },
-        ))
     }
 
     async fn find_identity(
@@ -824,35 +799,6 @@ mod tests {
         assert_eq!(display_name.as_deref(), Some("张三"));
         assert_eq!(org_unit_path.as_deref(), Some("研发中心"));
         assert_eq!(job_title.as_deref(), Some("高级工程师"));
-    }
-
-    #[tokio::test]
-    async fn identity_of_returns_the_callers_sso_profile_independent_of_tenant() {
-        let service = service_with_memory_db().await;
-        let profile = ProviderUserInfo {
-            external_id: "ou_zhao".into(),
-            preferred_username: "赵高".into(),
-            org_unit_path: Some("研发中心".into()),
-            job_title: Some("工程师".into()),
-            org_external_id: Some("tenant_huanle".into()),
-        };
-        let (user_id, _, _) = service
-            .resolve_or_provision_user(SsoProviderKind::Feishu, profile)
-            .await
-            .unwrap();
-
-        let identity = service.identity_of(&user_id).await.unwrap().expect("identity present");
-        assert_eq!(identity.provider, "feishu");
-        assert_eq!(identity.company_id.as_deref(), Some("tenant_huanle"));
-        assert_eq!(identity.display_name.as_deref(), Some("赵高"));
-        assert_eq!(identity.department.as_deref(), Some("研发中心"));
-        assert_eq!(identity.job_title.as_deref(), Some("工程师"));
-    }
-
-    #[tokio::test]
-    async fn identity_of_is_none_for_a_user_without_an_sso_identity() {
-        let service = service_with_memory_db().await;
-        assert!(service.identity_of("local_only_user").await.unwrap().is_none());
     }
 
     #[tokio::test]
