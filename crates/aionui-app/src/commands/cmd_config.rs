@@ -1,4 +1,4 @@
-//! `aioncore config` subcommand: agent-facing automation CLI for AionUi config.
+//! `aioncore config` subcommand: agent-facing automation CLI for 1One Work config.
 
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
@@ -1382,7 +1382,7 @@ async fn request_json(
         ConfigError::new(
             ConfigErrorCode::HttpRequestFailed,
             command,
-            "failed to call AionUi backend",
+            "failed to call 1One Work backend",
         )
         .field("path", path)
     })?;
@@ -1392,7 +1392,7 @@ async fn request_json(
         ConfigError::new(
             ConfigErrorCode::ResponseReadFailed,
             command,
-            "failed to read AionUi backend response",
+            "failed to read 1One Work backend response",
         )
         .field("path", path)
     })?;
@@ -1408,7 +1408,7 @@ async fn request_json(
         return Err(ConfigError::new(
             ConfigErrorCode::HttpStatusError,
             command,
-            "AionUi backend returned an error status",
+            "1One Work backend returned an error status",
         )
         .field("path", path)
         .field("status", status.as_u16().to_string()));
@@ -1429,7 +1429,7 @@ async fn request_json(
         ConfigError::new(
             ConfigErrorCode::ResponseJsonInvalid,
             command,
-            "AionUi backend returned invalid JSON",
+            "1One Work backend returned invalid JSON",
         )
         .field("path", path)
     })?;
@@ -1465,7 +1465,7 @@ fn extract_api_data(value: Value, command: &str) -> Result<Value, ConfigError> {
     Err(ConfigError::new(
         ConfigErrorCode::HttpStatusError,
         command,
-        "AionUi backend returned an unsuccessful response",
+        "1One Work backend returned an unsuccessful response",
     ))
 }
 

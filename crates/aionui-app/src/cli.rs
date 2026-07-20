@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "aioncore", about = "AionUi Backend Server", version)]
+#[command(name = "aioncore", about = "1One Work Backend Server", version)]
 pub(crate) struct Cli {
     /// Host address to listen on.
     #[arg(long, default_value_t = String::from(aionui_common::constants::DEFAULT_HOST))]
@@ -88,9 +88,9 @@ impl From<ManagedResourcesModeArg> for aionui_runtime::ManagedResourcesMode {
 pub(crate) enum Command {
     /// Print the top-level agent-facing CLI capability index.
     Capabilities,
-    /// Agent-facing automation CLI for AionUi configuration.
+    /// Agent-facing automation CLI for 1One Work configuration.
     Config(ConfigArgs),
-    /// Agent-facing read-only troubleshooting CLI for AionUi diagnosis.
+    /// Agent-facing read-only troubleshooting CLI for 1One Work diagnosis.
     Diagnose(DiagnoseArgs),
     /// Agent-facing Team collaboration CLI fallback.
     Team(TeamArgs),
@@ -314,7 +314,7 @@ pub(crate) enum ConfigCommand {
     Context,
     /// Manage assistants and assistant-owned behavior.
     Assistants(ConfigAssistantsArgs),
-    /// Manage AionUi skills.
+    /// Manage 1One Work skills.
     Skills(ConfigSkillsArgs),
     /// Manage MCP servers and OAuth state.
     Mcp(ConfigMcpArgs),
