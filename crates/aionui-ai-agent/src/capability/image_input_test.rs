@@ -300,11 +300,36 @@ fn embedded_allowlist_resolves_kimi_hyphen_alias_on_moonshot() {
         ImageInputCapability::Supported
     );
     assert_eq!(
-        resolve_image_input_capability(
-            "openai",
-            Some("https://litellm-internal.123u.com/v1"),
-            "kimi-k2-6",
-        ),
+        resolve_image_input_capability("openai", Some("https://litellm-internal.123u.com/v1"), "kimi-k2-6",),
         ImageInputCapability::Supported
     );
+}
+
+/// Regression lock for the edition-letter normalization heuristic
+/// (`strip_edition_letter_before_version`): it mangles brand names whose last
+/// letter sits right before the version digits — `minimax-2-7` → `minima27`,
+/// `deepseek-v4-flash` → `deepsee4flash`. Those mangled keys collide with
+/// nothing in the REAL embedded allowlist today, so these text-only models stay
+/// `Unknown`. This asserts it against the *embedded* catalog (via
+/// `resolve_image_input_capability`, not the fixture) so that if a future
+/// allowlist entry accidentally matches a mangled key — leaking image input to
+/// a text-only model — this test fails and catches it. MiniMax vision is M3,
+/// not M2.7; DeepSeek vision is the VL/OCR line, not v4-flash.
+#[test]
+fn embedded_allowlist_keeps_text_only_lookalikes_unknown_despite_normalization() {
+    let gateway = Some("https://litellm-internal.123u.com/v1");
+    for model in [
+        "minimax-2-7",
+        "MiniMax-M2.7",
+        "minimax2-7",
+        "deepseek-v4-flash",
+        "deepseek-v4",
+        "deepseek-v4-flash-2024-11-20",
+    ] {
+        assert_eq!(
+            resolve_image_input_capability("openai", gateway, model),
+            ImageInputCapability::Unknown,
+            "{model} is text-only and must not leak image_input via normalization"
+        );
+    }
 }

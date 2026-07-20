@@ -160,7 +160,10 @@ fn builtin_provider_id(provider: &str) -> Option<&'static str> {
 }
 
 fn catalog_lists_vision_model(catalog: &ImageInputCatalog, model: &str) -> bool {
-    catalog.providers.values().any(|provider| model_supports_image(provider, model))
+    catalog
+        .providers
+        .values()
+        .any(|provider| model_supports_image(provider, model))
 }
 
 fn model_supports_image(provider: &ImageInputProvider, model: &str) -> bool {
