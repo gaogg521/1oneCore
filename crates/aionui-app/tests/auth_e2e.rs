@@ -167,16 +167,38 @@ async fn t12_1_security_headers_on_error_responses() {
     assert_eq!(resp.headers().get("x-frame-options").unwrap(), "DENY");
 }
 
+// Bearer requests carry no ambient credential a cross-site form could ride
+// on, so the CSRF middleware exempts them (remote-desktop clients depend on
+// this — see M4d, crates/aionui-auth/src/csrf.rs). Cookie-authenticated
+// requests still require the CSRF token pair.
 #[tokio::test]
-async fn t12_2_csrf_blocks_post_without_token() {
+async fn t12_2_csrf_allows_bearer_post_without_token() {
     let (mut app, services) = build_app().await;
     let (token, _csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
 
-    // POST /logout without CSRF token → 403
+    // POST /logout with Bearer auth but no CSRF token → not CSRF-rejected.
     let req = Request::builder()
         .method("POST")
         .uri("/logout")
         .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+
+    assert_ne!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn t12_2_csrf_blocks_cookie_post_without_token() {
+    let (mut app, services) = build_app().await;
+    let (token, _csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+
+    // POST /logout with cookie auth (no Authorization header) and no CSRF
+    // token → 403.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/logout")
+        .header("cookie", format!("aionui-session={token}"))
         .body(Body::empty())
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();

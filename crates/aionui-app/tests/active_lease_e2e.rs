@@ -129,8 +129,12 @@ async fn conversation_active_lease_rejects_missing_auth() {
     assert_eq!(body["code"], "UNAUTHORIZED");
 }
 
+// Bearer requests carry no ambient credential a cross-site form could ride
+// on, so the CSRF middleware exempts them (remote-desktop clients depend on
+// this — see M4d, crates/aionui-auth/src/csrf.rs). Cookie-authenticated
+// requests still require the CSRF token pair.
 #[tokio::test]
-async fn conversation_active_lease_rejects_missing_csrf() {
+async fn conversation_active_lease_allows_bearer_without_csrf() {
     let (mut app, services) = build_app().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
     let conversation_id = create_conversation(&mut app, &token, &csrf).await;
@@ -142,6 +146,23 @@ async fn conversation_active_lease_rejects_missing_csrf() {
         ))
         .await
         .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn conversation_active_lease_requires_csrf_for_cookie_auth() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let conversation_id = create_conversation(&mut app, &token, &csrf).await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/conversations/{conversation_id}/active-lease"))
+        .header("cookie", format!("aionui-session={token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
 
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_json(resp).await;
@@ -230,8 +251,12 @@ async fn team_active_lease_rejects_missing_auth() {
     drop(token);
 }
 
+// Bearer requests carry no ambient credential a cross-site form could ride
+// on, so the CSRF middleware exempts them (remote-desktop clients depend on
+// this — see M4d, crates/aionui-auth/src/csrf.rs). Cookie-authenticated
+// requests still require the CSRF token pair.
 #[tokio::test]
-async fn team_active_lease_rejects_missing_csrf() {
+async fn team_active_lease_allows_bearer_without_csrf() {
     let (mut app, services) = build_app().await;
     let (token, _csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
     let owner = services.user_repo.find_by_username("admin").await.unwrap().unwrap();
@@ -244,6 +269,24 @@ async fn team_active_lease_rejects_missing_csrf() {
         ))
         .await
         .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn team_active_lease_requires_csrf_for_cookie_auth() {
+    let (mut app, services) = build_app().await;
+    let (token, _csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let owner = services.user_repo.find_by_username("admin").await.unwrap().unwrap();
+    insert_team(&services, &owner.id, "team-csrf-cookie", vec![]).await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/teams/team-csrf-cookie/active-lease")
+        .header("cookie", format!("aionui-session={token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
 
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = body_json(resp).await;

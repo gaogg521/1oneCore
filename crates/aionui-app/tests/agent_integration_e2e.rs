@@ -347,8 +347,9 @@ async fn agent_logos_endpoint_returns_backend_to_logo_catalog() {
     );
 
     // Aion CLI has no vendor `backend` (NULL); it must still be keyed by its
-    // agent_type ("aionrs") so aionrs conversations resolve a logo.
-    assert_eq!(logo_for("aionrs").as_deref(), Some("/api/assets/logos/brand/aion.svg"));
+    // agent_type ("aionrs") so aionrs conversations resolve a logo. Migration
+    // 021 rebranded the seeded icon from aion.svg to the 1ONE mascot.
+    assert_eq!(logo_for("aionrs").as_deref(), Some("/api/assets/logos/brand/1one.png"));
 
     // Every entry carries a non-empty backend + logo, and backends are unique.
     let mut seen = std::collections::HashSet::new();

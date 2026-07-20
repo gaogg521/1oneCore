@@ -1294,8 +1294,12 @@ async fn sm1c_team_owned_conversation_regular_send_is_forbidden() {
     assert_eq!(body["error"], "Forbidden.");
 }
 
+// Bearer requests carry no ambient credential a cross-site form could ride
+// on, so the CSRF middleware exempts them (remote-desktop clients depend on
+// this — see M4d, crates/aionui-auth/src/csrf.rs). Cookie-authenticated
+// requests still require the CSRF token pair.
 #[tokio::test]
-async fn sm1d_team_send_rejects_missing_csrf() {
+async fn sm1d_team_send_allows_bearer_without_csrf() {
     let (mut app, services) = build_app().await;
     let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
     let data = create_team(&mut app, &services, &token, &csrf).await;
@@ -1309,7 +1313,27 @@ async fn sm1d_team_send_rejects_missing_csrf() {
         .body(axum::body::Body::from(r#"{"content":"x"}"#))
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn sm1d_team_send_requires_csrf_for_cookie_auth() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let data = create_team(&mut app, &services, &token, &csrf).await;
+    let team_id = data["id"].as_str().unwrap();
+
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!("/api/teams/{team_id}/messages"))
+        .header("cookie", format!("aionui-session={token}"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(r#"{"content":"x"}"#))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = body_json(resp).await;
+    assert_eq!(body["code"], "CSRF_INVALID");
 }
 
 // SM-4: Send message without session returns 404
