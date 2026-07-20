@@ -63,8 +63,9 @@ one-sso = { path = "crates/one-sso" }
 one-devops = { path = "crates/one-devops" }
 one-enterprise = { path = "crates/one-enterprise" }
 
-# Pinned to fork gaogg521/aionrs (master) = upstream v0.2.5 + #230 + fork-only patches
-# (textualize tool replay, empty tool_call args, deferred schema promote, GLM guidance).
+# Pinned to fork gaogg521/aionrs (master) = upstream v0.2.6 + fork-only patches
+# (textualize tool replay, empty tool_call args, deferred schema promote, GLM
+# guidance, bounded output-truncation continuation).
 # Never switch to iOfficeAI/aionrs tag. Sync only upstream -> fork.
 aion-agent = { git = "https://github.com/gaogg521/aionrs.git", branch = "master" }
 aion-providers = { git = "https://github.com/gaogg521/aionrs.git", branch = "master" }

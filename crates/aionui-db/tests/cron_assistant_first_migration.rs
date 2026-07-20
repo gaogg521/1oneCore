@@ -267,15 +267,20 @@ async fn migration_016_clears_internal_aion_cli_overrides_only() {
     );
 }
 
+// Fork: upstream's standalone migration 19 (retired client-preference
+// cleanup) was merged into fork migration 022, alongside thought-level
+// defaults, when fork migrations 019-021 claimed those numbers first
+// (rename_aion_cli, fix_cursor_agent_cli_command, rebrand_aionrs_icon).
+// See 022_assistant_thought_level_defaults.sql.
 #[tokio::test]
-async fn migration_019_deletes_retired_runtime_client_preferences_only() {
+async fn migration_022_deletes_retired_runtime_client_preferences_only() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
         .await
         .unwrap();
 
-    run_migrations_through(&pool, 18).await;
+    run_migrations_through(&pool, 21).await;
 
     for key in [
         "acp.config",
@@ -294,7 +299,7 @@ async fn migration_019_deletes_retired_runtime_client_preferences_only() {
             .unwrap();
     }
 
-    run_migration(&pool, 19).await;
+    run_migration(&pool, 22).await;
 
     let removed_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
@@ -323,15 +328,18 @@ async fn migration_019_deletes_retired_runtime_client_preferences_only() {
     );
 }
 
+// Fork: upstream's standalone migration 20 (codex ACP bridge cleanup) now
+// lives at fork migration 023 (023_update_codex_acp_package_scope.sql) —
+// same renumbering cause as migration 022 above.
 #[tokio::test]
-async fn migration_020_clears_legacy_codex_acp_bridge_without_fixed_id() {
+async fn migration_023_clears_legacy_codex_acp_bridge_without_fixed_id() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
         .await
         .unwrap();
 
-    run_migrations_through(&pool, 19).await;
+    run_migrations_through(&pool, 22).await;
 
     sqlx::query(
         "INSERT INTO agent_metadata (
@@ -348,7 +356,7 @@ async fn migration_020_clears_legacy_codex_acp_bridge_without_fixed_id() {
     .await
     .unwrap();
 
-    run_migration(&pool, 20).await;
+    run_migration(&pool, 23).await;
 
     let row = sqlx::query(
         "SELECT command, args, json_extract(agent_source_info, '$.bridge_binary') AS bridge_binary

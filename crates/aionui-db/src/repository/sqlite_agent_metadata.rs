@@ -644,15 +644,16 @@ mod tests {
     async fn seed_rows_populated_after_migrations() {
         let (repo, _db) = setup().await;
         let rows = repo.list_all().await.unwrap();
-        // 19 ACP vendors + 2 non-ACP builtins + 1 internal = 22.
-        assert_eq!(rows.len(), 22);
+        // 37 ACP vendors + 2 non-ACP builtins + 1 internal = 40.
+        assert_eq!(rows.len(), 40);
         assert!(
             rows.iter()
                 .any(|r| r.name == "Claude Code" && r.agent_source == "builtin")
         );
+        // Fork: migration 019 renames the internal CLI row to the 1ONE brand.
         assert!(
             rows.iter()
-                .any(|r| r.name == "Aion CLI" && r.agent_source == "internal")
+                .any(|r| r.name == "1ONE CLI" && r.agent_source == "internal")
         );
         // Nanobot and OpenClaw are builtin (not internal).
         assert!(rows.iter().any(|r| r.name == "Nanobot" && r.agent_source == "builtin"));
@@ -679,7 +680,11 @@ mod tests {
             .find(|r| r.name == "Pi" && r.backend.as_deref() == Some("pi") && r.agent_source == "builtin")
             .expect("seeded Pi ACP row");
         assert_eq!(pi.command.as_deref(), Some("npx"));
-        assert_eq!(pi.args.as_deref(), Some(r#"["-y","pi-acp@0.0.31"]"#));
+        assert_eq!(pi.args.as_deref(), Some(r#"["-y","pi-acp"]"#));
+        assert_eq!(
+            pi.agent_source_info.as_deref(),
+            Some(r#"{"binary_name":"pi","bridge_binary":"npx"}"#)
+        );
     }
 
     #[tokio::test]
@@ -760,7 +765,8 @@ mod tests {
             .iter()
             .find(|row| row.agent_type == "aionrs" && row.agent_source == "internal")
             .expect("seeded aion cli row");
-        assert_eq!(aionrs.icon.as_deref(), Some("/api/assets/logos/brand/aion.svg"));
+        // Fork: migration 021 rebrands the aionrs row icon to the 1ONE logo.
+        assert_eq!(aionrs.icon.as_deref(), Some("/api/assets/logos/brand/1one.png"));
         let aionrs_modes: serde_json::Value =
             serde_json::from_str(aionrs.available_modes.as_deref().expect("aionrs modes catalog")).unwrap();
         assert_eq!(aionrs_modes["current_mode_id"].as_str(), Some("default"));
@@ -802,7 +808,7 @@ mod tests {
         assert_eq!(codebuddy.command.as_deref(), Some("npx"));
         assert_eq!(
             codebuddy.args.as_deref(),
-            Some(r#"["-y","--package","@tencent-ai/codebuddy-code@2.97.0","codebuddy","--acp"]"#)
+            Some(r#"["-y","--package","@tencent-ai/codebuddy-code","codebuddy","--acp"]"#)
         );
         assert_eq!(
             codebuddy.agent_source_info.as_deref(),

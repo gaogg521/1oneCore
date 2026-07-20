@@ -65,16 +65,16 @@ async fn codex_yolo_id(pool: &sqlx::SqlitePool) -> String {
 async fn new_install_seeds_codex_yolo_id_as_agent_full_access() {
     let pool = memory_pool().await;
 
-    run_migrations_through(&pool, 21).await;
+    run_migrations_through(&pool, 26).await;
 
     assert_eq!(codex_yolo_id(&pool).await, "agent-full-access");
 }
 
 #[tokio::test]
-async fn migration_021_updates_only_builtin_codex_yolo_id() {
+async fn migration_026_updates_only_builtin_codex_yolo_id() {
     let pool = memory_pool().await;
 
-    run_migrations_through(&pool, 20).await;
+    run_migrations_through(&pool, 25).await;
     sqlx::query(
         "UPDATE agent_metadata
          SET yolo_id = 'full-access'
@@ -96,7 +96,7 @@ async fn migration_021_updates_only_builtin_codex_yolo_id() {
     .await
     .unwrap();
 
-    run_migration(&pool, 21).await;
+    run_migration(&pool, 26).await;
 
     assert_eq!(codex_yolo_id(&pool).await, "agent-full-access");
     let custom = sqlx::query("SELECT yolo_id FROM agent_metadata WHERE id = 'custom-codex'")
@@ -107,10 +107,10 @@ async fn migration_021_updates_only_builtin_codex_yolo_id() {
 }
 
 #[tokio::test]
-async fn migration_021_does_not_backfill_user_mode_fields() {
+async fn migration_026_does_not_backfill_user_mode_fields() {
     let pool = memory_pool().await;
 
-    run_migrations_through(&pool, 20).await;
+    run_migrations_through(&pool, 25).await;
     sqlx::query(
         "UPDATE agent_metadata
          SET yolo_id = 'full-access'
@@ -169,7 +169,7 @@ async fn migration_021_does_not_backfill_user_mode_fields() {
     .await
     .unwrap();
 
-    run_migration(&pool, 21).await;
+    run_migration(&pool, 26).await;
 
     let cron = sqlx::query("SELECT agent_config FROM cron_jobs WHERE id = 'cron_1'")
         .fetch_one(&pool)

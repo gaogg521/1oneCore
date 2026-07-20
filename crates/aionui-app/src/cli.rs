@@ -312,6 +312,8 @@ pub(crate) enum ConfigCommand {
     Capabilities,
     /// Print the current agent runtime context.
     Context,
+    /// Manage conversations.
+    Conversation(ConfigConversationArgs),
     /// Manage assistants and assistant-owned behavior.
     Assistants(ConfigAssistantsArgs),
     /// Manage 1One Work skills.
@@ -604,6 +606,17 @@ pub(crate) enum ConfigCronCurrentCommand {
 }
 
 #[derive(Args, Debug, Clone)]
+pub(crate) struct ConfigConversationArgs {
+    #[command(subcommand)]
+    pub command: ConfigConversationCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub(crate) enum ConfigConversationCommand {
+    Rename,
+}
+
+#[derive(Args, Debug, Clone)]
 pub(crate) struct PrepareManagedResourcesArgs {
     /// Bundle output root. Aioncore writes the managed resources under
     /// `<bundle-out>/{node,acp}/...` for packaging.
@@ -753,6 +766,7 @@ mod tests {
         let commands: &[&[&str]] = &[
             &["aioncore", "config", "capabilities"],
             &["aioncore", "config", "context"],
+            &["aioncore", "config", "conversation", "rename"],
             &["aioncore", "config", "assistants", "list"],
             &["aioncore", "config", "assistants", "get"],
             &["aioncore", "config", "assistants", "create"],
