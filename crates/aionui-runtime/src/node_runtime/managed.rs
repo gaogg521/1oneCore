@@ -20,6 +20,13 @@ use super::types::{
 };
 
 const MANAGED_NODE_VERSION: &str = "24.11.0";
+// Older macOS builds (e.g. Big Sur 11.x) ship a dyld that cannot load Mach-O
+// binaries linked with the "chained fixups" format Xcode has defaulted to
+// since late 2023 — recent Node majors built with that toolchain fail to
+// even exec (`node --version` never starts) on those systems. Pin macOS to
+// an older Node LTS built before that toolchain shift; Windows/Linux are
+// unaffected and stay on MANAGED_NODE_VERSION.
+const MACOS_MANAGED_NODE_VERSION: &str = "22.11.0";
 const MANAGED_NODE_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const MANAGED_NODE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 const MANAGED_NODE_DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -32,17 +39,18 @@ struct PlatformSpec {
     archive_ext: &'static str,
     runtime_key: &'static str,
     executable: &'static str,
+    node_version: &'static str,
 }
 
 impl PlatformSpec {
     fn directory_name(self) -> String {
-        format!("node-v{MANAGED_NODE_VERSION}-{}", self.folder_suffix)
+        format!("node-v{}-{}", self.node_version, self.folder_suffix)
     }
 
     fn official_download_url(self) -> String {
         format!(
             "https://nodejs.org/dist/v{version}/{name}.{ext}",
-            version = MANAGED_NODE_VERSION,
+            version = self.node_version,
             name = self.directory_name(),
             ext = self.archive_ext
         )
@@ -137,7 +145,7 @@ pub async fn install_and_validate_with_reporter(
     }
 
     info!(
-        version = MANAGED_NODE_VERSION,
+        version = spec.node_version,
         root = %runtime_root.display(),
         url = %spec.official_download_url(),
         "managed node runtime install started"
@@ -203,36 +211,42 @@ fn platform_spec() -> Result<PlatformSpec, NodeRuntimeError> {
             archive_ext: "tar.gz",
             runtime_key: "darwin-arm64",
             executable: "bin/node",
+            node_version: MACOS_MANAGED_NODE_VERSION,
         }),
         ("macos", "x86_64") => Ok(PlatformSpec {
             folder_suffix: "darwin-x64",
             archive_ext: "tar.gz",
             runtime_key: "darwin-x64",
             executable: "bin/node",
+            node_version: MACOS_MANAGED_NODE_VERSION,
         }),
         ("linux", "aarch64") => Ok(PlatformSpec {
             folder_suffix: "linux-arm64",
             archive_ext: "tar.gz",
             runtime_key: "linux-arm64",
             executable: "bin/node",
+            node_version: MANAGED_NODE_VERSION,
         }),
         ("linux", "x86_64") => Ok(PlatformSpec {
             folder_suffix: "linux-x64",
             archive_ext: "tar.gz",
             runtime_key: "linux-x64",
             executable: "bin/node",
+            node_version: MANAGED_NODE_VERSION,
         }),
         ("windows", "x86_64") => Ok(PlatformSpec {
             folder_suffix: "win-x64",
             archive_ext: "zip",
             runtime_key: "win32-x64",
             executable: "node.exe",
+            node_version: MANAGED_NODE_VERSION,
         }),
         ("windows", "aarch64") => Ok(PlatformSpec {
             folder_suffix: "win-arm64",
             archive_ext: "zip",
             runtime_key: "win32-arm64",
             executable: "node.exe",
+            node_version: MANAGED_NODE_VERSION,
         }),
         (os, arch) => Err(NodeRuntimeError::unsupported_platform(format!(
             "managed node runtime unsupported on {os}/{arch}"
@@ -265,7 +279,7 @@ fn managed_node_contract_for_export_with_spec(
         )));
     }
     Ok(ManagedNodeResourceContract {
-        version: MANAGED_NODE_VERSION.into(),
+        version: spec.node_version.into(),
         root,
         executable: spec.executable.into(),
     })
@@ -534,7 +548,7 @@ async fn install_archive(
     );
 
     info!(
-        version = MANAGED_NODE_VERSION,
+        version = spec.node_version,
         platform = spec.folder_suffix,
         source = download_source.source,
         url = %url,

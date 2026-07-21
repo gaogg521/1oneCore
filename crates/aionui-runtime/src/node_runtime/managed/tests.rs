@@ -117,12 +117,13 @@ fn managed_runtime_official_source_uses_nodejs_org() {
         archive_ext: "tar.gz",
         runtime_key: "darwin-arm64",
         executable: "bin/node",
+        node_version: "22.11.0",
     });
 
     assert_eq!(source.source, "nodejs.org");
     assert_eq!(
         source.url,
-        "https://nodejs.org/dist/v24.11.0/node-v24.11.0-darwin-arm64.tar.gz"
+        "https://nodejs.org/dist/v22.11.0/node-v22.11.0-darwin-arm64.tar.gz"
     );
     assert_eq!(source.sha256, None);
 }
@@ -131,7 +132,7 @@ fn managed_runtime_official_source_uses_nodejs_org() {
 fn managed_node_contract_uses_runtime_key_and_exported_root() {
     let tmp = tempfile::tempdir().unwrap();
     let bundle_root = tmp.path().join("managed-resources");
-    let exported = bundle_root.join("node").join("node-v24.11.0-darwin-arm64");
+    let exported = bundle_root.join("node").join("node-v22.11.0-darwin-arm64");
     std::fs::create_dir_all(exported.join("bin")).unwrap();
     write_file(&exported.join("bin").join("node"));
 
@@ -140,12 +141,13 @@ fn managed_node_contract_uses_runtime_key_and_exported_root() {
         archive_ext: "tar.gz",
         runtime_key: "darwin-arm64",
         executable: "bin/node",
+        node_version: "22.11.0",
     };
 
     let contract = managed_node_contract_for_export_with_spec(&bundle_root, &exported, spec).expect("contract");
 
-    assert_eq!(contract.version, "24.11.0");
-    assert_eq!(contract.root, "node/node-v24.11.0-darwin-arm64");
+    assert_eq!(contract.version, "22.11.0");
+    assert_eq!(contract.root, "node/node-v22.11.0-darwin-arm64");
     assert_eq!(contract.executable, "bin/node");
 }
 
@@ -208,12 +210,12 @@ async fn bundled_runtime_validation_failure_does_not_fallback_to_remote_download
         return;
     }
     let bundled_root = std::path::PathBuf::from(std::env::var_os("AIONUI_BUNDLED_MANAGED_RESOURCES").unwrap());
-    let runtime_root = bundled_root.join("node").join("node-v24.11.0-darwin-arm64");
+    let runtime_root = bundled_root.join("node").join("node-v22.11.0-darwin-arm64");
     let bin = runtime_root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
 
     let node = bin.join("node");
-    std::fs::write(&node, "#!/bin/sh\necho v24.11.0\n").unwrap();
+    std::fs::write(&node, "#!/bin/sh\necho v22.11.0\n").unwrap();
     let npm = bin.join("npm");
     std::fs::write(&npm, "#!/bin/sh\nexit 1\n").unwrap();
     let npx = bin.join("npx");
@@ -239,6 +241,7 @@ async fn bundled_runtime_validation_failure_does_not_fallback_to_remote_download
             archive_ext: "tar.gz",
             runtime_key: "darwin-arm64",
             executable: "bin/node",
+            node_version: "22.11.0",
         },
         None,
     )
