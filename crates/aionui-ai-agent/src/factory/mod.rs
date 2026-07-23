@@ -8,7 +8,9 @@ mod context;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aionui_db::{IClaudeBridgeConfigRepository, ICodexBridgeConfigRepository, IMcpServerRepository, IProviderRepository};
+use aionui_db::{
+    IClaudeBridgeConfigRepository, ICodexBridgeConfigRepository, IMcpServerRepository, IProviderRepository,
+};
 use aionui_realtime::EventBroadcaster;
 use futures_util::FutureExt;
 

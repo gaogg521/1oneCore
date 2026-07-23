@@ -193,7 +193,11 @@ fn initial_mode_from_build_context(
         .filter(|mode| !mode.is_empty())
 }
 
-fn apply_codex_runtime_config(codex_config: &mut Map<String, Value>, metadata: &AgentMetadata, initial_mode: Option<&str>) {
+fn apply_codex_runtime_config(
+    codex_config: &mut Map<String, Value>,
+    metadata: &AgentMetadata,
+    initial_mode: Option<&str>,
+) {
     if metadata.backend.as_deref() != Some("codex") {
         return;
     }
@@ -502,7 +506,10 @@ mod tests {
             codex_config["model_providers"]["onework_bridge"]["base_url"],
             json!("http://127.0.0.1:49152/v1")
         );
-        assert_eq!(codex_config["model_providers"]["onework_bridge"]["wire_api"], json!("responses"));
+        assert_eq!(
+            codex_config["model_providers"]["onework_bridge"]["wire_api"],
+            json!("responses")
+        );
         assert_eq!(
             codex_config["model_providers"]["onework_bridge"]["env_key"],
             json!(CODEX_BRIDGE_TOKEN_ENV_KEY)
@@ -653,7 +660,10 @@ mod tests {
         );
 
         assert_eq!(command_spec.args, vec!["codex-acp.js"]);
-        assert_eq!(codex_model_provider_env_value(&command_spec).as_deref(), Some("onework_bridge"));
+        assert_eq!(
+            codex_model_provider_env_value(&command_spec).as_deref(),
+            Some("onework_bridge")
+        );
         let codex_config = codex_config_env_value(&command_spec);
         assert_eq!(codex_config["model"], json!("kimi-k3"));
         assert_eq!(codex_config["sandbox_mode"], json!("workspace-write"));
@@ -699,7 +709,10 @@ mod tests {
         };
         let metadata = agent_metadata_with_backend(Some("claude"));
         let mut bridge_env = HashMap::new();
-        bridge_env.insert("ANTHROPIC_BASE_URL".to_owned(), "https://litellm-internal.123u.com".to_owned());
+        bridge_env.insert(
+            "ANTHROPIC_BASE_URL".to_owned(),
+            "https://litellm-internal.123u.com".to_owned(),
+        );
         bridge_env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "sk-test-token".to_owned());
         bridge_env.insert("ANTHROPIC_MODEL".to_owned(), "glm-5-2".to_owned());
 

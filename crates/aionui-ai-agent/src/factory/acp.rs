@@ -26,11 +26,50 @@ use crate::runtime_status::{conversation_acp_tool_runtime_reporter, conversation
 const CLAUDE_BRIDGE_BASE_URL_ENV_KEY: &str = "ANTHROPIC_BASE_URL";
 const CLAUDE_BRIDGE_AUTH_TOKEN_ENV_KEY: &str = "ANTHROPIC_AUTH_TOKEN";
 const CLAUDE_BRIDGE_MODEL_ENV_KEY: &str = "ANTHROPIC_MODEL";
+/// The bundled `@agentclientprotocol/claude-agent-acp` wrapper hardcodes
+/// `settingSources: ["user", "project", "local"]` when it constructs the
+/// real Claude Agent SDK session (confirmed by reading its own shipped
+/// `acp-agent.js`) — meaning it always loads the operator's real
+/// `~/.claude/settings.json`. That file commonly carries its own
+/// `env.ANTHROPIC_MODEL`/`model` (from the pre-existing `cc_switch`-style
+/// manual setup most users already have) and — verified empirically by
+/// injecting a deliberately-invalid bridge model and observing the
+/// session's own reasoning name the real settings.json model instead —
+/// **wins over** whatever we inject via `command_spec.env`. The SDK does
+/// expose a documented `CLAUDE_CONFIG_DIR` env var to relocate where
+/// `~/.claude` is read from; pointing it at an app-private, real-settings
+/// free directory is the only way (short of patching the wrapper) to make
+/// our injected env vars authoritative instead of silently overridden.
+const CLAUDE_BRIDGE_CONFIG_DIR_ENV_KEY: &str = "CLAUDE_CONFIG_DIR";
+
+/// `CLAUDE_CONFIG_DIR` only isolates the settings.json *file*. The real
+/// Anthropic SDK also honors `ANTHROPIC_DEFAULT_HAIKU_MODEL` /
+/// `_SONNET_MODEL` / `_OPUS_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` as plain
+/// process environment variables (confirmed present in the shipped SDK's own
+/// string table), independent of any settings file. On this machine these
+/// happen to already be ambient in the backend process's own environment
+/// (inherited from the operator's real Claude Code setup one layer up the
+/// process tree) and `aionui_runtime::agent_process_env()` does not strip
+/// them, so they flow straight into the spawned `claude-agent-acp` child on
+/// top of our injected `ANTHROPIC_MODEL` — confirmed empirically: a bridge
+/// session's own bootstrap `/model haiku` resolved to the operator's real
+/// settings.json alias (`ANTHROPIC_DEFAULT_HAIKU_MODEL`) even with
+/// `CLAUDE_CONFIG_DIR` isolation in place. Pin all of these to the bridge's
+/// own configured model so no alias tier can resolve to anything else.
+const CLAUDE_BRIDGE_MODEL_ALIAS_OVERRIDE_ENV_KEYS: [&str; 4] = [
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+];
 
 /// Resolve the Claude Code custom-provider bridge into the env vars Claude
 /// Code (and the real Anthropic SDK it embeds) reads directly —
-/// `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_MODEL`. Unlike the
-/// Codex bridge this needs no local proxy: Claude Code already speaks the
+/// `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_MODEL`, plus
+/// `CLAUDE_CONFIG_DIR` pointed at an isolated directory so the operator's
+/// real `~/.claude/settings.json` can't silently override them (see
+/// `CLAUDE_BRIDGE_CONFIG_DIR_ENV_KEY`'s doc comment). Unlike the Codex
+/// bridge this needs no local proxy: Claude Code already speaks the
 /// Anthropic Messages protocol, so the saved provider's real base_url/API
 /// key are used as-is. Returns `None` for non-Claude agents, when the
 /// bridge is disabled/unconfigured, or when the saved provider can no
@@ -44,13 +83,10 @@ async fn resolve_claude_bridge_env(
         return None;
     }
     let repo = deps.claude_bridge_config_repo.as_ref()?;
-    let config = repo
-        .get()
-        .await
-        .unwrap_or_else(|error| {
-            warn!(error = %error, "claude-bridge: config lookup failed; falling back to cc-switch");
-            None
-        })?;
+    let config = repo.get().await.unwrap_or_else(|error| {
+        warn!(error = %error, "claude-bridge: config lookup failed; falling back to cc-switch");
+        None
+    })?;
     if !config.enabled {
         return None;
     }
@@ -59,7 +95,10 @@ async fn resolve_claude_bridge_env(
     let row = match deps.provider_repo.find_by_id(provider_id).await {
         Ok(Some(row)) => row,
         Ok(None) => {
-            warn!(provider_id, "claude-bridge: saved provider not found; falling back to cc-switch");
+            warn!(
+                provider_id,
+                "claude-bridge: saved provider not found; falling back to cc-switch"
+            );
             return None;
         }
         Err(error) => {
@@ -75,11 +114,28 @@ async fn resolve_claude_bridge_env(
         }
     };
 
+    let config_dir = deps.data_dir.join("claude-bridge-isolated-home");
+    if let Err(error) = std::fs::create_dir_all(&config_dir) {
+        warn!(
+            error = %error,
+            path = %config_dir.display(),
+            "claude-bridge: failed to create isolated CLAUDE_CONFIG_DIR; the operator's real \
+             ~/.claude/settings.json may override this bridge's env vars"
+        );
+    }
+
     let base_url = row.base_url.trim_end_matches('/').to_owned();
-    let mut env = HashMap::with_capacity(3);
+    let mut env = HashMap::with_capacity(4 + CLAUDE_BRIDGE_MODEL_ALIAS_OVERRIDE_ENV_KEYS.len());
     env.insert(CLAUDE_BRIDGE_BASE_URL_ENV_KEY.to_owned(), base_url);
     env.insert(CLAUDE_BRIDGE_AUTH_TOKEN_ENV_KEY.to_owned(), api_key);
     env.insert(CLAUDE_BRIDGE_MODEL_ENV_KEY.to_owned(), model.to_owned());
+    env.insert(
+        CLAUDE_BRIDGE_CONFIG_DIR_ENV_KEY.to_owned(),
+        config_dir.to_string_lossy().into_owned(),
+    );
+    for key in CLAUDE_BRIDGE_MODEL_ALIAS_OVERRIDE_ENV_KEYS {
+        env.insert(key.to_owned(), model.to_owned());
+    }
     info!(provider_id, model, "claude-bridge: provider env resolved");
     Some(env)
 }
