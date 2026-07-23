@@ -124,7 +124,9 @@ fn json_array_candidates(reply: &str) -> Vec<&str> {
     while i < bytes.len() {
         // `[` and `]` are ASCII, so these byte indices are char boundaries even
         // when the span contains multibyte UTF-8.
-        if bytes[i] == b'[' && let Some(end) = balanced_array_end(bytes, i) {
+        if bytes[i] == b'['
+            && let Some(end) = balanced_array_end(bytes, i)
+        {
             candidates.push(&reply[i..=end]);
             i = end + 1;
             continue;

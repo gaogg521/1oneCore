@@ -10,18 +10,43 @@ use aionui_api_types::ErrorResponse;
 pub enum EnterpriseError {
     #[error("Internal error: {0}")]
     Internal(String),
+    #[error("{0}")]
+    Forbidden(String),
+    #[error("Company name is required")]
+    NameRequired,
+    #[error("This server already hosts a company")]
+    CompanyExists,
+    #[error("No company has been set up on this server")]
+    CompanyNotFound,
+    #[error("User is not a member of this company")]
+    MemberNotFound,
+    #[error("Invalid role: {0}")]
+    InvalidRole(String),
+    #[error("Cannot remove the last company administrator")]
+    LastCompanyAdmin,
 }
 
 impl EnterpriseError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Internal(_) => "INTERNAL_ERROR",
+            Self::Forbidden(_) => "FORBIDDEN",
+            Self::NameRequired => "COMPANY_NAME_REQUIRED",
+            Self::CompanyExists => "COMPANY_ALREADY_EXISTS",
+            Self::CompanyNotFound => "COMPANY_NOT_FOUND",
+            Self::MemberNotFound => "COMPANY_MEMBER_NOT_FOUND",
+            Self::InvalidRole(_) => "INVALID_ROLE",
+            Self::LastCompanyAdmin => "LAST_COMPANY_ADMIN",
         }
     }
 
     fn status(&self) -> StatusCode {
         match self {
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Forbidden(_) => StatusCode::FORBIDDEN,
+            Self::NameRequired | Self::InvalidRole(_) => StatusCode::BAD_REQUEST,
+            Self::CompanyExists | Self::LastCompanyAdmin => StatusCode::CONFLICT,
+            Self::CompanyNotFound | Self::MemberNotFound => StatusCode::NOT_FOUND,
         }
     }
 }

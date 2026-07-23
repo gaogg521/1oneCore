@@ -666,6 +666,100 @@ fn team_mcp_to_config(cfg: &TeamMcpStdioConfig) -> HashMap<String, McpServerConf
     HashMap::from([(TEAM_MCP_SERVER_NAME.to_owned(), server)])
 }
 
+/// Shared `aion_config::config::Config` construction: builds a `Config` via
+/// `CliArgs -> Config::resolve()` (the resolver merges in profile defaults
+/// and env auth fallbacks), then re-applies AionUi's own invariants — no
+/// leaked `max_tokens`, per-provider default transport limits, and the
+/// caller-supplied [`AionrsCompatOverrides`]/bedrock config. Used by both
+/// [`crate::manager::aionrs::AionrsAgentManager::new`] (full session/
+/// tool-loop) and [`resolve_provider_config_for_bridge`] (one-shot calls for
+/// the Codex compatibility bridge) so the two paths cannot drift apart.
+pub(crate) fn build_aionrs_config(
+    cli_args: &aion_config::config::CliArgs,
+    compat_overrides: AionrsCompatOverrides,
+    bedrock: Option<aion_config::config::BedrockConfig>,
+) -> Result<aion_config::config::Config, AgentError> {
+    let mut config = aion_config::config::Config::resolve(cli_args)
+        .map_err(|e| AgentError::internal(format!("Config resolve failed: {e}")))?;
+
+    // AionUi owns the embedded runtime policy. Standalone aionrs max-token
+    // settings must not leak in from global or workspace config files.
+    config.max_tokens = None;
+    let default_transport = match config.provider {
+        aion_config::config::ProviderType::Anthropic | aion_config::config::ProviderType::Vertex => {
+            aion_config::compat::ProviderCompat::anthropic_defaults().transport
+        }
+        aion_config::config::ProviderType::OpenAI => aion_config::compat::ProviderCompat::openai_defaults().transport,
+        aion_config::config::ProviderType::Bedrock => aion_config::compat::ProviderCompat::bedrock_defaults().transport,
+    };
+    config.compat.transport.default_max_tokens = default_transport.default_max_tokens;
+    config.compat.transport.model_max_tokens = default_transport.model_max_tokens;
+
+    config.bedrock = bedrock;
+    if let Some(mode) = compat_overrides.openai_api_mode {
+        config.compat.transport.openai_api_mode = Some(mode);
+    }
+    if let Some(field) = compat_overrides.max_tokens_field {
+        config.compat.transport.max_tokens_field = Some(field);
+    }
+    if let Some(path) = compat_overrides.api_path {
+        config.compat.transport.api_path = Some(path);
+    }
+
+    Ok(config)
+}
+
+/// Resolve a saved [`aionui_db::models::Provider`] row + explicit model into
+/// an aion-providers `Config`, for one-shot LLM calls outside the full
+/// agent/session/tool-loop — used by the Codex compatibility bridge so an
+/// external CLI that only speaks the OpenAI Responses wire format can still
+/// reach the user's configured provider through AionUi's own hardened
+/// transport/compat layer. Mirrors [`build`]'s provider/compat resolution
+/// without the session/MCP/skills wiring that path also needs.
+pub async fn resolve_provider_config_for_bridge(
+    provider_repo: &dyn aionui_db::IProviderRepository,
+    encryption_key: &[u8],
+    provider_id: &str,
+    model_id: &str,
+) -> Result<aion_config::config::Config, AgentError> {
+    let row = provider_repo
+        .find_by_id(provider_id)
+        .await
+        .map_err(|e| AgentError::internal(format!("Failed to load provider config: {e}")))?
+        .ok_or_else(|| AgentError::provider_not_found(provider_id.to_owned()))?;
+
+    let api_key = aionui_common::decrypt_string(&row.api_key_encrypted, encryption_key)
+        .map_err(|e| AgentError::internal(e.to_string()))?;
+
+    let provider = map_aionrs_provider(&row.platform, model_id, row.model_protocols.as_deref())?;
+    let (base_url, compat_overrides) =
+        resolve_aionrs_url_and_compat(&row.platform, &row.base_url, &provider, model_id, row.is_full_url);
+    let bedrock = if row.platform == "bedrock" {
+        resolve_bedrock_config(row.bedrock_config.as_deref())
+    } else {
+        None
+    };
+
+    let cli_args = aion_config::config::CliArgs {
+        provider: Some(provider),
+        api_key: Some(api_key),
+        base_url,
+        model: Some(model_id.to_owned()),
+        max_tokens: None,
+        max_turns: None,
+        max_tool_call_malformed_turns: None,
+        max_tool_call_failure_turns: None,
+        system_prompt: None,
+        profile: None,
+        auto_approve: false,
+        thinking: None,
+        thinking_budget: None,
+        project_dir: None,
+    };
+
+    build_aionrs_config(&cli_args, compat_overrides, bedrock)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

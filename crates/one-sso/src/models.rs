@@ -55,7 +55,6 @@ pub struct SsoIdentityRow {
     pub created_at: i64,
 }
 
-
 /// Public provider status (returned to the login page so it can show which
 /// SSO buttons to render). Secrets are stripped.
 #[derive(Debug, Clone, Serialize)]

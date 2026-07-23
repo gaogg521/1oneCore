@@ -43,6 +43,17 @@ impl FromRequestParts<OneSsoRouterState> for RequireSsoAdmin {
             .get::<CurrentUser>()
             .cloned()
             .ok_or_else(|| SsoError::Forbidden("Authentication required".into()))?;
+        // Direction B: SSO config (企业认证) is a company-level policy, so a
+        // company administrator may manage it. Accept them first when the bridge
+        // is wired.
+        if let Some(check) = state.company_admin_check.as_ref() {
+            if check.is_company_admin(&user.id).await {
+                return Ok(Self { user_id: user.id });
+            }
+        }
+        // Fallback: the project-group system_admin / org_admin (this also keeps
+        // `system_default_user → system_admin` working for local / personal SSO
+        // config, so standalone behaviour is unchanged).
         let role = state.service.effective_role(&user.id).await?;
         if !is_admin_role(&role) {
             return Err(SsoError::Forbidden("Administrator role required".into()));

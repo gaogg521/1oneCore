@@ -1370,14 +1370,15 @@ impl ConversationService {
                 "auto" => preference.as_ref().and_then(|row| row.last_model_id.clone()),
                 _ => None,
             });
-        let mut permission = overrides
-            .permission
-            .clone()
-            .or_else(|| match definition.default_permission_mode.as_str() {
-                "fixed" => definition.default_permission_value.clone(),
-                "auto" => preference.as_ref().and_then(|row| row.last_permission_value.clone()),
-                _ => None,
-            });
+        let mut permission =
+            overrides
+                .permission
+                .clone()
+                .or_else(|| match definition.default_permission_mode.as_str() {
+                    "fixed" => definition.default_permission_value.clone(),
+                    "auto" => preference.as_ref().and_then(|row| row.last_permission_value.clone()),
+                    _ => None,
+                });
         let thought_level =
             overrides
                 .thought_level

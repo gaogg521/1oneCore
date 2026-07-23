@@ -52,6 +52,13 @@ pub(super) async fn build(
 
     let mut command_spec =
         resolve_agent_command_spec(&meta, &ctx.workspace, &ctx.conversation_id, deps.broadcaster.clone()).await?;
+    let codex_bridge_config = match deps.codex_bridge_config_repo.as_ref() {
+        Some(repo) => repo.get().await.unwrap_or_else(|error| {
+            warn!(error = %error, "codex-bridge: config lookup failed; launching Codex without it");
+            None
+        }),
+        None => None,
+    };
     apply_acp_launch_policy(
         &mut command_spec,
         AcpLaunchPolicyInput {
@@ -59,6 +66,8 @@ pub(super) async fn build(
             config: &config,
             session_snapshot: build_context.session_snapshot.as_ref(),
             runtime_env: &ctx.runtime_env,
+            codex_bridge_config: codex_bridge_config.as_ref(),
+            local_base_url: &deps.local_base_url,
         },
     );
     let session_snapshot = build_context.session_snapshot;

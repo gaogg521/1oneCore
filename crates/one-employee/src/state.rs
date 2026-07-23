@@ -15,7 +15,10 @@ pub struct OneEmployeeRouterState {
 
 impl OneEmployeeRouterState {
     pub fn new(service: Arc<EmployeeService>) -> Self {
-        Self { service, tenant_resolver: None }
+        Self {
+            service,
+            tenant_resolver: None,
+        }
     }
 
     /// Wire the tenant resolver so employees can be shared within a tenant.

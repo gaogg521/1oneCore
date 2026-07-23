@@ -539,8 +539,7 @@ mod tests {
     #[tokio::test]
     async fn list_surfaces_undecryptable_provider_rows_as_unrecoverable() {
         let db = init_database_memory().await.unwrap();
-        let repo: Arc<dyn aionui_db::IProviderRepository> =
-            Arc::new(SqliteProviderRepository::new(db.pool().clone()));
+        let repo: Arc<dyn aionui_db::IProviderRepository> = Arc::new(SqliteProviderRepository::new(db.pool().clone()));
         std::mem::forget(db);
         let svc = ProviderService::new(Arc::clone(&repo), TEST_KEY);
         let foreign_key_svc = ProviderService::new(repo, [0x99u8; 32]);

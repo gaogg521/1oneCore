@@ -161,6 +161,9 @@ impl AppServices {
         // so the agent gets the operator's tools (ELECTRON-1JG fix).
         let mcp_server_repo: Arc<dyn IMcpServerRepository> =
             Arc::new(SqliteMcpServerRepository::new(database.pool().clone()));
+        let codex_bridge_config_repo: Arc<dyn aionui_db::ICodexBridgeConfigRepository> = Arc::new(
+            aionui_db::SqliteCodexBridgeConfigRepository::new(database.pool().clone()),
+        );
 
         let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> =
             Arc::new(SqliteAgentMetadataRepository::new(database.pool().clone()));
@@ -210,6 +213,8 @@ impl AppServices {
             broadcaster: event_bus.clone(),
             backend_binary_path: backend_binary_path.clone(),
             mcp_server_repo: Some(mcp_server_repo),
+            codex_bridge_config_repo: Some(codex_bridge_config_repo),
+            local_base_url: runtime_base_url.clone(),
         });
 
         // Agent factory is now wired. Future extension/custom agents

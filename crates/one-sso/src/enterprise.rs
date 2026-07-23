@@ -12,6 +12,19 @@
 
 use async_trait::async_trait;
 
+/// Cross-tier check: is a user a company (真实企业) administrator? Wired by the
+/// app layer over `one_enterprise::EnterpriseService::is_company_admin`.
+///
+/// SSO provider config (企业认证) is a company-level policy in Direction B, so
+/// `RequireSsoAdmin` accepts a company admin. Kept as a trait because one-sso
+/// and one-enterprise are same-layer domain crates (no direct dependency). When
+/// unwired (personal edition), the check is unavailable and gating falls back to
+/// the project-group `one_user_org` role — the standalone behaviour is unchanged.
+#[async_trait]
+pub trait CompanyAdminCheck: Send + Sync {
+    async fn is_company_admin(&self, user_id: &str) -> bool;
+}
+
 #[async_trait]
 pub trait EnterpriseSync: Send + Sync {
     /// Called after a successful SSO login that carried a company identifier

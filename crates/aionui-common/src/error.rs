@@ -244,6 +244,23 @@ pub fn validate_workspace_path_availability(workspace: &str) -> Result<String, W
         return Err(WorkspacePathValidationError::Empty);
     }
 
+    // Windows silently strips trailing spaces/tabs/dots from a path component at
+    // every Win32 boundary (creation AND `fs::metadata`), so a requested path
+    // whose final component ends in one can never be stored as typed — it always
+    // resolves to the stripped path instead. `fs::metadata` below would then
+    // report the stripped directory as "available", masking the mismatch. Reject
+    // it up front so behaviour matches Unix, where such a path literally does not
+    // exist. (`.`/`..` are relative dir refs, not names with a stray trailing
+    // dot, so they are exempt.)
+    #[cfg(windows)]
+    {
+        let without_seps = workspace.trim_end_matches(['/', '\\']);
+        let final_segment = without_seps.rsplit(['/', '\\']).next().unwrap_or(without_seps);
+        if final_segment != "." && final_segment != ".." && final_segment.ends_with([' ', '\t', '.']) {
+            return Err(WorkspacePathValidationError::DoesNotExist(workspace.to_owned()));
+        }
+    }
+
     let path = Path::new(workspace);
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_dir() => Ok(workspace.to_owned()),

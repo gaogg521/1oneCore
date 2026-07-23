@@ -1469,6 +1469,11 @@ async fn create_rejects_unavailable_workspace_with_trailing_whitespace_in_reques
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// A directory whose name literally ends in whitespace cannot exist on Windows
+// (Win32 strips the trailing space at creation), so this scenario — and the
+// "accept the as-typed path" expectation — is Unix-only. On Windows such a
+// request is correctly rejected by `validate_workspace_path_availability`.
+#[cfg(not(windows))]
 #[tokio::test]
 async fn create_accepts_existing_workspace_with_trailing_whitespace_in_name() {
     let (svc, _broadcaster, _repo, _task_mgr) = make_service();
@@ -4270,14 +4275,9 @@ async fn create_defaults_aionrs_session_mode_to_yolo_for_never_used_auto_assista
         .unwrap();
     // No preference row at all — this assistant has never been used before.
 
-    let conv = create_assistant_backed_conversation(
-        &svc,
-        "user_1",
-        Some("aionrs"),
-        "aionrs",
-        "assistant-aionrs-never-used",
-    )
-    .await;
+    let conv =
+        create_assistant_backed_conversation(&svc, "user_1", Some("aionrs"), "aionrs", "assistant-aionrs-never-used")
+            .await;
 
     assert_eq!(conv.extra["session_mode"], json!("yolo"));
 }

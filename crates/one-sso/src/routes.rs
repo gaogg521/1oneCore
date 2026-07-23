@@ -235,6 +235,24 @@ async fn callback(
     let job_title = profile.job_title.clone();
     let (user_id, username, _created) = state.service.resolve_or_provision_user(provider, profile).await?;
 
+    // Diagnostic: whether the IdP returned a company identifier (Feishu
+    // `tenant_key`). When it's absent, `sync_member` no-ops, so the enterprise
+    // -org identity is never created and `/api/one/enterprise/me` returns null
+    // — the user is SSO-authenticated but has no company binding. Logged at info
+    // (no sensitive value, just presence) so a "why is my 企业身份 empty" report
+    // is diagnosable straight from production logs.
+    tracing::info!(
+        user_id = %user_id,
+        provider = provider.as_str(),
+        has_company_id = org_external_id.is_some(),
+        "SSO login: enterprise-company binding {}",
+        if org_external_id.is_some() {
+            "captured"
+        } else {
+            "absent (IdP returned no company id)"
+        }
+    );
+
     // Enterprise-org dimension: reflect the user's real SSO company + their
     // name / department / job title into the one-enterprise domain. Purely
     // additive and best-effort — it never touches project-group tenants and

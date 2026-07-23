@@ -23,6 +23,7 @@ use aionui_auth::{
 use aionui_channel::channel_routes;
 #[cfg(feature = "weixin")]
 use aionui_channel::weixin_login_route;
+use aionui_codex_bridge::{codex_bridge_config_routes, codex_bridge_public_routes};
 use aionui_common::ApiErrorLogContext;
 use aionui_conversation::{conversation_ops_routes, conversation_routes};
 use aionui_cron::cron_routes;
@@ -79,6 +80,34 @@ impl one_sso::EnterpriseSync for EnterpriseSyncAdapter {
         {
             tracing::warn!(%error, user_id, provider, "enterprise-org sync failed; login continues");
         }
+    }
+}
+
+/// Adapts one-enterprise's `EnterpriseService::is_company_admin_of` to the
+/// `one_org::CompanyAdminResolver` trait (Direction B), so a company admin can
+/// create/list the project groups their company owns without one-org depending
+/// on one-enterprise. Resolution errors deny (fail closed).
+struct CompanyAdminResolverAdapter(std::sync::Arc<one_enterprise::EnterpriseService>);
+
+#[async_trait::async_trait]
+impl one_org::CompanyAdminResolver for CompanyAdminResolverAdapter {
+    async fn is_company_admin(&self, user_id: &str, enterprise_id: &str) -> bool {
+        self.0
+            .is_company_admin_of(user_id, enterprise_id)
+            .await
+            .unwrap_or(false)
+    }
+}
+
+/// Adapts one-enterprise's `EnterpriseService::is_company_admin` to the
+/// `one_sso::CompanyAdminCheck` trait, so a company admin may manage the
+/// company-level SSO config (企业认证). Errors deny (fail closed).
+struct CompanyAdminCheckAdapter(std::sync::Arc<one_enterprise::EnterpriseService>);
+
+#[async_trait::async_trait]
+impl one_sso::CompanyAdminCheck for CompanyAdminCheckAdapter {
+    async fn is_company_admin(&self, user_id: &str) -> bool {
+        self.0.is_company_admin(user_id).await.unwrap_or(false)
     }
 }
 
@@ -300,6 +329,15 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let assistant_authenticated =
         assistant_routes(states.assistant).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // Codex-bridge *settings* routes (which saved provider/model it forwards
+    // to) are app-facing config, protected like any other authenticated
+    // route. The bridge's own `/v1/responses` surface is registered
+    // separately below, unauthenticated at the session-cookie layer — Codex
+    // is an external process with no browser session, and gates itself with
+    // its own bearer token instead (see `aionui-codex-bridge::routes`).
+    let codex_bridge_config_authenticated = codex_bridge_config_routes(states.codex_bridge.clone())
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // one-org enterprise routes (/api/one/*) — RBAC extractors depend on the
     // upstream auth middleware injecting CurrentUser.
     let one_org_service = std::sync::Arc::new(one_org::OrgService::new(
@@ -307,11 +345,19 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         services.user_repo.clone(),
         services.data_dir.clone(),
     ));
+    // one-enterprise service (真实企业 / company tier) — constructed here so its
+    // company-admin bridges can be wired into one-org and one-sso below.
+    let one_enterprise_service =
+        std::sync::Arc::new(one_enterprise::EnterpriseService::new(services.database.pool().clone()));
     // Tenant resolver shared by one-employee + one-devops for team-shared
     // employees (A1 L3).
     let tenant_resolver: std::sync::Arc<dyn one_employee::TenantResolver> =
         std::sync::Arc::new(OrgTenantResolver(one_org_service.clone()));
-    let one_org_state = one_org::OneOrgRouterState::new(one_org_service.clone());
+    // Direction B: let a company admin create/list the project groups their
+    // company owns (system_admin still governs everything as before).
+    let one_org_state = one_org::OneOrgRouterState::new(one_org_service.clone()).with_company_admin_resolver(
+        std::sync::Arc::new(CompanyAdminResolverAdapter(one_enterprise_service.clone())),
+    );
     let one_org_authenticated =
         one_org::one_org_routes(one_org_state).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -337,10 +383,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // one-enterprise routes (/api/one/enterprise/*) — the SSO-company
-    // "enterprise org" dimension, independent of one-org's invite-code project
-    // groups. Any authenticated user reads their own identity.
-    let one_enterprise_service =
-        std::sync::Arc::new(one_enterprise::EnterpriseService::new(services.database.pool().clone()));
+    // "enterprise org" dimension + the company tier (Direction B). The service
+    // was constructed above so the company-admin bridges could be wired.
     let one_enterprise_state = one_enterprise::OneEnterpriseRouterState::new(one_enterprise_service.clone());
     let one_enterprise_authenticated = one_enterprise::one_enterprise_routes(one_enterprise_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
@@ -360,6 +404,11 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // `one_tenants` / project-group membership.
     .with_enterprise_sync(std::sync::Arc::new(EnterpriseSyncAdapter(
         one_enterprise_service.clone(),
+    )))
+    // Direction B: SSO config (企业认证) is a company-level policy, so a company
+    // admin may manage it. Falls back to the project-group admin when unset.
+    .with_company_admin_check(std::sync::Arc::new(CompanyAdminCheckAdapter(
+        one_enterprise_service.clone(),
     )));
     let one_sso_public = one_sso::one_sso_public_routes(one_sso_state.clone());
     let one_sso_admin = one_sso::one_sso_admin_routes(one_sso_state)
@@ -378,6 +427,10 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // Office proxy routes — exempt from auth (serve iframe content)
     let office_proxy = office_proxy_routes(states.office);
     let public_assets = asset_routes(AssetRouterState::default());
+    // Not session-authenticated: Codex CLI is an external process with no
+    // browser session. Gated by its own per-installation bearer token
+    // instead (checked inside the handler; see `aionui-codex-bridge`).
+    let codex_bridge_public = codex_bridge_public_routes(states.codex_bridge);
 
     // WebSocket upgrade route — exempt from CSRF (no cookie-based
     // double-submit) but still gets security response headers.
@@ -408,6 +461,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(office_authenticated)
         .merge(shell_authenticated)
         .merge(assistant_authenticated)
+        .merge(codex_bridge_config_authenticated)
         .merge(one_org_authenticated)
         .merge(one_employee_authenticated)
         .merge(one_devops_authenticated)
@@ -431,6 +485,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     .merge(runtime_team_tools)
     .merge(office_proxy)
     .merge(public_assets)
+    .merge(codex_bridge_public)
     .layer(middleware::from_fn(security_headers_middleware));
 
     // Raise the default request body limit from axum's 2MB default to

@@ -13,6 +13,7 @@ members = [
     "crates/aionui-office",
     "crates/aionui-shell",
     "crates/aionui-ai-agent",
+    "crates/aionui-codex-bridge",
     "crates/aionui-mcp",
     "crates/aionui-conversation",
     "crates/aionui-extension",
@@ -48,6 +49,7 @@ aionui-file = { path = "crates/aionui-file" }
 aionui-office = { path = "crates/aionui-office" }
 aionui-shell = { path = "crates/aionui-shell" }
 aionui-ai-agent = { path = "crates/aionui-ai-agent" }
+aionui-codex-bridge = { path = "crates/aionui-codex-bridge" }
 aionui-mcp = { path = "crates/aionui-mcp" }
 aionui-conversation = { path = "crates/aionui-conversation" }
 aionui-extension = { path = "crates/aionui-extension" }

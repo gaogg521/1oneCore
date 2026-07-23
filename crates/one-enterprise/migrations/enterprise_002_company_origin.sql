@@ -1,0 +1,11 @@
+-- Record how a company (one_enterprises row) came into existence.
+--
+-- Direction B: besides SSO-derived companies (provider=feishu/…, external_id=
+-- the IdP tenant_key), an operator can EXPLICITLY set up a company by name
+-- ("显式设立") without any SSO round-trip. Such rows are written with a sentinel
+-- provider='manual' and external_id=<the row id> (kept unique so the existing
+-- UNIQUE(provider, external_id) index is honoured), and origin='manual'.
+--
+-- 'sso' is the default so every pre-existing SSO-derived company row keeps a
+-- correct origin without a data backfill.
+ALTER TABLE one_enterprises ADD COLUMN origin TEXT NOT NULL DEFAULT 'sso';

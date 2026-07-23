@@ -36,6 +36,7 @@ pub use capability::skill_manager::{
     prepare_first_message_with_skills_index,
 };
 pub use error::AgentError;
+pub use factory::aionrs::resolve_provider_config_for_bridge;
 pub use factory::{AgentFactoryDeps, build_agent_factory};
 pub use idle_scanner::{IdleCleanupCoordinator, start_idle_scanner, start_idle_scanner_with_coordinator};
 pub use persistence::AcpSessionSyncService;

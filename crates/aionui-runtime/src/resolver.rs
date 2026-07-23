@@ -29,7 +29,13 @@ fn resolve_known_cursor_agent_install_path() -> Option<PathBuf> {
 fn resolve_known_cursor_agent_install_path_from_env(local_app_data: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     let local_app_data = local_app_data?;
     let base = PathBuf::from(local_app_data).join("cursor-agent");
-    for name in ["agent.exe", "agent.cmd", "agent", "cursor-agent.exe", "cursor-agent.cmd"] {
+    for name in [
+        "agent.exe",
+        "agent.cmd",
+        "agent",
+        "cursor-agent.exe",
+        "cursor-agent.cmd",
+    ] {
         let candidate = base.join(name);
         if candidate.is_file() {
             return Some(candidate);

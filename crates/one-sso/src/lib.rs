@@ -17,7 +17,7 @@ pub mod routes;
 pub mod service;
 pub mod state;
 
-pub use enterprise::EnterpriseSync;
+pub use enterprise::{CompanyAdminCheck, EnterpriseSync};
 pub use error::SsoError;
 pub use migrate::run_one_sso_migrations;
 pub use routes::{one_sso_admin_routes, one_sso_public_routes};

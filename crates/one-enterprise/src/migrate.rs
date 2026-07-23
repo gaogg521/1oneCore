@@ -9,10 +9,16 @@ use sqlx::SqlitePool;
 
 use crate::error::EnterpriseError;
 
-const MIGRATIONS: &[(&str, &str)] = &[(
-    "enterprise_001_init",
-    include_str!("../migrations/enterprise_001_init.sql"),
-)];
+const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "enterprise_001_init",
+        include_str!("../migrations/enterprise_001_init.sql"),
+    ),
+    (
+        "enterprise_002_company_origin",
+        include_str!("../migrations/enterprise_002_company_origin.sql"),
+    ),
+];
 
 /// Run all pending one-enterprise migrations. Idempotent; call once at startup
 /// after the upstream database has been initialized.

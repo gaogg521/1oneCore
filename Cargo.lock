@@ -400,6 +400,7 @@ dependencies = [
  "aionui-assistant",
  "aionui-auth",
  "aionui-channel",
+ "aionui-codex-bridge",
  "aionui-common",
  "aionui-conversation",
  "aionui-cron",
@@ -543,6 +544,30 @@ dependencies = [
  "tokio-tungstenite 0.26.2",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "aionui-codex-bridge"
+version = "0.1.49-one.2"
+dependencies = [
+ "aion-config",
+ "aion-providers",
+ "aion-types",
+ "aionui-ai-agent",
+ "aionui-api-types",
+ "aionui-common",
+ "aionui-db",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "futures-util",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -3968,6 +3993,7 @@ dependencies = [
  "aionui-auth",
  "aionui-common",
  "aionui-db",
+ "async-trait",
  "axum",
  "getrandom 0.2.17",
  "http-body-util",

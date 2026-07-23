@@ -3675,7 +3675,11 @@ mod tests {
         // needs the user to log in) is Offline, not Missing. It must still
         // materialize as a generated assistant so the UI can surface it with a
         // "needs login / offline" state instead of hiding it entirely.
-        let mut offline_row = mk_agent_row("agent-cursor", "cursor", aionui_api_types::AgentManagementStatus::Offline);
+        let mut offline_row = mk_agent_row(
+            "agent-cursor",
+            "cursor",
+            aionui_api_types::AgentManagementStatus::Offline,
+        );
         offline_row.last_check_status = Some(aionui_api_types::AgentSnapshotCheckStatus::Offline);
         offline_row.last_check_error_code = Some("auth_required".into());
         offline_row.last_check_error_message = Some("Cursor agent requires login".into());

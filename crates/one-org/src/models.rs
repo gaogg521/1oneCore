@@ -33,8 +33,24 @@ pub struct TenantRow {
     pub id: String,
     pub name: String,
     pub exit_password_hash: Option<String>,
+    /// Owning company (one-enterprise `one_enterprises.id`), or `None` for a
+    /// standalone invite-code project group with no company (Direction B, the
+    /// "可独立可归属" model). Added in migration 006.
+    pub enterprise_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// A project group owned by a company, for the company admin console
+/// (Direction B). Distinct from the invite-code `OrgTenant` returned by
+/// join/create — this is the company-scoped listing view.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnterpriseTenantDto {
+    pub tenant_id: String,
+    pub name: String,
+    pub member_count: i64,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

@@ -37,7 +37,9 @@ async fn list_agents(
 ) -> Result<Json<ApiResponse<Vec<PersonalAgentDto>>>, EmployeeError> {
     // Own employees plus any shared within the caller's tenant (A1 L3).
     let tenant = state.tenant_of(&user.id).await;
-    Ok(Json(ApiResponse::ok(state.service.list_available(&user.id, &tenant).await?)))
+    Ok(Json(ApiResponse::ok(
+        state.service.list_available(&user.id, &tenant).await?,
+    )))
 }
 
 #[derive(Deserialize)]
@@ -61,14 +63,18 @@ async fn create_agent(
     let tenant = state.tenant_of(&user.id).await;
     let agent = state
         .service
-        .create(&user.id, &tenant, CreateEmployeeInput {
-            name: body.name,
-            description: body.description,
-            agent_type: body.agent_type,
-            custom_agent_id: body.custom_agent_id,
-            cli_path: body.cli_path,
-            automation_config: body.automation_config,
-        })
+        .create(
+            &user.id,
+            &tenant,
+            CreateEmployeeInput {
+                name: body.name,
+                description: body.description,
+                agent_type: body.agent_type,
+                custom_agent_id: body.custom_agent_id,
+                cli_path: body.cli_path,
+                automation_config: body.automation_config,
+            },
+        )
         .await?;
     Ok(Json(ApiResponse::ok(agent)))
 }
@@ -86,7 +92,10 @@ async fn set_visibility(
     Path(agent_id): Path<String>,
     Json(body): Json<SetVisibilityBody>,
 ) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
-    let agent = state.service.set_visibility(&user.id, &agent_id, &body.visibility).await?;
+    let agent = state
+        .service
+        .set_visibility(&user.id, &agent_id, &body.visibility)
+        .await?;
     Ok(Json(ApiResponse::ok(agent)))
 }
 
@@ -95,7 +104,9 @@ async fn get_agent(
     Extension(user): Extension<CurrentUser>,
     Path(agent_id): Path<String>,
 ) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
-    Ok(Json(ApiResponse::ok(state.service.get(&user.id, &agent_id).await?.into())))
+    Ok(Json(ApiResponse::ok(
+        state.service.get(&user.id, &agent_id).await?.into(),
+    )))
 }
 
 #[derive(Deserialize)]
@@ -114,11 +125,15 @@ async fn update_agent(
 ) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
     let agent = state
         .service
-        .update(&user.id, &agent_id, UpdateEmployeeInput {
-            name: body.name,
-            description: body.description,
-            automation_config: body.automation_config,
-        })
+        .update(
+            &user.id,
+            &agent_id,
+            UpdateEmployeeInput {
+                name: body.name,
+                description: body.description,
+                automation_config: body.automation_config,
+            },
+        )
         .await?;
     Ok(Json(ApiResponse::ok(agent)))
 }
@@ -145,7 +160,10 @@ async fn run_agent(
     Path(agent_id): Path<String>,
 ) -> Result<Json<ApiResponse<RunNowDto>>, EmployeeError> {
     let (run_id, conversation_id) = state.service.run_now(&user.id, &agent_id).await?;
-    Ok(Json(ApiResponse::ok(RunNowDto { run_id, conversation_id })))
+    Ok(Json(ApiResponse::ok(RunNowDto {
+        run_id,
+        conversation_id,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -165,7 +183,10 @@ async fn run_agent_team(
         .service
         .run_now_team(&user.id, &agent_id, &body.team_id, &body.slot_id)
         .await?;
-    Ok(Json(ApiResponse::ok(RunNowDto { run_id, conversation_id })))
+    Ok(Json(ApiResponse::ok(RunNowDto {
+        run_id,
+        conversation_id,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -184,10 +205,14 @@ async fn set_schedule(
 ) -> Result<Json<ApiResponse<PersonalAgentDto>>, EmployeeError> {
     let agent = state
         .service
-        .set_schedule(&user.id, &agent_id, ScheduleInput {
-            schedule: body.schedule,
-            enabled: body.enabled,
-        })
+        .set_schedule(
+            &user.id,
+            &agent_id,
+            ScheduleInput {
+                schedule: body.schedule,
+                enabled: body.enabled,
+            },
+        )
         .await?;
     Ok(Json(ApiResponse::ok(agent)))
 }
@@ -197,7 +222,9 @@ async fn list_runs(
     Extension(user): Extension<CurrentUser>,
     Path(agent_id): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<EmployeeRunRow>>>, EmployeeError> {
-    Ok(Json(ApiResponse::ok(state.service.list_runs(&user.id, &agent_id).await?)))
+    Ok(Json(ApiResponse::ok(
+        state.service.list_runs(&user.id, &agent_id).await?,
+    )))
 }
 
 async fn get_run(

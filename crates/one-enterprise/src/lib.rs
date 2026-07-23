@@ -14,13 +14,14 @@
 pub mod error;
 pub mod migrate;
 pub mod models;
+pub mod rbac;
 pub mod routes;
 pub mod service;
 pub mod state;
 
 pub use error::EnterpriseError;
 pub use migrate::run_one_enterprise_migrations;
-pub use models::EnterpriseIdentityDto;
+pub use models::{CompanyMemberDto, CompanyOverviewDto, EnterpriseIdentityDto};
 pub use routes::one_enterprise_routes;
 pub use service::EnterpriseService;
 pub use state::OneEnterpriseRouterState;

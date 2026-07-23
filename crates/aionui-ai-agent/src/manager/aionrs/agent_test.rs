@@ -89,7 +89,13 @@ max_tokens = 3456
 
     let embedded = resolve_aionui_config(&cli_args).unwrap();
     assert_eq!(embedded.max_tokens, None);
-    assert_eq!(embedded.compat.default_max_tokens_for_model("gpt-test"), None);
+    // File-based overrides (2345 / pattern "gpt-test" -> 3456) are discarded,
+    // but `default_max_tokens_for_model` still falls back to
+    // `openai_defaults().transport.default_max_tokens` (32_000, added in the
+    // fork's `33c2bd2` fix so OpenAI-protocol requests always carry a sane
+    // max_tokens instead of silently omitting the field) when no pattern
+    // matches — this is the intended built-in default, not a leaked file value.
+    assert_eq!(embedded.compat.default_max_tokens_for_model("gpt-test"), Some(32_000));
 }
 
 #[test]

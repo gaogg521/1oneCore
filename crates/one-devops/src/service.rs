@@ -1568,12 +1568,22 @@ mod tests {
 
         // A requirement already past pre-dev is likewise not claimable here.
         let planning = svc
-            .create_requirement("u1", Some("Alice"), CreateRequirementInput { subject: "P".into(), ..Default::default() })
+            .create_requirement(
+                "u1",
+                Some("Alice"),
+                CreateRequirementInput {
+                    subject: "P".into(),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         svc.update_requirement(
             &planning.id,
-            UpdateRequirementInput { status: Some("planning".into()), ..Default::default() },
+            UpdateRequirementInput {
+                status: Some("planning".into()),
+                ..Default::default()
+            },
         )
         .await
         .unwrap();

@@ -8,7 +8,7 @@ mod context;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aionui_db::{IMcpServerRepository, IProviderRepository};
+use aionui_db::{ICodexBridgeConfigRepository, IMcpServerRepository, IProviderRepository};
 use aionui_realtime::EventBroadcaster;
 use futures_util::FutureExt;
 
@@ -40,6 +40,15 @@ pub struct AgentFactoryDeps {
     /// inject enabled servers into `session/new` (ELECTRON-1JG fix).
     /// `None` for tests/composition paths that do not need MCP injection.
     pub mcp_server_repo: Option<Arc<dyn IMcpServerRepository>>,
+    /// Codex compatibility bridge config. When set and enabled, Codex ACP
+    /// launches are pointed at the local bridge instead of their default
+    /// provider (see `acp_launch_policy::append_codex_bridge_env`). `None`
+    /// for tests/composition paths that do not need it.
+    pub codex_bridge_config_repo: Option<Arc<dyn ICodexBridgeConfigRepository>>,
+    /// This app's own local HTTP base URL (e.g. `http://127.0.0.1:49152`),
+    /// used to point Codex's `model_providers` config at the local bridge
+    /// endpoint mounted on the same server.
+    pub local_base_url: String,
 }
 
 /// Build a production agent factory that dispatches to concrete agent types.

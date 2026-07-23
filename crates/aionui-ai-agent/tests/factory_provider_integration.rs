@@ -78,6 +78,8 @@ fn make_factory(
         broadcaster: Arc::new(BroadcastEventBus::new(16)),
         backend_binary_path: Arc::new(PathBuf::from("/tmp/aionrs-test/aioncore")),
         mcp_server_repo: None,
+        codex_bridge_config_repo: None,
+        local_base_url: "http://127.0.0.1:0".into(),
     })
 }
 

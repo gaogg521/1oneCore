@@ -9,6 +9,7 @@
 //! membership, a route merge in aionui-app, and read-only use of public
 //! aionui-auth / aionui-db APIs.
 
+pub mod bridge;
 pub mod error;
 pub mod migrate;
 pub mod models;
@@ -17,6 +18,7 @@ pub mod routes;
 pub mod service;
 pub mod state;
 
+pub use bridge::CompanyAdminResolver;
 pub use error::OrgError;
 pub use migrate::run_one_migrations;
 pub use rbac::{OrgActor, RequireOrgAdmin, RequireSystemAdmin};

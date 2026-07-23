@@ -12,6 +12,7 @@ use aionui_assistant::{
 };
 use aionui_auth::extract_token_from_ws_headers;
 use aionui_channel::ChannelRouterState;
+use aionui_codex_bridge::{CodexBridgeRouterState, CodexBridgeService};
 use aionui_conversation::{ConversationRouterState, ConversationService};
 use aionui_cron::{CronEventEmitter, CronRouterState, service::CronServiceDeps};
 use aionui_db::{
@@ -20,8 +21,8 @@ use aionui_db::{
     IProviderRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
     SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository, SqliteAssistantOverrideRepository,
     SqliteAssistantPreferenceRepository, SqliteAssistantRepository, SqliteClientPreferenceRepository,
-    SqliteConversationRepository, SqliteFeedbackDiagnosticsRepository, SqliteProviderRepository,
-    SqliteRemoteAgentRepository, SqliteSettingsRepository,
+    SqliteCodexBridgeConfigRepository, SqliteConversationRepository, SqliteFeedbackDiagnosticsRepository,
+    SqliteProviderRepository, SqliteRemoteAgentRepository, SqliteSettingsRepository,
 };
 use aionui_extension::{
     AssistantRuleDispatcher, ExtensionRegistry, ExtensionRouterState, ExtensionStateStore, ExternalPathsManager,
@@ -118,6 +119,7 @@ pub struct ModuleStates {
     pub office: OfficeRouterState,
     pub shell: ShellRouterState,
     pub assistant: AssistantRouterState,
+    pub codex_bridge: CodexBridgeRouterState,
 }
 
 fn default_allowed_roots(work_dir: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
@@ -283,6 +285,7 @@ pub async fn build_module_states(
         office: build_module_state_phase(&boot, "office", || build_office_state(services)),
         shell: build_module_state_phase(&boot, "shell", || build_shell_state(services)),
         assistant,
+        codex_bridge: build_module_state_phase(&boot, "codex_bridge", || build_codex_bridge_state(services)),
     };
     tracing::info!(
         elapsed_ms = boot.elapsed().as_millis(),
@@ -762,6 +765,18 @@ pub fn build_office_state(services: &AppServices) -> OfficeRouterState {
         conversion_service,
         proxy_service,
         allowed_roots,
+    }
+}
+
+/// Build the default `CodexBridgeRouterState` from application services.
+pub fn build_codex_bridge_state(services: &AppServices) -> CodexBridgeRouterState {
+    let pool = services.database.pool().clone();
+    let provider_repo: Arc<dyn IProviderRepository> = Arc::new(SqliteProviderRepository::new(pool.clone()));
+    let config_repo = Arc::new(SqliteCodexBridgeConfigRepository::new(pool));
+    let encryption_key = derive_encryption_key(&services.data_secret_raw);
+
+    CodexBridgeRouterState {
+        service: Arc::new(CodexBridgeService::new(provider_repo, config_repo, encryption_key)),
     }
 }
 

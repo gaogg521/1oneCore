@@ -55,8 +55,7 @@ pub struct PersonalAgentDto {
 
 impl From<PersonalAgentRow> for PersonalAgentDto {
     fn from(row: PersonalAgentRow) -> Self {
-        let automation_config =
-            serde_json::from_str(&row.automation_config).unwrap_or_else(|_| serde_json::json!({}));
+        let automation_config = serde_json::from_str(&row.automation_config).unwrap_or_else(|_| serde_json::json!({}));
         let schedule = row
             .schedule
             .as_deref()

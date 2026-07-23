@@ -20,9 +20,9 @@ use aionui_db::IUserRepository;
 
 use crate::error::OrgError;
 use crate::models::{
-    AdminUserDto, AuditLogRow, DEFAULT_TENANT_ID, InviteDto, InviteRow, OrgContextDto, ROLE_MEMBER, ROLE_SYSTEM_ADMIN,
-    ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, TenantRow, UserOrgRow, is_admin_role,
-    is_enterprise_tenant_id, is_system_admin_role,
+    AdminUserDto, AuditLogRow, DEFAULT_TENANT_ID, EnterpriseTenantDto, InviteDto, InviteRow, OrgContextDto,
+    ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow,
+    SYSTEM_DEFAULT_USER_ID, TenantRow, UserOrgRow, is_admin_role, is_enterprise_tenant_id, is_system_admin_role,
 };
 
 pub struct OrgService {
@@ -395,6 +395,99 @@ impl OrgService {
             .await;
 
         Ok((tenant_id, name.to_string()))
+    }
+
+    /// Create a project group OWNED by a company (Direction B). Unlike
+    /// `create_tenant` (the standalone invite-code path, left byte-for-byte
+    /// intact), this:
+    /// - does NOT enforce the global "one server = one enterprise" D3 limit — a
+    ///   company legitimately owns many project groups;
+    /// - does NOT auto-join the creator, so `one_user_org`'s one-membership-per-
+    ///   user PK is never stressed (the group starts empty);
+    /// - optionally seeds `initial_admin_user_id` as the group's org_admin, but
+    ///   only if that user has no existing `one_user_org` row (respects the PK);
+    /// - auto-generates one invite so the empty group is immediately joinable.
+    ///
+    /// Authorization (system_admin OR company-admin of `enterprise_id`) is
+    /// enforced by the route handler before this is called.
+    pub async fn create_tenant_for_enterprise(
+        &self,
+        enterprise_id: &str,
+        name_raw: &str,
+        created_by: &str,
+        initial_admin_user_id: Option<&str>,
+    ) -> Result<(String, String, String), OrgError> {
+        let name = name_raw.trim();
+        if name.is_empty() {
+            return Err(OrgError::NameRequired);
+        }
+        if let Some(admin) = initial_admin_user_id
+            && self.membership(admin).await?.is_some()
+        {
+            return Err(OrgError::Forbidden(
+                "The initial administrator already belongs to a project group".into(),
+            ));
+        }
+
+        let tenant_id = short_id("tenant");
+        let now = now_ms() as i64;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT INTO one_tenants (id, name, enterprise_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+            .bind(&tenant_id)
+            .bind(name)
+            .bind(enterprise_id)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        if let Some(admin) = initial_admin_user_id {
+            sqlx::query(
+                "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(admin)
+            .bind(&tenant_id)
+            .bind(ROLE_ORG_ADMIN)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+
+        let (_invite, code) = self.create_invite(&tenant_id, created_by, None, None).await?;
+        self.audit(
+            &tenant_id,
+            Some(created_by),
+            None,
+            "org.create_for_enterprise",
+            Some(name),
+        )
+        .await;
+        Ok((tenant_id, name.to_string(), code))
+    }
+
+    /// The project groups a company owns, with per-group member counts.
+    pub async fn list_tenants_by_enterprise(&self, enterprise_id: &str) -> Result<Vec<EnterpriseTenantDto>, OrgError> {
+        let rows = sqlx::query_as::<_, (String, String, i64)>(
+            "SELECT id, name, created_at FROM one_tenants WHERE enterprise_id = ? ORDER BY created_at ASC",
+        )
+        .bind(enterprise_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (tenant_id, name, created_at) in rows {
+            let member_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?")
+                .bind(&tenant_id)
+                .fetch_one(&self.pool)
+                .await?;
+            out.push(EnterpriseTenantDto {
+                tenant_id,
+                name,
+                member_count,
+                created_at,
+            });
+        }
+        Ok(out)
     }
 
     /// Archive and wipe all local tenant/membership data, so a stale/orphaned
@@ -1365,6 +1458,61 @@ mod tests {
             "resource should name the new role: {resource}"
         );
 
+        db.close().await;
+    }
+
+    // --- Direction B: company-owned project groups ---
+
+    #[tokio::test]
+    async fn create_for_enterprise_allows_multiple_under_same_company() {
+        // Unlike the D3-guarded `create_tenant`, a company may own many groups.
+        let (db, service, _repo) = setup().await;
+        let (t1, _, code1) = service
+            .create_tenant_for_enterprise("ent1", "Group A", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        let (t2, ..) = service
+            .create_tenant_for_enterprise("ent1", "Group B", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        assert_ne!(t1, t2);
+        assert!(!code1.is_empty(), "an invite is auto-generated");
+        let list = service.list_tenants_by_enterprise("ent1").await.unwrap();
+        assert_eq!(list.len(), 2);
+        // Empty groups (no auto-join) — the crux fix.
+        assert_eq!(list.iter().map(|t| t.member_count).sum::<i64>(), 0);
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn create_for_enterprise_does_not_auto_join_creator() {
+        let (db, service, repo) = setup().await;
+        let op = create_user(&repo, "op").await;
+        service
+            .create_tenant_for_enterprise("ent1", "Group A", &op, None)
+            .await
+            .unwrap();
+        // one_user_org PK = user_id is never stressed: the creator is not joined.
+        assert!(service.membership(&op).await.unwrap().is_none());
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn create_for_enterprise_seeds_initial_admin_and_respects_pk() {
+        let (db, service, repo) = setup().await;
+        let admin = create_user(&repo, "grpadmin").await;
+        service
+            .create_tenant_for_enterprise("ent1", "Group A", SYSTEM_DEFAULT_USER_ID, Some(&admin))
+            .await
+            .unwrap();
+        let membership = service.membership(&admin).await.unwrap().unwrap();
+        assert_eq!(membership.role, ROLE_ORG_ADMIN);
+        // Seeding the same user into a second group violates the PK → rejected.
+        let err = service
+            .create_tenant_for_enterprise("ent1", "Group B", SYSTEM_DEFAULT_USER_ID, Some(&admin))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, OrgError::Forbidden(_)));
         db.close().await;
     }
 }

@@ -13,8 +13,8 @@ use aionui_api_types::ApiResponse;
 
 use crate::error::OrgError;
 use crate::models::{
-    AdminUserDto, AuditLogRow, InviteDto, OrgContextDto, ResetLocalResult, RuntimeNodeDto, is_enterprise_tenant_id,
-    is_system_admin_role,
+    AdminUserDto, AuditLogRow, EnterpriseTenantDto, InviteDto, OrgContextDto, ResetLocalResult, RuntimeNodeDto,
+    is_enterprise_tenant_id, is_system_admin_role,
 };
 use crate::rbac::{OrgActor, RequireOrgAdmin};
 use crate::state::OneOrgRouterState;
@@ -47,7 +47,83 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         .route("/api/one/admin/audit", get(admin_list_audit))
         .route("/api/one/admin/runtime/nodes", get(admin_list_runtime_nodes))
         .route("/api/one/admin/runtime/heartbeat", post(admin_runtime_heartbeat))
+        // Direction B: company-scoped project-group management. Gated
+        // system_admin OR company-admin of the path `enterprise_id`.
+        .route(
+            "/api/one/org/enterprise/{enterprise_id}/tenants",
+            get(enterprise_list_tenants).post(enterprise_create_tenant),
+        )
         .with_state(state)
+}
+
+// --- company-scoped project groups (Direction B) ---
+
+/// Authorize a company governor: instance system_admin, or an admin of the
+/// target company (via the app-wired bridge). Personal edition has no bridge
+/// and no company, so these routes are unreachable there.
+async fn ensure_company_governor(
+    state: &OneOrgRouterState,
+    actor: &OrgActor,
+    enterprise_id: &str,
+) -> Result<(), OrgError> {
+    if is_system_admin_role(&actor.role) {
+        return Ok(());
+    }
+    if let Some(resolver) = state.company_resolver.as_ref()
+        && resolver.is_company_admin(&actor.user_id, enterprise_id).await
+    {
+        return Ok(());
+    }
+    Err(OrgError::Forbidden("Company administrator role required".into()))
+}
+
+async fn enterprise_list_tenants(
+    State(state): State<OneOrgRouterState>,
+    actor: OrgActor,
+    Path(enterprise_id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<EnterpriseTenantDto>>>, OrgError> {
+    ensure_company_governor(&state, &actor, &enterprise_id).await?;
+    let tenants = state.service.list_tenants_by_enterprise(&enterprise_id).await?;
+    Ok(Json(ApiResponse::ok(tenants)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateEnterpriseTenantBody {
+    name: String,
+    #[serde(default)]
+    initial_admin_user_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateEnterpriseTenantDto {
+    tenant_id: String,
+    name: String,
+    invite_code: String,
+}
+
+async fn enterprise_create_tenant(
+    State(state): State<OneOrgRouterState>,
+    actor: OrgActor,
+    Path(enterprise_id): Path<String>,
+    Json(body): Json<CreateEnterpriseTenantBody>,
+) -> Result<Json<ApiResponse<CreateEnterpriseTenantDto>>, OrgError> {
+    ensure_company_governor(&state, &actor, &enterprise_id).await?;
+    let (tenant_id, name, invite_code) = state
+        .service
+        .create_tenant_for_enterprise(
+            &enterprise_id,
+            &body.name,
+            &actor.user_id,
+            body.initial_admin_user_id.as_deref(),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(CreateEnterpriseTenantDto {
+        tenant_id,
+        name,
+        invite_code,
+    })))
 }
 
 // --- org (member-facing) ---
