@@ -12,6 +12,7 @@ use aionui_assistant::{
 };
 use aionui_auth::extract_token_from_ws_headers;
 use aionui_channel::ChannelRouterState;
+use aionui_claude_bridge::{ClaudeBridgeRouterState, ClaudeBridgeService};
 use aionui_codex_bridge::{CodexBridgeRouterState, CodexBridgeService};
 use aionui_conversation::{ConversationRouterState, ConversationService};
 use aionui_cron::{CronEventEmitter, CronRouterState, service::CronServiceDeps};
@@ -20,9 +21,10 @@ use aionui_db::{
     IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository, IConversationRepository,
     IProviderRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
     SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository, SqliteAssistantOverrideRepository,
-    SqliteAssistantPreferenceRepository, SqliteAssistantRepository, SqliteClientPreferenceRepository,
-    SqliteCodexBridgeConfigRepository, SqliteConversationRepository, SqliteFeedbackDiagnosticsRepository,
-    SqliteProviderRepository, SqliteRemoteAgentRepository, SqliteSettingsRepository,
+    SqliteAssistantPreferenceRepository, SqliteAssistantRepository, SqliteClaudeBridgeConfigRepository,
+    SqliteClientPreferenceRepository, SqliteCodexBridgeConfigRepository, SqliteConversationRepository,
+    SqliteFeedbackDiagnosticsRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
+    SqliteSettingsRepository,
 };
 use aionui_extension::{
     AssistantRuleDispatcher, ExtensionRegistry, ExtensionRouterState, ExtensionStateStore, ExternalPathsManager,
@@ -120,6 +122,7 @@ pub struct ModuleStates {
     pub shell: ShellRouterState,
     pub assistant: AssistantRouterState,
     pub codex_bridge: CodexBridgeRouterState,
+    pub claude_bridge: ClaudeBridgeRouterState,
 }
 
 fn default_allowed_roots(work_dir: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
@@ -286,6 +289,7 @@ pub async fn build_module_states(
         shell: build_module_state_phase(&boot, "shell", || build_shell_state(services)),
         assistant,
         codex_bridge: build_module_state_phase(&boot, "codex_bridge", || build_codex_bridge_state(services)),
+        claude_bridge: build_module_state_phase(&boot, "claude_bridge", || build_claude_bridge_state(services)),
     };
     tracing::info!(
         elapsed_ms = boot.elapsed().as_millis(),
@@ -777,6 +781,16 @@ pub fn build_codex_bridge_state(services: &AppServices) -> CodexBridgeRouterStat
 
     CodexBridgeRouterState {
         service: Arc::new(CodexBridgeService::new(provider_repo, config_repo, encryption_key)),
+    }
+}
+
+/// Build the default `ClaudeBridgeRouterState` from application services.
+pub fn build_claude_bridge_state(services: &AppServices) -> ClaudeBridgeRouterState {
+    let pool = services.database.pool().clone();
+    let config_repo = Arc::new(SqliteClaudeBridgeConfigRepository::new(pool));
+
+    ClaudeBridgeRouterState {
+        service: Arc::new(ClaudeBridgeService::new(config_repo)),
     }
 }
 

@@ -8,7 +8,7 @@ mod context;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aionui_db::{ICodexBridgeConfigRepository, IMcpServerRepository, IProviderRepository};
+use aionui_db::{IClaudeBridgeConfigRepository, ICodexBridgeConfigRepository, IMcpServerRepository, IProviderRepository};
 use aionui_realtime::EventBroadcaster;
 use futures_util::FutureExt;
 
@@ -42,13 +42,20 @@ pub struct AgentFactoryDeps {
     pub mcp_server_repo: Option<Arc<dyn IMcpServerRepository>>,
     /// Codex compatibility bridge config. When set and enabled, Codex ACP
     /// launches are pointed at the local bridge instead of their default
-    /// provider (see `acp_launch_policy::append_codex_bridge_env`). `None`
+    /// provider (see `acp_launch_policy::append_codex_bridge_config`). `None`
     /// for tests/composition paths that do not need it.
     pub codex_bridge_config_repo: Option<Arc<dyn ICodexBridgeConfigRepository>>,
     /// This app's own local HTTP base URL (e.g. `http://127.0.0.1:49152`),
     /// used to point Codex's `model_providers` config at the local bridge
     /// endpoint mounted on the same server.
     pub local_base_url: String,
+    /// Claude Code custom-provider bridge config. When set and enabled, the
+    /// saved provider's real base_url/API key are injected directly as
+    /// `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (no local proxy needed —
+    /// unlike Codex, Claude Code already speaks the Anthropic Messages
+    /// protocol natively). `None` for tests/composition paths that do not
+    /// need it.
+    pub claude_bridge_config_repo: Option<Arc<dyn IClaudeBridgeConfigRepository>>,
 }
 
 /// Build a production agent factory that dispatches to concrete agent types.

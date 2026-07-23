@@ -2,6 +2,7 @@ pub mod acp_session;
 pub mod agent_metadata;
 pub mod assistant;
 pub mod channel;
+pub mod claude_bridge_config;
 mod client_preference;
 pub mod codex_bridge_config;
 pub mod conversation;
@@ -18,6 +19,7 @@ mod sqlite_acp_session;
 mod sqlite_agent_metadata;
 mod sqlite_assistant;
 mod sqlite_channel;
+mod sqlite_claude_bridge_config;
 mod sqlite_client_preference;
 mod sqlite_codex_bridge_config;
 mod sqlite_conversation;
@@ -41,6 +43,7 @@ pub use assistant::{
     IAssistantPreferenceRepository, IAssistantRepository,
 };
 pub use channel::IChannelRepository;
+pub use claude_bridge_config::IClaudeBridgeConfigRepository;
 pub use client_preference::IClientPreferenceRepository;
 pub use codex_bridge_config::ICodexBridgeConfigRepository;
 pub use conversation::IConversationRepository;
@@ -62,6 +65,7 @@ pub use sqlite_assistant::{
     SqliteAssistantPreferenceRepository, SqliteAssistantRepository,
 };
 pub use sqlite_channel::SqliteChannelRepository;
+pub use sqlite_claude_bridge_config::SqliteClaudeBridgeConfigRepository;
 pub use sqlite_client_preference::SqliteClientPreferenceRepository;
 pub use sqlite_codex_bridge_config::SqliteCodexBridgeConfigRepository;
 pub use sqlite_conversation::SqliteConversationRepository;

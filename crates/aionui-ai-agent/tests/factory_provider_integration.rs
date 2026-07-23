@@ -80,6 +80,7 @@ fn make_factory(
         mcp_server_repo: None,
         codex_bridge_config_repo: None,
         local_base_url: "http://127.0.0.1:0".into(),
+        claude_bridge_config_repo: None,
     })
 }
 

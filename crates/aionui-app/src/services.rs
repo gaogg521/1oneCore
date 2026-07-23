@@ -164,6 +164,9 @@ impl AppServices {
         let codex_bridge_config_repo: Arc<dyn aionui_db::ICodexBridgeConfigRepository> = Arc::new(
             aionui_db::SqliteCodexBridgeConfigRepository::new(database.pool().clone()),
         );
+        let claude_bridge_config_repo: Arc<dyn aionui_db::IClaudeBridgeConfigRepository> = Arc::new(
+            aionui_db::SqliteClaudeBridgeConfigRepository::new(database.pool().clone()),
+        );
 
         let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> =
             Arc::new(SqliteAgentMetadataRepository::new(database.pool().clone()));
@@ -215,6 +218,7 @@ impl AppServices {
             mcp_server_repo: Some(mcp_server_repo),
             codex_bridge_config_repo: Some(codex_bridge_config_repo),
             local_base_url: runtime_base_url.clone(),
+            claude_bridge_config_repo: Some(claude_bridge_config_repo),
         });
 
         // Agent factory is now wired. Future extension/custom agents

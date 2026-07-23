@@ -18,9 +18,102 @@ use aionui_runtime::{
     ManagedAcpToolId, ensure_managed_acp_tool_with_reporter, ensure_node_runtime_with_reporter, ensure_runtime_command,
     ensure_runtime_command_with_reporter, resolve_command_path,
 };
+use std::collections::HashMap;
 use tracing::{info, warn};
 
 use crate::runtime_status::{conversation_acp_tool_runtime_reporter, conversation_runtime_reporter};
+
+const CLAUDE_BRIDGE_BASE_URL_ENV_KEY: &str = "ANTHROPIC_BASE_URL";
+const CLAUDE_BRIDGE_AUTH_TOKEN_ENV_KEY: &str = "ANTHROPIC_AUTH_TOKEN";
+const CLAUDE_BRIDGE_MODEL_ENV_KEY: &str = "ANTHROPIC_MODEL";
+
+/// Resolve the Claude Code custom-provider bridge into the env vars Claude
+/// Code (and the real Anthropic SDK it embeds) reads directly —
+/// `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_MODEL`. Unlike the
+/// Codex bridge this needs no local proxy: Claude Code already speaks the
+/// Anthropic Messages protocol, so the saved provider's real base_url/API
+/// key are used as-is. Returns `None` for non-Claude agents, when the
+/// bridge is disabled/unconfigured, or when the saved provider can no
+/// longer be resolved (caller falls back to the external cc-switch
+/// integration in that case — see `acp_launch_policy::append_claude_provider_env`).
+async fn resolve_claude_bridge_env(
+    deps: &AgentFactoryDeps,
+    meta: &aionui_api_types::AgentMetadata,
+) -> Option<HashMap<String, String>> {
+    if meta.backend.as_deref() != Some("claude") {
+        return None;
+    }
+    let repo = deps.claude_bridge_config_repo.as_ref()?;
+    let config = repo
+        .get()
+        .await
+        .unwrap_or_else(|error| {
+            warn!(error = %error, "claude-bridge: config lookup failed; falling back to cc-switch");
+            None
+        })?;
+    if !config.enabled {
+        return None;
+    }
+    let (provider_id, model) = (config.provider_id.as_deref()?, config.model.as_deref()?);
+
+    let row = match deps.provider_repo.find_by_id(provider_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            warn!(provider_id, "claude-bridge: saved provider not found; falling back to cc-switch");
+            return None;
+        }
+        Err(error) => {
+            warn!(error = %error, provider_id, "claude-bridge: provider lookup failed; falling back to cc-switch");
+            return None;
+        }
+    };
+    let api_key = match aionui_common::decrypt_string(&row.api_key_encrypted, &deps.encryption_key) {
+        Ok(key) => key,
+        Err(error) => {
+            warn!(error = %error, provider_id, "claude-bridge: failed to decrypt provider API key");
+            return None;
+        }
+    };
+
+    let base_url = row.base_url.trim_end_matches('/').to_owned();
+    let mut env = HashMap::with_capacity(3);
+    env.insert(CLAUDE_BRIDGE_BASE_URL_ENV_KEY.to_owned(), base_url);
+    env.insert(CLAUDE_BRIDGE_AUTH_TOKEN_ENV_KEY.to_owned(), api_key);
+    env.insert(CLAUDE_BRIDGE_MODEL_ENV_KEY.to_owned(), model.to_owned());
+    info!(provider_id, model, "claude-bridge: provider env resolved");
+    Some(env)
+}
+
+/// Resolve the context-window size (in tokens) of the provider/model backing
+/// an enabled Codex bridge config, if the saved provider row has one on
+/// file. Codex's own model catalog only knows built-in OpenAI-family models
+/// — pointing it at an arbitrary custom model logs a "metadata not found,
+/// defaulting to fallback" warning and manages the context/output token
+/// budget conservatively. `config.toml`'s top-level `model_context_window`
+/// override exists precisely for this (confirmed present as a real
+/// `ConfigToml` struct field by inspecting the installed `codex.exe`
+/// binary's own string table, since Codex ships no machine-readable schema
+/// doc). Returns `None` (and Codex keeps using its fallback default) when
+/// the bridge is disabled, unconfigured, or the saved provider has no
+/// context length on file — this is a value-add, not a required field.
+async fn resolve_codex_bridge_context_window(
+    deps: &AgentFactoryDeps,
+    codex_bridge_config: Option<&aionui_db::CodexBridgeConfig>,
+) -> Option<i64> {
+    let config = codex_bridge_config?;
+    if !config.enabled {
+        return None;
+    }
+    let provider_id = config.provider_id.as_deref()?;
+    match deps.provider_repo.find_by_id(provider_id).await {
+        Ok(Some(row)) => row.context_limit,
+        Ok(None) => None,
+        Err(error) => {
+            warn!(error = %error, provider_id, "codex-bridge: provider lookup failed while resolving context window");
+            None
+        }
+    }
+}
 
 pub(super) async fn build(
     deps: Arc<AgentFactoryDeps>,
@@ -59,6 +152,8 @@ pub(super) async fn build(
         }),
         None => None,
     };
+    let claude_bridge_env = resolve_claude_bridge_env(&deps, &meta).await;
+    let codex_bridge_context_window = resolve_codex_bridge_context_window(&deps, codex_bridge_config.as_ref()).await;
     apply_acp_launch_policy(
         &mut command_spec,
         AcpLaunchPolicyInput {
@@ -68,6 +163,8 @@ pub(super) async fn build(
             runtime_env: &ctx.runtime_env,
             codex_bridge_config: codex_bridge_config.as_ref(),
             local_base_url: &deps.local_base_url,
+            claude_bridge_env: claude_bridge_env.as_ref(),
+            codex_bridge_context_window,
         },
     );
     let session_snapshot = build_context.session_snapshot;

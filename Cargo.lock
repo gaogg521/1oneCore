@@ -400,6 +400,7 @@ dependencies = [
  "aionui-assistant",
  "aionui-auth",
  "aionui-channel",
+ "aionui-claude-bridge",
  "aionui-codex-bridge",
  "aionui-common",
  "aionui-conversation",
@@ -544,6 +545,23 @@ dependencies = [
  "tokio-tungstenite 0.26.2",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "aionui-claude-bridge"
+version = "0.1.49-one.2"
+dependencies = [
+ "aionui-api-types",
+ "aionui-common",
+ "aionui-db",
+ "axum",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]

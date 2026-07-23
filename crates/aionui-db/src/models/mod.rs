@@ -2,6 +2,7 @@ mod acp_session;
 mod agent_metadata;
 mod assistant;
 mod channel;
+mod claude_bridge_config;
 mod client_preference;
 mod codex_bridge_config;
 mod conversation;
@@ -27,6 +28,7 @@ pub use assistant::{
     UpsertAssistantPreferenceParams, UpsertOverrideParams,
 };
 pub use channel::{AssistantSessionRow, AssistantUserRow, ChannelPluginRow, PairingCodeRow};
+pub use claude_bridge_config::ClaudeBridgeConfig;
 pub use client_preference::ClientPreference;
 pub use codex_bridge_config::CodexBridgeConfig;
 pub use conversation::{ConversationAssistantSnapshotRow, ConversationRow, UpsertConversationAssistantSnapshotParams};

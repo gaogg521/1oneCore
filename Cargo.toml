@@ -14,6 +14,7 @@ members = [
     "crates/aionui-shell",
     "crates/aionui-ai-agent",
     "crates/aionui-codex-bridge",
+    "crates/aionui-claude-bridge",
     "crates/aionui-mcp",
     "crates/aionui-conversation",
     "crates/aionui-extension",
@@ -50,6 +51,7 @@ aionui-office = { path = "crates/aionui-office" }
 aionui-shell = { path = "crates/aionui-shell" }
 aionui-ai-agent = { path = "crates/aionui-ai-agent" }
 aionui-codex-bridge = { path = "crates/aionui-codex-bridge" }
+aionui-claude-bridge = { path = "crates/aionui-claude-bridge" }
 aionui-mcp = { path = "crates/aionui-mcp" }
 aionui-conversation = { path = "crates/aionui-conversation" }
 aionui-extension = { path = "crates/aionui-extension" }

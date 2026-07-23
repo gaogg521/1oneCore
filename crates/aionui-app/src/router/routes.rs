@@ -23,6 +23,7 @@ use aionui_auth::{
 use aionui_channel::channel_routes;
 #[cfg(feature = "weixin")]
 use aionui_channel::weixin_login_route;
+use aionui_claude_bridge::claude_bridge_config_routes;
 use aionui_codex_bridge::{codex_bridge_config_routes, codex_bridge_public_routes};
 use aionui_common::ApiErrorLogContext;
 use aionui_conversation::{conversation_ops_routes, conversation_routes};
@@ -338,6 +339,12 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let codex_bridge_config_authenticated = codex_bridge_config_routes(states.codex_bridge.clone())
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // Claude bridge settings: app-facing config only, no public/unauthenticated
+    // surface — unlike Codex, the resolved provider is injected directly as
+    // launch-time env vars (no local HTTP proxy for Claude Code to call).
+    let claude_bridge_config_authenticated = claude_bridge_config_routes(states.claude_bridge.clone())
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // one-org enterprise routes (/api/one/*) — RBAC extractors depend on the
     // upstream auth middleware injecting CurrentUser.
     let one_org_service = std::sync::Arc::new(one_org::OrgService::new(
@@ -462,6 +469,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(shell_authenticated)
         .merge(assistant_authenticated)
         .merge(codex_bridge_config_authenticated)
+        .merge(claude_bridge_config_authenticated)
         .merge(one_org_authenticated)
         .merge(one_employee_authenticated)
         .merge(one_devops_authenticated)
