@@ -38,6 +38,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "007_multi_membership",
         include_str!("../migrations/007_multi_membership.sql"),
     ),
+    ("008_onboarding", include_str!("../migrations/008_onboarding.sql")),
 ];
 
 /// Run all pending one-org migrations. Idempotent; call once at startup

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use crate::enterprise::{CompanyAdminCheck, EnterpriseSync};
+use crate::org_hooks::OrgAutoJoin;
 use crate::service::SsoService;
 
 #[derive(Clone)]
@@ -17,6 +18,10 @@ pub struct OneSsoRouterState {
     /// config is a company-level policy). `None` falls back to the project-group
     /// `one_user_org` admin check — personal / standalone behaviour is unchanged.
     pub company_admin_check: Option<Arc<dyn CompanyAdminCheck>>,
+    /// Auto-joins a project group by email domain policy (P2-4 onboarding).
+    /// `None` — personal edition, unit tests — means SSO login never auto-joins
+    /// a project group; membership stays invite-code-only, exactly as before.
+    pub org_auto_join: Option<Arc<dyn OrgAutoJoin>>,
 }
 
 impl OneSsoRouterState {
@@ -25,6 +30,7 @@ impl OneSsoRouterState {
             service,
             enterprise_sync: None,
             company_admin_check: None,
+            org_auto_join: None,
         }
     }
 
@@ -35,6 +41,11 @@ impl OneSsoRouterState {
 
     pub fn with_company_admin_check(mut self, check: Arc<dyn CompanyAdminCheck>) -> Self {
         self.company_admin_check = Some(check);
+        self
+    }
+
+    pub fn with_org_auto_join(mut self, hook: Arc<dyn OrgAutoJoin>) -> Self {
+        self.org_auto_join = Some(hook);
         self
     }
 }

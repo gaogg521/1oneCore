@@ -276,6 +276,18 @@ async fn callback(
         .await;
     }
 
+    // Project-group auto-join by email domain (P2-4 onboarding): OIDC's
+    // `preferred_username` falls back to the `email` claim when the IdP has no
+    // separate display name (see `providers/oidc.rs`), so a simple '@' check is
+    // enough to recognize an email here without a dedicated field on
+    // `ProviderUserInfo`. Providers that never surface an email (Feishu/DingTalk
+    // /WeCom/LDAP) leave `display_name` non-email, so this is a no-op for them.
+    // Purely additive and best-effort — never touches the enterprise-org
+    // dimension and never fails the login.
+    if let (Some(hook), true) = (state.org_auto_join.as_ref(), display_name.contains('@')) {
+        hook.auto_join_by_email(&user_id, &display_name).await;
+    }
+
     let session = state
         .service
         .issue_session(&user_id, &username, entry.redirect_target.clone(), entry.desktop)?;

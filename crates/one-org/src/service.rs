@@ -16,21 +16,29 @@ use sqlx::SqlitePool;
 
 use aionui_auth::{generate_random_secret_string, hash_password, verify_password};
 use aionui_common::license::{Feature, Tier, tier_allows};
-use aionui_common::now_ms;
+use aionui_common::{decrypt_string, encrypt_string, now_ms};
 use aionui_db::IUserRepository;
 
+use crate::email::{EmailSender, SendEmailResult, StubEmailSender};
 use crate::error::OrgError;
 use crate::models::{
     AdminUserDto, AgentAuditEntry, AuditLogRow, DEFAULT_TENANT_ID, EnterpriseTenantDto, InviteDto, InviteRow,
     MyTenantDto, OrgContextDto, ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto,
-    RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, TenantRow, UserOrgRow, is_admin_role, is_enterprise_tenant_id,
-    is_system_admin_role,
+    RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, SmtpConfigDto, TenantRow, UserOrgRow, is_admin_role,
+    is_enterprise_tenant_id, is_system_admin_role,
 };
 
 pub struct OrgService {
     pool: SqlitePool,
     user_repo: Arc<dyn IUserRepository>,
     data_dir: PathBuf,
+    /// Encrypts the stored SMTP password (P2-4 onboarding), same key/helper as
+    /// provider API keys and SSO client secrets elsewhere in the app.
+    encryption_key: [u8; 32],
+    /// Sends invite emails (P2-4 onboarding). Defaults to `StubEmailSender`
+    /// (reports "not configured"); the app layer can swap in a real sender via
+    /// `with_email_sender` once SMTP is actually wired.
+    email_sender: Arc<dyn EmailSender>,
 }
 
 /// Normalize an invite code: strip whitespace/dashes, uppercase.
@@ -65,12 +73,26 @@ fn short_id(prefix: &str) -> String {
 }
 
 impl OrgService {
-    pub fn new(pool: SqlitePool, user_repo: Arc<dyn IUserRepository>, data_dir: PathBuf) -> Self {
+    pub fn new(
+        pool: SqlitePool,
+        user_repo: Arc<dyn IUserRepository>,
+        data_dir: PathBuf,
+        encryption_key: [u8; 32],
+    ) -> Self {
         Self {
             pool,
             user_repo,
             data_dir,
+            encryption_key,
+            email_sender: Arc::new(StubEmailSender),
         }
+    }
+
+    /// Swap in a real `EmailSender` once SMTP is actually configured/wired at
+    /// the app layer. Chainable at construction time.
+    pub fn with_email_sender(mut self, sender: Arc<dyn EmailSender>) -> Self {
+        self.email_sender = sender;
+        self
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -317,6 +339,27 @@ impl OrgService {
         Ok((row.into(), display))
     }
 
+    /// Bulk-generate `count` invite codes at once (P2-4 onboarding). Each code
+    /// is unique (delegates to `create_invite`). `count` is clamped to [1, 100].
+    pub async fn create_invites_bulk(
+        &self,
+        tenant_id: &str,
+        created_by: &str,
+        count: usize,
+        max_uses: Option<i64>,
+        expires_in_days: Option<i64>,
+    ) -> Result<Vec<(InviteDto, String)>, OrgError> {
+        let count = count.clamp(1, 100);
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            out.push(
+                self.create_invite(tenant_id, created_by, max_uses, expires_in_days)
+                    .await?,
+            );
+        }
+        Ok(out)
+    }
+
     pub async fn list_invites(&self, tenant_id: &str) -> Result<Vec<InviteDto>, OrgError> {
         let rows = sqlx::query_as::<_, InviteRow>(
             "SELECT * FROM one_tenant_invites WHERE tenant_id = ? ORDER BY created_at DESC",
@@ -429,6 +472,238 @@ impl OrgService {
             .await?
             .ok_or(OrgError::TenantNotFound)?;
         Ok((tenant.id, tenant.name))
+    }
+
+    /// Set the email domains that may auto-join `tenant_id` without an invite
+    /// code (P2-4 onboarding). Empty list disables auto-join (the default).
+    pub async fn set_tenant_allowed_domains(&self, tenant_id: &str, domains: &[String]) -> Result<(), OrgError> {
+        let cleaned: Vec<String> = domains
+            .iter()
+            .map(|d| d.trim().trim_start_matches('@').to_ascii_lowercase())
+            .filter(|d| !d.is_empty())
+            .collect();
+        let json = if cleaned.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&cleaned).unwrap_or_else(|_| "[]".to_owned()))
+        };
+        let updated = sqlx::query("UPDATE one_tenants SET allowed_email_domains = ? WHERE id = ?")
+            .bind(json)
+            .bind(tenant_id)
+            .execute(&self.pool)
+            .await?;
+        if updated.rows_affected() == 0 {
+            return Err(OrgError::TenantNotFound);
+        }
+        Ok(())
+    }
+
+    pub async fn tenant_allowed_domains(&self, tenant_id: &str) -> Result<Vec<String>, OrgError> {
+        let json: Option<String> = sqlx::query_scalar("SELECT allowed_email_domains FROM one_tenants WHERE id = ?")
+            .bind(tenant_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .flatten();
+        Ok(json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default())
+    }
+
+    /// Auto-join a user to any tenant whose `allowed_email_domains` matches the
+    /// email's domain (P2-4 onboarding) — no invite code needed. Best-effort:
+    /// designed to be called from the SSO login hook and must never fail the
+    /// login; callers should swallow the `Result` err like `EnterpriseSync`
+    /// does. Returns the joined tenant id, or `None` when no tenant matches or
+    /// the user is already a member there (idempotent).
+    pub async fn auto_join_by_email(&self, user_id: &str, email: &str) -> Result<Option<String>, OrgError> {
+        let Some(domain) = email.rsplit('@').next().map(str::trim).filter(|d| !d.is_empty()) else {
+            return Ok(None);
+        };
+        let domain = domain.to_ascii_lowercase();
+
+        let rows: Vec<(String, Option<String>)> =
+            sqlx::query_as("SELECT id, allowed_email_domains FROM one_tenants WHERE allowed_email_domains IS NOT NULL")
+                .fetch_all(&self.pool)
+                .await?;
+        let target_tenant = rows.into_iter().find_map(|(tenant_id, domains_json)| {
+            let domains: Vec<String> = domains_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            domains
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(&domain))
+                .then_some(tenant_id)
+        });
+        let Some(tenant_id) = target_tenant else {
+            return Ok(None);
+        };
+
+        let already_member: bool =
+            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_user_org WHERE user_id = ? AND tenant_id = ?")
+                .bind(user_id)
+                .bind(&tenant_id)
+                .fetch_one(&self.pool)
+                .await?;
+        if already_member {
+            return Ok(None);
+        }
+
+        let now = now_ms() as i64;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(user_id, tenant_id) DO UPDATE SET updated_at = excluded.updated_at",
+        )
+        .bind(user_id)
+        .bind(&tenant_id)
+        .bind(ROLE_MEMBER)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at",
+        )
+        .bind(user_id)
+        .bind(&tenant_id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        self.invalidate_user_tokens(user_id).await?;
+        let username = self.lookup_username(user_id).await;
+        self.audit(
+            &tenant_id,
+            Some(user_id),
+            username.as_deref(),
+            "org.auto_join_domain",
+            None,
+        )
+        .await;
+        Ok(Some(tenant_id))
+    }
+
+    // --- SMTP config + invite email (P2-4 onboarding) ---
+    //
+    // No SMTP client library is wired in: this is the "底层适配" the operator
+    // asked for — a config store + a pluggable send seam, same shape as
+    // `one_billing::BillingProvider` for payment. `StubEmailSender` (default)
+    // reports "not configured"; a real implementation (e.g. wrapping `lettre`)
+    // can be dropped in at the app layer without touching this crate.
+
+    pub async fn get_smtp_config(&self) -> Result<SmtpConfigDto, OrgError> {
+        type SmtpConfigRow = (
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            bool,
+            i64,
+        );
+        let row: Option<SmtpConfigRow> = sqlx::query_as(
+            "SELECT host, port, username, password_encrypted, from_address, enabled, updated_at \
+             FROM one_smtp_config WHERE id = 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(match row {
+            Some((host, port, username, password_encrypted, from_address, enabled, updated_at)) => SmtpConfigDto {
+                host,
+                port,
+                username,
+                has_password: password_encrypted.is_some(),
+                from_address,
+                enabled,
+                updated_at: Some(updated_at),
+            },
+            None => SmtpConfigDto {
+                host: None,
+                port: None,
+                username: None,
+                has_password: false,
+                from_address: None,
+                enabled: false,
+                updated_at: None,
+            },
+        })
+    }
+
+    /// `password` absent = keep the stored one (if any); present = replace
+    /// (encrypted at rest, same helper as provider API keys).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_smtp_config(
+        &self,
+        host: &str,
+        port: i64,
+        username: Option<&str>,
+        password: Option<&str>,
+        from_address: &str,
+        enabled: bool,
+    ) -> Result<SmtpConfigDto, OrgError> {
+        let existing_password: Option<String> =
+            sqlx::query_scalar("SELECT password_encrypted FROM one_smtp_config WHERE id = 1")
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
+        let password_encrypted = match password {
+            Some(p) if !p.is_empty() => {
+                Some(encrypt_string(p, &self.encryption_key).map_err(|e| OrgError::Internal(e.to_string()))?)
+            }
+            _ => existing_password,
+        };
+        sqlx::query(
+            "INSERT INTO one_smtp_config (id, host, port, username, password_encrypted, from_address, enabled, updated_at) \
+             VALUES (1, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET host = excluded.host, port = excluded.port, username = excluded.username, \
+                 password_encrypted = excluded.password_encrypted, from_address = excluded.from_address, \
+                 enabled = excluded.enabled, updated_at = excluded.updated_at",
+        )
+        .bind(host)
+        .bind(port)
+        .bind(username)
+        .bind(&password_encrypted)
+        .bind(from_address)
+        .bind(enabled)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        self.get_smtp_config().await
+    }
+
+    /// The decrypted SMTP password, for a real `EmailSender` implementation to
+    /// consume. `None` when unset or decryption fails (never panics).
+    pub async fn smtp_password(&self) -> Result<Option<String>, OrgError> {
+        let encrypted: Option<String> =
+            sqlx::query_scalar("SELECT password_encrypted FROM one_smtp_config WHERE id = 1")
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
+        Ok(encrypted.and_then(|e| decrypt_string(&e, &self.encryption_key).ok()))
+    }
+
+    /// Send an invite by email through whatever `EmailSender` is wired
+    /// (`StubEmailSender` by default — reports "not configured"). Looks up the
+    /// invite by id (scoped to `tenant_id`) and formats its code for display.
+    pub async fn send_invite_email(
+        &self,
+        tenant_id: &str,
+        invite_id: &str,
+        to: &str,
+    ) -> Result<SendEmailResult, OrgError> {
+        let row = sqlx::query_as::<_, InviteRow>("SELECT * FROM one_tenant_invites WHERE id = ? AND tenant_id = ?")
+            .bind(invite_id)
+            .bind(tenant_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(OrgError::InvalidCode)?;
+        let tenant = self.get_tenant(tenant_id).await?.ok_or(OrgError::TenantNotFound)?;
+        let display_code = format_invite_code_for_display(&row.code);
+        Ok(self.email_sender.send_invite(to, &display_code, &tenant.name).await)
     }
 
     pub async fn create_tenant(&self, user_id: &str, name_raw: &str) -> Result<(String, String), OrgError> {
@@ -1209,7 +1484,12 @@ mod tests {
         crate::migrate::run_one_migrations(db.pool()).await.unwrap();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(db.pool().clone()));
         let data_dir = std::env::temp_dir().join(format!("one-org-test-{}", uuid::Uuid::now_v7()));
-        let service = Arc::new(OrgService::new(db.pool().clone(), user_repo.clone(), data_dir));
+        let service = Arc::new(OrgService::new(
+            db.pool().clone(),
+            user_repo.clone(),
+            data_dir,
+            [7u8; 32],
+        ));
         (db, service, user_repo)
     }
 
@@ -1218,6 +1498,118 @@ mod tests {
     /// guarantees this).
     async fn create_user(user_repo: &Arc<dyn IUserRepository>, username: &str) -> String {
         user_repo.create_user(username, "x").await.unwrap().id
+    }
+
+    #[tokio::test]
+    async fn bulk_invite_generates_unique_codes_and_clamps() {
+        let (_db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let batch = service
+            .create_invites_bulk(&tenant_id, SYSTEM_DEFAULT_USER_ID, 5, Some(1), Some(7))
+            .await
+            .unwrap();
+        assert_eq!(batch.len(), 5);
+        let displays: std::collections::HashSet<_> = batch.iter().map(|(_, d)| d.clone()).collect();
+        assert_eq!(displays.len(), 5, "all codes unique");
+        // Count is clamped to [1, 100].
+        assert_eq!(
+            service
+                .create_invites_bulk(&tenant_id, SYSTEM_DEFAULT_USER_ID, 0, None, None)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn domain_auto_join_matches_case_insensitively_and_is_idempotent() {
+        let (_db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        service
+            .set_tenant_allowed_domains(&tenant_id, &["Acme.com".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(
+            service.tenant_allowed_domains(&tenant_id).await.unwrap(),
+            vec!["acme.com"]
+        );
+
+        let alice = create_user(&user_repo, "alice").await;
+        // Domain match is case-insensitive on both sides.
+        let joined = service.auto_join_by_email(&alice, "Alice@ACME.COM").await.unwrap();
+        assert_eq!(joined, Some(tenant_id.clone()));
+
+        // Idempotent: already a member → no-op, not an error.
+        assert_eq!(
+            service.auto_join_by_email(&alice, "alice@acme.com").await.unwrap(),
+            None
+        );
+
+        // Non-matching domain → no-op.
+        let bob = create_user(&user_repo, "bob").await;
+        assert_eq!(service.auto_join_by_email(&bob, "bob@other.com").await.unwrap(), None);
+
+        // Malformed / no '@' → no-op, never panics.
+        assert_eq!(service.auto_join_by_email(&bob, "not-an-email").await.unwrap(), None);
+
+        // Disabling (empty list) stops future auto-joins.
+        service.set_tenant_allowed_domains(&tenant_id, &[]).await.unwrap();
+        assert!(service.tenant_allowed_domains(&tenant_id).await.unwrap().is_empty());
+        let carol = create_user(&user_repo, "carol").await;
+        assert_eq!(
+            service.auto_join_by_email(&carol, "carol@acme.com").await.unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn smtp_config_roundtrips_and_redacts_password() {
+        let (_db, service, _user_repo) = setup().await;
+        // Absent by default.
+        let cfg = service.get_smtp_config().await.unwrap();
+        assert!(!cfg.enabled);
+        assert!(!cfg.has_password);
+
+        let saved = service
+            .set_smtp_config(
+                "smtp.acme.com",
+                587,
+                Some("bot"),
+                Some("s3cret"),
+                "noreply@acme.com",
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.host.as_deref(), Some("smtp.acme.com"));
+        assert!(saved.has_password, "password presence is reported...");
+        // ...but the DTO never carries the plaintext/ciphertext itself.
+        let serialized = serde_json::to_string(&saved).unwrap();
+        assert!(!serialized.contains("s3cret"));
+
+        // Omitting password on a later save keeps the stored one.
+        let updated = service
+            .set_smtp_config("smtp.acme.com", 465, Some("bot"), None, "noreply@acme.com", true)
+            .await
+            .unwrap();
+        assert!(updated.has_password);
+        assert_eq!(service.smtp_password().await.unwrap().as_deref(), Some("s3cret"));
+    }
+
+    #[tokio::test]
+    async fn invite_email_is_not_configured_by_default() {
+        let (_db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let (invite, _display) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+        let result = service
+            .send_invite_email(&tenant_id, &invite.id, "new-hire@acme.com")
+            .await
+            .unwrap();
+        assert_eq!(result.status, "not_configured");
     }
 
     #[tokio::test]

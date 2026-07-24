@@ -269,3 +269,20 @@ pub struct AgentAuditEntry {
     pub status: Option<String>,
     pub created_at: i64,
 }
+
+/// Redacted SMTP config for the admin settings UI (P2-4 onboarding). The
+/// password is never echoed back — only whether one is stored. `enabled`
+/// reflects the operator's own toggle; a real send additionally requires an
+/// `EmailSender` implementation to be wired at the app layer (see
+/// `service::EmailSender`) — until then sends report "not configured".
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SmtpConfigDto {
+    pub host: Option<String>,
+    pub port: Option<i64>,
+    pub username: Option<String>,
+    pub has_password: bool,
+    pub from_address: Option<String>,
+    pub enabled: bool,
+    pub updated_at: Option<i64>,
+}

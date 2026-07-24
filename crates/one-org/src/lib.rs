@@ -10,6 +10,7 @@
 //! aionui-auth / aionui-db APIs.
 
 pub mod bridge;
+pub mod email;
 pub mod error;
 pub mod migrate;
 pub mod models;
@@ -19,6 +20,7 @@ pub mod service;
 pub mod state;
 
 pub use bridge::CompanyAdminResolver;
+pub use email::{EmailSender, SendEmailResult, StubEmailSender};
 pub use error::OrgError;
 pub use migrate::run_one_migrations;
 pub use rbac::{OrgActor, RequireOrgAdmin, RequireSystemAdmin};

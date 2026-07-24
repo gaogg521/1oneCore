@@ -55,6 +55,30 @@ impl one_employee::TenantResolver for OrgTenantResolver {
     }
 }
 
+/// Adapts one-org's `OrgService::auto_join_by_email` to the
+/// `one_sso::OrgAutoJoin` trait (P2-4 onboarding: domain-based project-group
+/// auto-join). Errors are logged and swallowed — never blocks a valid login.
+struct OrgAutoJoinAdapter(std::sync::Arc<one_org::OrgService>);
+
+#[async_trait::async_trait]
+impl one_sso::OrgAutoJoin for OrgAutoJoinAdapter {
+    async fn auto_join_by_email(&self, user_id: &str, email: &str) {
+        match self.0.auto_join_by_email(user_id, email).await {
+            Ok(Some(tenant_id)) => {
+                tracing::info!(
+                    user_id,
+                    tenant_id,
+                    "SSO login: auto-joined project group by email domain"
+                );
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, user_id, "onboarding domain auto-join failed; login continues");
+            }
+        }
+    }
+}
+
 /// Adapts one-enterprise's `EnterpriseService::sync_member` to the
 /// `one_sso::EnterpriseSync` trait, so an SSO login can sync the caller's
 /// company + membership into the enterprise-org domain without one-sso
@@ -420,6 +444,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         services.database.pool().clone(),
         services.user_repo.clone(),
         services.data_dir.clone(),
+        crate::config::derive_encryption_key(&services.data_secret_raw),
     ));
     // one-enterprise service (真实企业 / company tier) — constructed here so its
     // company-admin bridges can be wired into one-org and one-sso below.
@@ -493,7 +518,11 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // admin may manage it. Falls back to the project-group admin when unset.
     .with_company_admin_check(std::sync::Arc::new(CompanyAdminCheckAdapter(
         one_enterprise_service.clone(),
-    )));
+    )))
+    // P2-4 onboarding: auto-join a project group by email-domain policy. No-op
+    // for logins whose IdP profile isn't email-shaped, or when no tenant has
+    // `allowed_email_domains` set (the default).
+    .with_org_auto_join(std::sync::Arc::new(OrgAutoJoinAdapter(one_org_service.clone())));
     let one_sso_public = one_sso::one_sso_public_routes(one_sso_state.clone());
     let one_sso_admin = one_sso::one_sso_admin_routes(one_sso_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));

@@ -11,10 +11,11 @@ use serde::{Deserialize, Serialize};
 
 use aionui_api_types::ApiResponse;
 
+use crate::email::SendEmailResult;
 use crate::error::OrgError;
 use crate::models::{
     AdminUserDto, AgentAuditEntry, AuditLogRow, EnterpriseTenantDto, InviteDto, MyTenantDto, OrgContextDto,
-    ResetLocalResult, RuntimeNodeDto, TenantSummaryDto, is_enterprise_tenant_id, is_system_admin_role,
+    ResetLocalResult, RuntimeNodeDto, SmtpConfigDto, TenantSummaryDto, is_enterprise_tenant_id, is_system_admin_role,
 };
 use crate::rbac::{OrgActor, RequireOrgAdmin};
 use crate::state::OneOrgRouterState;
@@ -37,7 +38,20 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
             "/api/one/admin/invites",
             get(admin_list_invites).post(admin_create_invite),
         )
+        .route("/api/one/admin/invites/bulk", post(admin_create_invites_bulk))
+        .route(
+            "/api/one/admin/invites/{invite_id}/send-email",
+            post(admin_send_invite_email),
+        )
         .route("/api/one/admin/invites/{invite_id}/revoke", post(admin_revoke_invite))
+        .route(
+            "/api/one/admin/onboarding/domains",
+            get(admin_get_allowed_domains).put(admin_set_allowed_domains),
+        )
+        .route(
+            "/api/one/admin/onboarding/smtp",
+            get(admin_get_smtp_config).put(admin_set_smtp_config),
+        )
         .route(
             "/api/one/admin/exit-password",
             get(admin_exit_password_status)
@@ -350,6 +364,166 @@ async fn admin_create_invite(
         )
         .await;
     Ok(Json(ApiResponse::ok(CreatedInviteDto { invite, display_code })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkInviteBody {
+    count: usize,
+    #[serde(default)]
+    max_uses: Option<i64>,
+    #[serde(default)]
+    expires_in_days: Option<i64>,
+}
+
+/// Bulk-generate invite codes (P2-4 onboarding): one click yields many codes to
+/// hand out to a batch of new members.
+async fn admin_create_invites_bulk(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Json(body): Json<BulkInviteBody>,
+) -> Result<Json<ApiResponse<Vec<CreatedInviteDto>>>, OrgError> {
+    let created = state
+        .service
+        .create_invites_bulk(
+            &actor.tenant_id,
+            &actor.user_id,
+            body.count,
+            body.max_uses,
+            body.expires_in_days,
+        )
+        .await?;
+    state
+        .service
+        .audit(
+            &actor.tenant_id,
+            Some(&actor.user_id),
+            Some(&actor.username),
+            "org.invite.bulk_create",
+            None,
+        )
+        .await;
+    let out = created
+        .into_iter()
+        .map(|(invite, display_code)| CreatedInviteDto { invite, display_code })
+        .collect();
+    Ok(Json(ApiResponse::ok(out)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SendInviteEmailBody {
+    to: String,
+}
+
+/// Send an invite by email (P2-4 onboarding). Reserved seam: with no SMTP
+/// wired this returns `status: "not_configured"` — a clear signal for the UI
+/// rather than a silent no-op.
+async fn admin_send_invite_email(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Path(invite_id): Path<String>,
+    Json(body): Json<SendInviteEmailBody>,
+) -> Result<Json<ApiResponse<SendEmailResult>>, OrgError> {
+    let result = state
+        .service
+        .send_invite_email(&actor.tenant_id, &invite_id, &body.to)
+        .await?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetAllowedDomainsBody {
+    domains: Vec<String>,
+}
+
+/// Get/set the email domains that may auto-join this project group without an
+/// invite code (P2-4 onboarding). Empty list = disabled (the default).
+async fn admin_get_allowed_domains(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+) -> Result<Json<ApiResponse<Vec<String>>>, OrgError> {
+    let domains = state.service.tenant_allowed_domains(&actor.tenant_id).await?;
+    Ok(Json(ApiResponse::ok(domains)))
+}
+
+async fn admin_set_allowed_domains(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Json(body): Json<SetAllowedDomainsBody>,
+) -> Result<Json<ApiResponse<Vec<String>>>, OrgError> {
+    state
+        .service
+        .set_tenant_allowed_domains(&actor.tenant_id, &body.domains)
+        .await?;
+    state
+        .service
+        .audit(
+            &actor.tenant_id,
+            Some(&actor.user_id),
+            Some(&actor.username),
+            "org.onboarding.set_domains",
+            None,
+        )
+        .await;
+    let domains = state.service.tenant_allowed_domains(&actor.tenant_id).await?;
+    Ok(Json(ApiResponse::ok(domains)))
+}
+
+async fn admin_get_smtp_config(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(_actor): RequireOrgAdmin,
+) -> Result<Json<ApiResponse<SmtpConfigDto>>, OrgError> {
+    Ok(Json(ApiResponse::ok(state.service.get_smtp_config().await?)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetSmtpConfigBody {
+    host: String,
+    port: i64,
+    #[serde(default)]
+    username: Option<String>,
+    /// Absent/empty = keep the stored password (if any).
+    #[serde(default)]
+    password: Option<String>,
+    from_address: String,
+    #[serde(default)]
+    enabled: bool,
+}
+
+/// Reserved SMTP configuration (P2-4 onboarding). Saving this does not, by
+/// itself, make email sending work — no SMTP client is wired into this crate.
+/// It stores the operator's credentials so a real `EmailSender` can be dropped
+/// in at the app layer (`OrgService::with_email_sender`) when ready.
+async fn admin_set_smtp_config(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Json(body): Json<SetSmtpConfigBody>,
+) -> Result<Json<ApiResponse<SmtpConfigDto>>, OrgError> {
+    let dto = state
+        .service
+        .set_smtp_config(
+            &body.host,
+            body.port,
+            body.username.as_deref(),
+            body.password.as_deref(),
+            &body.from_address,
+            body.enabled,
+        )
+        .await?;
+    state
+        .service
+        .audit(
+            &actor.tenant_id,
+            Some(&actor.user_id),
+            Some(&actor.username),
+            "org.onboarding.set_smtp",
+            None,
+        )
+        .await;
+    Ok(Json(ApiResponse::ok(dto)))
 }
 
 async fn admin_revoke_invite(
