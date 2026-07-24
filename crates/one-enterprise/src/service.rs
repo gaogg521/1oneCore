@@ -61,6 +61,11 @@ impl EnterpriseService {
             return Ok(());
         };
 
+        // P0-3 seat cap: a NEW member consumes a seat. Re-login of an existing
+        // member is an update and never blocked. Enforced only when the billing
+        // license table exists (installed) — otherwise no licensing applies.
+        self.enforce_seat_for_new_member(user_id, &enterprise_id).await?;
+
         self.upsert_member(user_id, &enterprise_id, display_name, department, job_title, now)
             .await?;
         tracing::info!(
@@ -69,6 +74,55 @@ impl EnterpriseService {
             enterprise_id,
             "enterprise membership synced from SSO"
         );
+        Ok(())
+    }
+
+    /// Reject a *new* member when the company's plan seat cap is full. Existing
+    /// members (re-login) pass. Reads the one-billing license table via the
+    /// shared pool; the `aionui-common` matrix is the single source for tier
+    /// caps. Tolerant of a missing license table (billing not installed →
+    /// unlimited) so standalone / pre-billing behavior is unchanged.
+    async fn enforce_seat_for_new_member(&self, user_id: &str, enterprise_id: &str) -> Result<(), EnterpriseError> {
+        // Already in this company → not a new seat.
+        let current: Option<String> =
+            sqlx::query_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?")
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        if current.as_deref() == Some(enterprise_id) {
+            return Ok(());
+        }
+        // Effective seat limit. Distinguish table-missing (skip) from row-absent
+        // (new company → free default).
+        let tier = match sqlx::query_as::<_, (String, Option<i64>)>(
+            "SELECT tier, seat_limit FROM one_enterprise_license WHERE enterprise_id = ?",
+        )
+        .bind(enterprise_id)
+        .fetch_optional(&self.pool)
+        .await
+        {
+            Err(_) => return Ok(()), // billing not installed → no enforcement
+            Ok(Some((tier, Some(override_limit)))) => {
+                let _ = tier;
+                return self.reject_if_seat_full(enterprise_id, override_limit).await;
+            }
+            Ok(Some((tier, None))) => aionui_common::license::Tier::parse(&tier),
+            Ok(None) => aionui_common::license::Tier::Free,
+        };
+        if let Some(limit) = aionui_common::license::tier_seat_limit(tier) {
+            return self.reject_if_seat_full(enterprise_id, limit as i64).await;
+        }
+        Ok(())
+    }
+
+    async fn reject_if_seat_full(&self, enterprise_id: &str, limit: i64) -> Result<(), EnterpriseError> {
+        let used: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ?")
+            .bind(enterprise_id)
+            .fetch_one(&self.pool)
+            .await?;
+        if used >= limit {
+            return Err(EnterpriseError::SeatLimitExceeded);
+        }
         Ok(())
     }
 
@@ -182,12 +236,18 @@ impl EnterpriseService {
     /// True when the caller is a one-org system_admin. Cross-domain read of
     /// `one_user_org` (same precedent as one-org reading `one_sso_identities`,
     /// one-sso reading `one_user_org`): the desktop operator
-    /// (`system_default_user`) is system_admin by default.
+    /// (`system_default_user`) is system_admin by default. Phase 2
+    /// multi-membership: role is scoped to the caller's *active* tenant (active
+    /// membership first, else most-recently-joined).
     async fn caller_is_system_admin(&self, user_id: &str) -> Result<bool, EnterpriseError> {
-        let role: Option<String> = sqlx::query_scalar("SELECT role FROM one_user_org WHERE user_id = ?")
-            .bind(user_id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let role: Option<String> = sqlx::query_scalar(
+            "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
+             ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
+                      uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(match role {
             Some(r) => r == ROLE_SYSTEM_ADMIN,
             None => user_id == SYSTEM_DEFAULT_USER_ID,
@@ -476,6 +536,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn free_tier_seat_cap_blocks_new_members_but_not_relogin() {
+        let svc = service().await;
+        // Simulate one-billing installed with a free-tier license (cap 3).
+        sqlx::raw_sql(
+            "CREATE TABLE one_enterprise_license (enterprise_id TEXT PRIMARY KEY, tier TEXT NOT NULL DEFAULT 'free', seat_limit INTEGER, expires_at INTEGER, updated_at INTEGER NOT NULL);",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+
+        // First member creates the company; license it 'free'.
+        svc.sync_member("u1", "feishu", "co", None, None, None).await.unwrap();
+        let eid: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO one_enterprise_license (enterprise_id, tier, updated_at) VALUES (?, 'free', 0)")
+            .bind(&eid)
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+
+        // Seats 2 and 3 fit (cap 3), seat 4 is rejected.
+        svc.sync_member("u2", "feishu", "co", None, None, None).await.unwrap();
+        svc.sync_member("u3", "feishu", "co", None, None, None).await.unwrap();
+        let err = svc
+            .sync_member("u4", "feishu", "co", None, None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "SEAT_LIMIT_EXCEEDED");
+
+        // An existing member re-logging in is never blocked, even at the cap.
+        svc.sync_member("u1", "feishu", "co", Some("赵高"), None, None)
+            .await
+            .unwrap();
+
+        // Upgrading the plan lets the new member in.
+        sqlx::query("UPDATE one_enterprise_license SET tier = 'team' WHERE enterprise_id = ?")
+            .bind(&eid)
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        svc.sync_member("u4", "feishu", "co", None, None, None).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn same_company_logins_converge_on_one_enterprise_row() {
         let svc = service().await;
         svc.sync_member("u1", "feishu", "tenant_huanle", None, Some("研发"), None)
@@ -582,7 +688,16 @@ mod tests {
         let db = aionui_db::init_database_memory().await.unwrap();
         crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
         sqlx::query(
-            "CREATE TABLE one_user_org (user_id TEXT PRIMARY KEY, tenant_id TEXT, role TEXT NOT NULL DEFAULT 'member')",
+            "CREATE TABLE one_user_org (user_id TEXT, tenant_id TEXT, role TEXT NOT NULL DEFAULT 'member', \
+             created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id))",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        // Phase 2: `caller_is_system_admin` scopes to the active tenant, so the
+        // cross-domain `one_active_tenant` table must exist too (empty is fine).
+        sqlx::query(
+            "CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0)",
         )
         .execute(db.pool())
         .await

@@ -35,7 +35,7 @@ pub use service::{
     ConversationAgentTurnOutcome, ConversationAgentTurnRequest, ConversationAgentTurnStarted,
     ConversationAgentTurnStartedCallback, ConversationAgentTurnStatus, ConversationService,
 };
-pub use state::ConversationRouterState;
+pub use state::{ConversationRouterState, UsageRecorder};
 
 #[cfg(test)]
 #[path = "service_test.rs"]

@@ -24,6 +24,8 @@ pub enum EnterpriseError {
     InvalidRole(String),
     #[error("Cannot remove the last company administrator")]
     LastCompanyAdmin,
+    #[error("Seat limit reached for the current plan")]
+    SeatLimitExceeded,
 }
 
 impl EnterpriseError {
@@ -37,6 +39,7 @@ impl EnterpriseError {
             Self::MemberNotFound => "COMPANY_MEMBER_NOT_FOUND",
             Self::InvalidRole(_) => "INVALID_ROLE",
             Self::LastCompanyAdmin => "LAST_COMPANY_ADMIN",
+            Self::SeatLimitExceeded => "SEAT_LIMIT_EXCEEDED",
         }
     }
 
@@ -45,7 +48,7 @@ impl EnterpriseError {
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::NameRequired | Self::InvalidRole(_) => StatusCode::BAD_REQUEST,
-            Self::CompanyExists | Self::LastCompanyAdmin => StatusCode::CONFLICT,
+            Self::CompanyExists | Self::LastCompanyAdmin | Self::SeatLimitExceeded => StatusCode::CONFLICT,
             Self::CompanyNotFound | Self::MemberNotFound => StatusCode::NOT_FOUND,
         }
     }

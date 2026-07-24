@@ -22,6 +22,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/007_skill_auto_active.sql"),
     ),
     ("008_mcp_secrets", include_str!("../migrations/008_mcp_secrets.sql")),
+    (
+        "009_resource_visibility",
+        include_str!("../migrations/009_resource_visibility.sql"),
+    ),
 ];
 
 /// Run all pending one-devops migrations. Idempotent; call once at startup

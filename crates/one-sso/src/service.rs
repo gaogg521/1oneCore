@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use aionui_auth::{CookieConfig, JwtService, generate_random_secret_string, hash_password};
+use aionui_common::license::{Feature, Tier, tier_allows};
 use aionui_common::now_ms;
 use aionui_db::IUserRepository;
 use sqlx::SqlitePool;
@@ -26,7 +27,7 @@ use tokio::sync::Mutex;
 
 use crate::error::SsoError;
 use crate::models::{SsoIdentityRow, SsoProviderConfigDto, SsoProviderKind, SsoProviderRow};
-use crate::providers::{ProviderUserInfo, feishu::FeishuProviderConfig};
+use crate::providers::{ProviderUserInfo, feishu::FeishuProviderConfig, oidc::OidcProviderConfig};
 
 /// Lifetime of an OAuth `state` nonce — same as the TS reference (10 min).
 const STATE_TTL: Duration = Duration::from_secs(10 * 60);
@@ -136,11 +137,20 @@ impl SsoService {
     /// layering rules) but reads it directly here — same table, same
     /// semantics as `one_org::OrgService::effective_role`, duplicated rather
     /// than shared to avoid a cross-crate dependency for one query.
+    ///
+    /// Phase 2 multi-membership: a user may have several `one_user_org` rows,
+    /// so the role is scoped to their *active* tenant — the row whose tenant
+    /// matches `one_active_tenant`, else their most-recently-joined membership
+    /// (mirrors `OrgService::active_tenant_id`).
     pub async fn effective_role(&self, user_id: &str) -> Result<String, SsoError> {
-        let role: Option<String> = sqlx::query_scalar("SELECT role FROM one_user_org WHERE user_id = ?")
-            .bind(user_id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let role: Option<String> = sqlx::query_scalar(
+            "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
+             ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
+                      uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
         if let Some(role) = role {
             return Ok(role);
         }
@@ -204,6 +214,30 @@ impl SsoService {
             .collect())
     }
 
+    /// Whether the admin's company plan includes `feature`. Resolves company
+    /// (`one_enterprise_members`) → tier (`one_enterprise_license`) → the
+    /// `aionui-common` matrix. No enterprise / billing not installed → allowed
+    /// (personal-edition red line). Tolerant of absent tables.
+    async fn enterprise_feature_allowed(&self, user_id: &str, feature: Feature) -> Result<bool, SsoError> {
+        let enterprise_id: Option<String> =
+            sqlx::query_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?")
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await
+                .unwrap_or(None);
+        let Some(enterprise_id) = enterprise_id else {
+            return Ok(true);
+        };
+        let tier: Option<String> =
+            sqlx::query_scalar("SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?")
+                .bind(&enterprise_id)
+                .fetch_optional(&self.pool)
+                .await
+                .unwrap_or(None);
+        let tier = tier.map(|t| Tier::parse(&t)).unwrap_or(Tier::Free);
+        Ok(tier_allows(tier, feature))
+    }
+
     pub async fn upsert_provider(
         &self,
         provider: SsoProviderKind,
@@ -211,6 +245,12 @@ impl SsoService {
         config: Option<serde_json::Value>,
         updated_by: &str,
     ) -> Result<(), SsoError> {
+        // P0-3 license gate: enabling SSO is a paid-tier feature. A downgraded
+        // company may still disable it. No enterprise / billing not installed →
+        // allowed (the personal-edition red line).
+        if enabled == Some(true) && !self.enterprise_feature_allowed(updated_by, Feature::Sso).await? {
+            return Err(SsoError::Forbidden("SSO is not included in the current plan".into()));
+        }
         let existing = self.get_provider_row(provider).await?;
         let now = now_ms();
         match existing {
@@ -488,6 +528,7 @@ fn has_minimal_config(provider: &str, config_json: &str) -> bool {
         "feishu" => has_non_empty("appId") && has_non_empty("appSecret"),
         "dingtalk" => has_non_empty("appKey") && has_non_empty("appSecret"),
         "wecom" => has_non_empty("corpId") && has_non_empty("secret"),
+        "oidc" => has_non_empty("issuer") && has_non_empty("clientId"),
         "ldap" => obj
             .get("url")
             .and_then(|v| v.as_str())
@@ -505,6 +546,7 @@ fn secret_keys(provider: &str) -> &'static [&'static str] {
         "feishu" => &["appSecret"],
         "dingtalk" => &["appSecret"],
         "wecom" => &["secret"],
+        "oidc" => &["clientSecret"],
         "ldap" => &["bindPassword"],
         _ => &[],
     }
@@ -556,6 +598,34 @@ pub fn parse_feishu_config(row: &SsoProviderRow) -> Option<FeishuProviderConfig>
         app_secret,
         redirect_uri,
         external_id_field,
+        // Test-only field, never part of stored admin config.
+        base_url: None,
+    })
+}
+
+/// Parse an OIDC config row into a typed config. Returns `None` when the row
+/// is missing or lacks the two required fields (issuer + clientId); optional
+/// fields fall back to provider defaults inside `OidcProviderConfig`.
+pub fn parse_oidc_config(row: &SsoProviderRow) -> Option<OidcProviderConfig> {
+    let value: serde_json::Value = serde_json::from_str(&row.config).unwrap_or_default();
+    let get = |key: &str| {
+        value
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .filter(|s| !s.is_empty())
+    };
+    let issuer = get("issuer")?;
+    let client_id = get("clientId")?;
+    Some(OidcProviderConfig {
+        issuer,
+        client_id,
+        client_secret: get("clientSecret").unwrap_or_default(),
+        redirect_uri: get("redirectUri").unwrap_or_default(),
+        scopes: get("scopes").unwrap_or_default(),
+        external_id_claim: get("externalIdClaim").unwrap_or_default(),
+        name_claim: get("nameClaim").unwrap_or_default(),
+        company_claim: get("companyClaim"),
         // Test-only field, never part of stored admin config.
         base_url: None,
     })
@@ -689,11 +759,23 @@ mod tests {
         // against, same as one-org's own migration.
         sqlx::query(
             "CREATE TABLE one_user_org (\
-                 user_id TEXT PRIMARY KEY, \
+                 user_id TEXT NOT NULL, \
                  tenant_id TEXT NOT NULL, \
                  role TEXT NOT NULL DEFAULT 'member', \
                  created_at INTEGER NOT NULL, \
-                 updated_at INTEGER NOT NULL\
+                 updated_at INTEGER NOT NULL, \
+                 PRIMARY KEY (user_id, tenant_id)\
+             )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        // Phase 2: `effective_role` scopes to the active tenant, so the
+        // cross-crate `one_active_tenant` table must exist too (empty is fine —
+        // with a single membership row the active-first ordering is a no-op).
+        sqlx::query(
+            "CREATE TABLE one_active_tenant (\
+                 user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0\
              )",
         )
         .execute(db.pool())
@@ -726,6 +808,38 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(service.effective_role("u1").await.unwrap(), "org_admin");
+    }
+
+    /// Phase 2 multi-membership: when a user belongs to several groups with
+    /// different roles, the admin gate must resolve the role of their *active*
+    /// group, not an arbitrary membership row.
+    #[tokio::test]
+    async fn effective_role_scopes_to_active_tenant() {
+        let service = service_with_memory_db().await;
+        sqlx::query(
+            "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) VALUES \
+             ('u1', 'g_admin', 'org_admin', 10, 10), ('u1', 'g_member', 'member', 20, 20)",
+        )
+        .execute(&service.pool)
+        .await
+        .unwrap();
+
+        // No active pointer → most-recently-joined (g_member) wins.
+        assert_eq!(service.effective_role("u1").await.unwrap(), "member");
+
+        // Active = the admin group → org_admin.
+        sqlx::query("INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES ('u1', 'g_admin', 0)")
+            .execute(&service.pool)
+            .await
+            .unwrap();
+        assert_eq!(service.effective_role("u1").await.unwrap(), "org_admin");
+
+        // Switch active to the member group → member.
+        sqlx::query("UPDATE one_active_tenant SET tenant_id = 'g_member' WHERE user_id = 'u1'")
+            .execute(&service.pool)
+            .await
+            .unwrap();
+        assert_eq!(service.effective_role("u1").await.unwrap(), "member");
     }
 
     #[tokio::test]

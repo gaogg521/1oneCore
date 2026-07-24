@@ -41,6 +41,17 @@ pub struct TenantRow {
     pub updated_at: i64,
 }
 
+/// Lightweight (id, name) summary of every project group on this server, for
+/// admin pickers (e.g. the devops resource scope selector, P0-4). No member
+/// count — just enough to populate a dropdown.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct TenantSummaryDto {
+    #[sqlx(rename = "id")]
+    pub tenant_id: String,
+    pub name: String,
+}
+
 /// A project group owned by a company, for the company admin console
 /// (Direction B). Distinct from the invite-code `OrgTenant` returned by
 /// join/create — this is the company-scoped listing view.
@@ -51,6 +62,19 @@ pub struct EnterpriseTenantDto {
     pub name: String,
     pub member_count: i64,
     pub created_at: i64,
+}
+
+/// One project group a user belongs to, for the "my project groups" switcher
+/// (Direction B / Phase 2 multi-membership). `is_active` marks the group
+/// currently in effect (resolved via `one_active_tenant`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MyTenantDto {
+    pub tenant_id: String,
+    pub name: String,
+    pub role: String,
+    pub member_count: i64,
+    pub is_active: bool,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -226,5 +250,22 @@ pub struct AuditLogRow {
     pub resource: Option<String>,
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
+    pub created_at: i64,
+}
+
+/// One agent tool-call, for the agent-run audit (P1-1 "可审计的本地优先").
+/// Derived from persisted `messages` (tool-call rows) joined to the owning
+/// conversation — the record of which agent run touched which file / ran which
+/// command / called which tool. `detail` is a best-effort target (command /
+/// path / url) extracted from the tool args.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAuditEntry {
+    pub id: String,
+    pub conversation_id: String,
+    pub user_id: Option<String>,
+    pub tool_name: String,
+    pub detail: Option<String>,
+    pub status: Option<String>,
     pub created_at: i64,
 }

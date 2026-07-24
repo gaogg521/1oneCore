@@ -34,6 +34,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "006_tenant_enterprise_link",
         include_str!("../migrations/006_tenant_enterprise_link.sql"),
     ),
+    (
+        "007_multi_membership",
+        include_str!("../migrations/007_multi_membership.sql"),
+    ),
 ];
 
 /// Run all pending one-org migrations. Idempotent; call once at startup
@@ -91,6 +95,7 @@ mod tests {
             "one_tenants",
             "one_tenant_invites",
             "one_user_org",
+            "one_active_tenant",
             "one_runtime_nodes",
             "one_audit_logs",
         ] {

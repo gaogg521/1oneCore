@@ -51,7 +51,10 @@ mod tests {
     #[tokio::test]
     async fn upsert_config_then_get_returns_same() {
         let service = setup().await;
-        service.upsert_config(true, Some("prov-1"), Some("glm-5-2")).await.unwrap();
+        service
+            .upsert_config(true, Some("prov-1"), Some("glm-5-2"))
+            .await
+            .unwrap();
 
         let config = service.get_config().await.unwrap().unwrap();
         assert!(config.enabled);

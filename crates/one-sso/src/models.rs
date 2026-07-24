@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Provider kind. LDAP is password-based; the others are OAuth.
+/// Provider kind. LDAP is password-based; Feishu/DingTalk/WeCom are国产 OAuth;
+/// OIDC is the standard OpenID Connect flow (Okta / Azure AD / Google
+/// Workspace all speak it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SsoProviderKind {
@@ -10,6 +12,7 @@ pub enum SsoProviderKind {
     Dingtalk,
     Wecom,
     Ldap,
+    Oidc,
 }
 
 impl SsoProviderKind {
@@ -19,6 +22,7 @@ impl SsoProviderKind {
             Self::Dingtalk => "dingtalk",
             Self::Wecom => "wecom",
             Self::Ldap => "ldap",
+            Self::Oidc => "oidc",
         }
     }
 
@@ -28,6 +32,7 @@ impl SsoProviderKind {
             "dingtalk" => Some(Self::Dingtalk),
             "wecom" => Some(Self::Wecom),
             "ldap" => Some(Self::Ldap),
+            "oidc" => Some(Self::Oidc),
             _ => None,
         }
     }

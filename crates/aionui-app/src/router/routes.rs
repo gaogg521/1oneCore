@@ -112,6 +112,25 @@ impl one_sso::CompanyAdminCheck for CompanyAdminCheckAdapter {
     }
 }
 
+/// Adapts one-billing's `BillingService::record_turn` to the conversation
+/// crate's `UsageRecorder` trait (P0-3). Fire-and-forget: spawns the async
+/// insert so metering never blocks or fails the send path.
+struct BillingUsageRecorder(std::sync::Arc<one_billing::BillingService>);
+
+impl aionui_conversation::UsageRecorder for BillingUsageRecorder {
+    fn record_turn(&self, user_id: String, conversation_id: String) {
+        let service = self.0.clone();
+        tokio::spawn(async move {
+            if let Err(e) = service
+                .record_turn(&user_id, Some(&conversation_id), None, None, None)
+                .await
+            {
+                tracing::debug!(error = %e, "usage record_turn failed (non-fatal)");
+            }
+        });
+    }
+}
+
 use super::health::health_check;
 use super::runtime_team_tools::{RuntimeTeamToolsState, runtime_team_tools_routes};
 use super::state::{ModuleStates, RouterBuildError, build_module_states, build_ws_state};
@@ -182,6 +201,13 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
                 "failed to run one-enterprise migrations",
             )
             .with_source(e)
+        })?;
+    // MUST run after one-enterprise: billing_001_init grandfathers existing
+    // one_enterprises rows to the top tier.
+    one_billing::run_one_billing_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new("router.one_billing.migrate", "failed to run one-billing migrations").with_source(e)
         })?;
 
     // Start channel orchestrator (message loop)
@@ -260,9 +286,23 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let system_authenticated =
         system_routes(states.system).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
-    // Conversation routes protected by auth middleware
-    let conversation_authenticated = conversation_routes(states.conversation.clone())
-        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+    // one-billing service (subscription tier / seats / usage). Built here — it
+    // is dependency-free (pool + manual provider) — so its usage recorder can be
+    // injected into the conversation routes below and its routes mounted later.
+    let one_billing_service = std::sync::Arc::new(one_billing::BillingService::new(
+        services.database.pool().clone(),
+        std::sync::Arc::new(one_billing::ManualBillingProvider),
+    ));
+
+    // Conversation routes protected by auth middleware. Metering each accepted
+    // send as one usage turn (P0-3).
+    let conversation_authenticated = conversation_routes(
+        states
+            .conversation
+            .clone()
+            .with_usage_recorder(std::sync::Arc::new(BillingUsageRecorder(one_billing_service.clone()))),
+    )
+    .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     let conversation_ops_authenticated = conversation_ops_routes(states.conversation)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
@@ -396,6 +436,14 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let one_enterprise_authenticated = one_enterprise::one_enterprise_routes(one_enterprise_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // one-billing routes (/api/one/billing/*) — subscription tier, seats, and
+    // usage dashboard. No payment provider wired: manual provisioning via
+    // `PUT /tier`. The service was built above (before the conversation routes)
+    // so its usage recorder could be injected there.
+    let one_billing_state = one_billing::OneBillingRouterState::new(one_billing_service.clone());
+    let one_billing_authenticated = one_billing::one_billing_routes(one_billing_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // one-sso routes. Public half (providers/authorize/callback) is
     // unauthenticated so OAuth can run before the user has a session;
     // admin half (upsert provider) sits behind the auth middleware.
@@ -474,6 +522,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(one_employee_authenticated)
         .merge(one_devops_authenticated)
         .merge(one_enterprise_authenticated)
+        .merge(one_billing_authenticated)
         .merge(one_sso_public)
         .merge(one_sso_admin);
 

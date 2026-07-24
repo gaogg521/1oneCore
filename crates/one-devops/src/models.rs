@@ -101,6 +101,9 @@ pub struct SkillRegistryDto {
     pub auto_active: bool,
     pub scope: String,
     pub team_id: Option<String>,
+    /// Read visibility (P0-4): `'all'` = every member in scope; `'admin'` =
+    /// org/system admins only.
+    pub visibility: String,
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -121,6 +124,8 @@ pub struct McpRegistryDto {
     pub secrets_json: Option<String>,
     pub scope: String,
     pub team_id: Option<String>,
+    /// Read visibility (P0-4): `'all'` | `'admin'`.
+    pub visibility: String,
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -139,6 +144,8 @@ pub struct RagDocumentDto {
     pub chunk_count: i64,
     pub scope: String,
     pub team_id: Option<String>,
+    /// Read visibility (P0-4): `'all'` | `'admin'`.
+    pub visibility: String,
     pub created_by: String,
     pub created_at: i64,
 }

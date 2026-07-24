@@ -155,8 +155,10 @@ async fn build_authorize_goto(
 ) -> Result<(String, String), SsoError> {
     use crate::providers::dingtalk::DingtalkProviderConfig;
     use crate::providers::wecom::WecomProviderConfig;
-    use crate::providers::{dingtalk::DingtalkProvider, feishu::FeishuProvider, wecom::WecomProvider};
-    use crate::service::parse_feishu_config;
+    use crate::providers::{
+        dingtalk::DingtalkProvider, feishu::FeishuProvider, oidc::OidcProvider, wecom::WecomProvider,
+    };
+    use crate::service::{parse_feishu_config, parse_oidc_config};
 
     let state_token = service
         .state_store()
@@ -167,6 +169,11 @@ async fn build_authorize_goto(
         SsoProviderKind::Feishu => {
             let cfg = parse_feishu_config(row).ok_or_else(|| SsoError::ProviderNotConfigured("feishu".into()))?;
             FeishuProvider::build_authorize_url(&cfg, &state_for_goto)
+        }
+        SsoProviderKind::Oidc => {
+            let cfg = parse_oidc_config(row).ok_or_else(|| SsoError::ProviderNotConfigured("oidc".into()))?;
+            let discovery = OidcProvider::discover(&cfg).await?;
+            OidcProvider::build_authorize_url(&discovery, &cfg, &state_for_goto)
         }
         SsoProviderKind::Dingtalk => {
             let cfg: DingtalkProviderConfig = serde_json::from_str(&row.config)
@@ -317,8 +324,10 @@ async fn run_provider_oauth(
 ) -> Result<crate::providers::ProviderUserInfo, SsoError> {
     use crate::providers::dingtalk::DingtalkProviderConfig;
     use crate::providers::wecom::WecomProviderConfig;
-    use crate::providers::{dingtalk::DingtalkProvider, feishu::FeishuProvider, wecom::WecomProvider};
-    use crate::service::parse_feishu_config;
+    use crate::providers::{
+        dingtalk::DingtalkProvider, feishu::FeishuProvider, oidc::OidcProvider, wecom::WecomProvider,
+    };
+    use crate::service::{parse_feishu_config, parse_oidc_config};
 
     let row = service
         .get_provider_row(provider)
@@ -356,6 +365,15 @@ async fn run_provider_oauth(
             let corp_token = WecomProvider::fetch_corp_access_token(&cfg.corp_id, &cfg.secret).await?;
             let user_id = WecomProvider::fetch_user_id_by_code(&corp_token, code).await?;
             Ok(WecomProvider::to_provider_user_info(&user_id))
+        }
+        SsoProviderKind::Oidc => {
+            let cfg = parse_oidc_config(&row).ok_or_else(|| SsoError::ProviderNotConfigured("oidc".into()))?;
+            let discovery = OidcProvider::discover(&cfg).await?;
+            let token = OidcProvider::exchange_code(&discovery, &cfg, code).await?;
+            let claims = OidcProvider::fetch_user_info(&discovery, &token).await?;
+            let external_id = OidcProvider::resolve_external_id(&claims, cfg.external_id_claim_or_default())
+                .ok_or(SsoError::IdentityMissing)?;
+            Ok(OidcProvider::to_provider_user_info(&claims, &external_id, &cfg))
         }
         SsoProviderKind::Ldap => Err(SsoError::BadRequest("LDAP has no OAuth callback".into())),
     }

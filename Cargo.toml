@@ -29,6 +29,7 @@ members = [
     "crates/one-sso",
     "crates/one-devops",
     "crates/one-enterprise",
+    "crates/one-billing",
 ]
 
 [workspace.package]
@@ -66,6 +67,7 @@ one-employee = { path = "crates/one-employee" }
 one-sso = { path = "crates/one-sso" }
 one-devops = { path = "crates/one-devops" }
 one-enterprise = { path = "crates/one-enterprise" }
+one-billing = { path = "crates/one-billing" }
 
 # Pinned to fork gaogg521/aionrs (master) = upstream v0.2.6 + fork-only patches
 # (textualize tool replay, empty tool_call args, deferred schema promote, GLM

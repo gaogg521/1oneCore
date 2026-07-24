@@ -431,11 +431,19 @@ impl DevopsService {
     /// Reads one-org's `one_user_org` table (same SQLite pool). Returns
     /// `Ok(None)` when the table itself does not exist, so a standalone
     /// deployment that never ran one-org migrations keeps working unchanged.
+    ///
+    /// Phase 2 multi-membership: role is scoped to the user's *active* tenant
+    /// (active membership first, else most-recently-joined) — mirrors
+    /// `OrgService::active_tenant_id`.
     pub async fn user_org_role(&self, user_id: &str) -> Result<Option<String>, DevopsError> {
-        let result = sqlx::query_scalar::<_, String>("SELECT role FROM one_user_org WHERE user_id = ?")
-            .bind(user_id)
-            .fetch_optional(&self.pool)
-            .await;
+        let result = sqlx::query_scalar::<_, String>(
+            "SELECT uo.role FROM one_user_org uo WHERE uo.user_id = ? \
+             ORDER BY (uo.tenant_id = (SELECT tenant_id FROM one_active_tenant WHERE user_id = uo.user_id)) DESC, \
+                      uo.created_at DESC, uo.tenant_id ASC LIMIT 1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await;
         match result {
             Ok(role) => Ok(role),
             // Table missing = one-org never initialized = standalone.
@@ -444,15 +452,138 @@ impl DevopsService {
         }
     }
 
+    // -- registry read ACL (P0-4 fine-grained RBAC) -----------------------
+
+    /// WHERE fragment restricting registry reads for a non-privileged member:
+    /// org-wide resources, plus team resources for any project group the viewer
+    /// belongs to (reuses P0-1 `one_user_org` multi-membership), and only
+    /// `visibility='all'` (admin-only resources stay hidden). Binds
+    /// `viewer_user_id` **once**. `prefix` is the column qualifier ("" for a
+    /// single-table read, "d." for the `search_rag` join).
+    fn member_visibility_where(prefix: &str) -> String {
+        format!(
+            "({p}scope = 'org' OR ({p}scope = 'team' AND {p}team_id IN \
+               (SELECT tenant_id FROM one_user_org WHERE user_id = ?))) AND {p}visibility = 'all'",
+            p = prefix
+        )
+    }
+
+    /// True when the viewer sees every resource unfiltered: an org/system admin,
+    /// or a standalone/personal-edition owner (no `one_user_org` row →
+    /// `user_org_role` is `None`, the machine owner). Members are filtered.
+    async fn viewer_is_privileged(&self, viewer_user_id: &str) -> Result<bool, DevopsError> {
+        Ok(match self.user_org_role(viewer_user_id).await? {
+            None => true,
+            Some(role) => role == "org_admin" || role == "system_admin" || role == "admin",
+        })
+    }
+
+    /// Validate a registry write's scope/visibility. When scope is `team` the
+    /// `team_id` must be a real project group (`one_tenants`, one-org's table,
+    /// read via the shared pool — same cross-crate precedent as
+    /// `user_org_role`). Returns the normalized team_id (forced `None` for org
+    /// scope so an org resource never carries a stray team binding).
+    async fn validate_resource_scope<'a>(
+        &self,
+        created_by: &str,
+        scope: &str,
+        team_id: Option<&'a str>,
+        visibility: &str,
+    ) -> Result<Option<&'a str>, DevopsError> {
+        use aionui_common::license::Feature;
+
+        if !matches!(scope, "org" | "team") {
+            return Err(DevopsError::BadRequest("scope must be 'org' or 'team'".into()));
+        }
+        if !matches!(visibility, "all" | "admin") {
+            return Err(DevopsError::BadRequest("visibility must be 'all' or 'admin'".into()));
+        }
+        // P0-3 license gate: team-scoped distribution and admin-only visibility
+        // are paid-tier features. Personal / no-enterprise authors pass (the
+        // gate resolves to allowed). Enforced only for licensed companies.
+        if visibility == "admin"
+            && !self
+                .enterprise_feature_allowed(created_by, Feature::AdminOnlyVisibility)
+                .await?
+        {
+            return Err(DevopsError::Forbidden(
+                "admin-only visibility requires an upgraded plan".into(),
+            ));
+        }
+        if scope == "org" {
+            return Ok(None);
+        }
+        if !self
+            .enterprise_feature_allowed(created_by, Feature::TeamResourceScope)
+            .await?
+        {
+            return Err(DevopsError::Forbidden(
+                "team-scoped distribution requires an upgraded plan".into(),
+            ));
+        }
+        let tid = team_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| DevopsError::BadRequest("team scope requires a project group".into()))?;
+        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_tenants WHERE id = ?")
+            .bind(tid)
+            .fetch_one(&self.pool)
+            .await?;
+        if !exists {
+            return Err(DevopsError::BadRequest(format!("project group '{tid}' not found")));
+        }
+        Ok(Some(tid))
+    }
+
+    /// Whether the author's company plan includes `feature`. Resolves the
+    /// author's SSO company (`one_enterprise_members`) → tier
+    /// (`one_enterprise_license`) → the `aionui-common` matrix. No enterprise,
+    /// or billing not installed → allowed (the personal-edition red line).
+    async fn enterprise_feature_allowed(
+        &self,
+        user_id: &str,
+        feature: aionui_common::license::Feature,
+    ) -> Result<bool, DevopsError> {
+        let enterprise_id: Option<String> =
+            sqlx::query_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?")
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await
+                .unwrap_or(None);
+        let Some(enterprise_id) = enterprise_id else {
+            return Ok(true);
+        };
+        let tier: Option<String> =
+            sqlx::query_scalar("SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?")
+                .bind(&enterprise_id)
+                .fetch_optional(&self.pool)
+                .await
+                .unwrap_or(None);
+        let tier = tier
+            .map(|t| aionui_common::license::Tier::parse(&t))
+            .unwrap_or(aionui_common::license::Tier::Free);
+        Ok(aionui_common::license::tier_allows(tier, feature))
+    }
+
     // -- skill registry ---------------------------------------------------
 
-    pub async fn list_skills(&self) -> Result<Vec<SkillRegistryDto>, DevopsError> {
-        Ok(sqlx::query_as::<_, SkillRegistryDto>(
-            "SELECT id, name, description, content, enabled, auto_active, scope, team_id, created_by, created_at, updated_at \
-             FROM one_skill_registry ORDER BY updated_at DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?)
+    pub async fn list_skills(&self, viewer_user_id: &str) -> Result<Vec<SkillRegistryDto>, DevopsError> {
+        const COLS: &str = "id, name, description, content, enabled, auto_active, scope, team_id, visibility, \
+                            created_by, created_at, updated_at";
+        let privileged = self.viewer_is_privileged(viewer_user_id).await?;
+        let sql = if privileged {
+            format!("SELECT {COLS} FROM one_skill_registry ORDER BY updated_at DESC")
+        } else {
+            format!(
+                "SELECT {COLS} FROM one_skill_registry WHERE {} ORDER BY updated_at DESC",
+                Self::member_visibility_where("")
+            )
+        };
+        let mut q = sqlx::query_as::<_, SkillRegistryDto>(&sql);
+        if !privileged {
+            q = q.bind(viewer_user_id);
+        }
+        Ok(q.fetch_all(&self.pool).await?)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -464,12 +595,18 @@ impl DevopsService {
         content: &str,
         enabled: bool,
         auto_active: bool,
+        scope: &str,
+        team_id: Option<&str>,
+        visibility: &str,
         created_by: &str,
     ) -> Result<SkillRegistryDto, DevopsError> {
         let name = name.trim();
         if name.is_empty() {
             return Err(DevopsError::BadRequest("name is required".into()));
         }
+        let team_id = self
+            .validate_resource_scope(created_by, scope, team_id, visibility)
+            .await?;
         // D7: names must be unique. A duplicate team skill name would
         // materialize two SKILL.md dirs on every member and shadow each other
         // (and can mask a built-in skill) — last-write-wins is unsafe for a
@@ -489,13 +626,17 @@ impl DevopsService {
         let id = match id {
             Some(existing) => {
                 let updated = sqlx::query(
-                    "UPDATE one_skill_registry SET name = ?, description = ?, content = ?, enabled = ?, auto_active = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE one_skill_registry SET name = ?, description = ?, content = ?, enabled = ?, auto_active = ?, \
+                     scope = ?, team_id = ?, visibility = ?, updated_at = ? WHERE id = ?",
                 )
                 .bind(name)
                 .bind(description)
                 .bind(content)
                 .bind(enabled)
                 .bind(auto_active)
+                .bind(scope)
+                .bind(team_id)
+                .bind(visibility)
                 .bind(now)
                 .bind(existing)
                 .execute(&self.pool)
@@ -509,8 +650,8 @@ impl DevopsService {
                 let id = new_id("oskill");
                 sqlx::query(
                     "INSERT INTO one_skill_registry \
-                        (id, name, description, content, enabled, auto_active, scope, team_id, created_by, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, 'org', NULL, ?, ?, ?)",
+                        (id, name, description, content, enabled, auto_active, scope, team_id, visibility, created_by, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(&id)
                 .bind(name)
@@ -518,6 +659,9 @@ impl DevopsService {
                 .bind(content)
                 .bind(enabled)
                 .bind(auto_active)
+                .bind(scope)
+                .bind(team_id)
+                .bind(visibility)
                 .bind(created_by)
                 .bind(now)
                 .bind(now)
@@ -527,7 +671,7 @@ impl DevopsService {
             }
         };
         sqlx::query_as::<_, SkillRegistryDto>(
-            "SELECT id, name, description, content, enabled, auto_active, scope, team_id, created_by, created_at, updated_at \
+            "SELECT id, name, description, content, enabled, auto_active, scope, team_id, visibility, created_by, created_at, updated_at \
              FROM one_skill_registry WHERE id = ?",
         )
         .bind(&id)
@@ -549,13 +693,23 @@ impl DevopsService {
 
     // -- mcp registry -----------------------------------------------------
 
-    pub async fn list_mcp_registry(&self) -> Result<Vec<McpRegistryDto>, DevopsError> {
-        Ok(sqlx::query_as::<_, McpRegistryDto>(
-            "SELECT id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, created_by, created_at, updated_at \
-             FROM one_mcp_registry ORDER BY updated_at DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?)
+    pub async fn list_mcp_registry(&self, viewer_user_id: &str) -> Result<Vec<McpRegistryDto>, DevopsError> {
+        const COLS: &str = "id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, \
+                            created_by, created_at, updated_at";
+        let privileged = self.viewer_is_privileged(viewer_user_id).await?;
+        let sql = if privileged {
+            format!("SELECT {COLS} FROM one_mcp_registry ORDER BY updated_at DESC")
+        } else {
+            format!(
+                "SELECT {COLS} FROM one_mcp_registry WHERE {} ORDER BY updated_at DESC",
+                Self::member_visibility_where("")
+            )
+        };
+        let mut q = sqlx::query_as::<_, McpRegistryDto>(&sql);
+        if !privileged {
+            q = q.bind(viewer_user_id);
+        }
+        Ok(q.fetch_all(&self.pool).await?)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -568,12 +722,18 @@ impl DevopsService {
         enabled: bool,
         has_keys: bool,
         secrets_json: Option<&str>,
+        scope: &str,
+        team_id: Option<&str>,
+        visibility: &str,
         created_by: &str,
     ) -> Result<McpRegistryDto, DevopsError> {
         let name = name.trim();
         if name.is_empty() {
             return Err(DevopsError::BadRequest("name is required".into()));
         }
+        let team_id = self
+            .validate_resource_scope(created_by, scope, team_id, visibility)
+            .await?;
         if !matches!(r#type, "stdio" | "sse") {
             return Err(DevopsError::BadRequest(format!(
                 "invalid type: {type} (allowed: stdio/sse)",
@@ -597,7 +757,8 @@ impl DevopsService {
         let id = match id {
             Some(existing) => {
                 let updated = sqlx::query(
-                    "UPDATE one_mcp_registry SET name = ?, type = ?, endpoint = ?, enabled = ?, has_keys = ?, secrets_json = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE one_mcp_registry SET name = ?, type = ?, endpoint = ?, enabled = ?, has_keys = ?, secrets_json = ?, \
+                     scope = ?, team_id = ?, visibility = ?, updated_at = ? WHERE id = ?",
                 )
                 .bind(name)
                 .bind(r#type)
@@ -605,6 +766,9 @@ impl DevopsService {
                 .bind(enabled)
                 .bind(has_keys)
                 .bind(secrets_json)
+                .bind(scope)
+                .bind(team_id)
+                .bind(visibility)
                 .bind(now)
                 .bind(existing)
                 .execute(&self.pool)
@@ -618,8 +782,8 @@ impl DevopsService {
                 let id = new_id("omcp");
                 sqlx::query(
                     "INSERT INTO one_mcp_registry \
-                        (id, name, type, endpoint, enabled, has_keys, scope, team_id, created_by, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, 'org', NULL, ?, ?, ?)",
+                        (id, name, type, endpoint, enabled, has_keys, scope, team_id, visibility, created_by, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(&id)
                 .bind(name)
@@ -627,6 +791,9 @@ impl DevopsService {
                 .bind(endpoint)
                 .bind(enabled)
                 .bind(has_keys)
+                .bind(scope)
+                .bind(team_id)
+                .bind(visibility)
                 .bind(created_by)
                 .bind(now)
                 .bind(now)
@@ -636,7 +803,7 @@ impl DevopsService {
             }
         };
         sqlx::query_as::<_, McpRegistryDto>(
-            "SELECT id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, created_by, created_at, updated_at \
+            "SELECT id, name, type, endpoint, enabled, has_keys, secrets_json, scope, team_id, visibility, created_by, created_at, updated_at \
              FROM one_mcp_registry WHERE id = ?",
         )
         .bind(&id)
@@ -658,47 +825,66 @@ impl DevopsService {
 
     // -- rag documents (metadata registry) ---------------------------------
 
-    pub async fn list_rag_documents(&self) -> Result<Vec<RagDocumentDto>, DevopsError> {
-        Ok(sqlx::query_as::<_, RagDocumentDto>(
-            "SELECT id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
-                    scope, team_id, created_by, created_at \
-             FROM one_rag_documents ORDER BY created_at DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?)
+    pub async fn list_rag_documents(&self, viewer_user_id: &str) -> Result<Vec<RagDocumentDto>, DevopsError> {
+        const COLS: &str = "id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
+                            scope, team_id, visibility, created_by, created_at";
+        let privileged = self.viewer_is_privileged(viewer_user_id).await?;
+        let sql = if privileged {
+            format!("SELECT {COLS} FROM one_rag_documents ORDER BY created_at DESC")
+        } else {
+            format!(
+                "SELECT {COLS} FROM one_rag_documents WHERE {} ORDER BY created_at DESC",
+                Self::member_visibility_where("")
+            )
+        };
+        let mut q = sqlx::query_as::<_, RagDocumentDto>(&sql);
+        if !privileged {
+            q = q.bind(viewer_user_id);
+        }
+        Ok(q.fetch_all(&self.pool).await?)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn register_rag_document(
         &self,
         title: &str,
         file_path: Option<&str>,
         file_size: Option<i64>,
         mime_type: Option<&str>,
+        scope: &str,
+        team_id: Option<&str>,
+        visibility: &str,
         created_by: &str,
     ) -> Result<RagDocumentDto, DevopsError> {
         let title = title.trim();
         if title.is_empty() {
             return Err(DevopsError::BadRequest("title is required".into()));
         }
+        let team_id = self
+            .validate_resource_scope(created_by, scope, team_id, visibility)
+            .await?;
         let id = new_id("orag");
         let now = now_ms();
         sqlx::query(
             "INSERT INTO one_rag_documents \
-                (id, title, file_path, file_size, mime_type, status, last_error, chunk_count, scope, team_id, created_by, created_at) \
-             VALUES (?, ?, ?, ?, ?, 'pending', NULL, 0, 'org', NULL, ?, ?)",
+                (id, title, file_path, file_size, mime_type, status, last_error, chunk_count, scope, team_id, visibility, created_by, created_at) \
+             VALUES (?, ?, ?, ?, ?, 'pending', NULL, 0, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(title)
         .bind(file_path)
         .bind(file_size)
         .bind(mime_type)
+        .bind(scope)
+        .bind(team_id)
+        .bind(visibility)
         .bind(created_by)
         .bind(now)
         .execute(&self.pool)
         .await?;
         sqlx::query_as::<_, RagDocumentDto>(
             "SELECT id, title, file_path, file_size, mime_type, status, last_error, chunk_count, \
-                    scope, team_id, created_by, created_at \
+                    scope, team_id, visibility, created_by, created_at \
              FROM one_rag_documents WHERE id = ?",
         )
         .bind(&id)
@@ -987,7 +1173,12 @@ impl DevopsService {
     }
 
     /// Embed the query and return the top-k chunks by cosine similarity.
-    pub async fn search_rag(&self, query: &str, top_k: usize) -> Result<Vec<RagSearchHit>, DevopsError> {
+    pub async fn search_rag(
+        &self,
+        viewer_user_id: &str,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<RagSearchHit>, DevopsError> {
         let query = query.trim();
         if query.is_empty() {
             return Err(DevopsError::BadRequest("query is required".into()));
@@ -999,12 +1190,22 @@ impl DevopsService {
             .next()
             .ok_or_else(|| DevopsError::Internal("empty query embedding".into()))?;
 
-        let rows: Vec<(String, i64, String, Vec<u8>, String)> = sqlx::query_as(
-            "SELECT c.document_id, c.chunk_index, c.content, c.embedding, d.title \
-             FROM one_rag_chunks c JOIN one_rag_documents d ON d.id = c.document_id",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        // ACL: a member only retrieves chunks of documents visible to them (org
+        // + their project groups, visibility='all'); admins/owner retrieve all.
+        // Enforced in the join so an invisible document's chunks never surface.
+        const BASE: &str = "SELECT c.document_id, c.chunk_index, c.content, c.embedding, d.title \
+                            FROM one_rag_chunks c JOIN one_rag_documents d ON d.id = c.document_id";
+        let privileged = self.viewer_is_privileged(viewer_user_id).await?;
+        let sql = if privileged {
+            BASE.to_string()
+        } else {
+            format!("{BASE} WHERE {}", Self::member_visibility_where("d."))
+        };
+        let mut q = sqlx::query_as::<_, (String, i64, String, Vec<u8>, String)>(&sql);
+        if !privileged {
+            q = q.bind(viewer_user_id);
+        }
+        let rows: Vec<(String, i64, String, Vec<u8>, String)> = q.fetch_all(&self.pool).await?;
 
         let mut hits: Vec<RagSearchHit> = rows
             .into_iter()
@@ -1518,26 +1719,61 @@ mod tests {
     #[tokio::test]
     async fn registry_names_must_be_unique() {
         let svc = service().await;
-        svc.upsert_skill(None, "review", "d", "c", true, false, "u1")
+        svc.upsert_skill(None, "review", "d", "c", true, false, "org", None, "all", "u1")
             .await
             .unwrap();
         // Same name, different (new) record → rejected.
         let err = svc
-            .upsert_skill(None, "review", "d2", "c2", true, false, "u1")
+            .upsert_skill(None, "review", "d2", "c2", true, false, "org", None, "all", "u1")
             .await
             .unwrap_err();
         assert_eq!(err.code(), "BAD_REQUEST");
         // Updating the existing record keeps its own name → allowed.
-        let first = svc.list_skills().await.unwrap().pop().unwrap();
-        svc.upsert_skill(Some(&first.id), "review", "d3", "c3", false, true, "u1")
-            .await
-            .unwrap();
+        let first = svc.list_skills("u1").await.unwrap().pop().unwrap();
+        svc.upsert_skill(
+            Some(&first.id),
+            "review",
+            "d3",
+            "c3",
+            false,
+            true,
+            "org",
+            None,
+            "all",
+            "u1",
+        )
+        .await
+        .unwrap();
 
-        svc.upsert_mcp_registry(None, "search", "sse", "https://a/sse", true, false, None, "u1")
-            .await
-            .unwrap();
+        svc.upsert_mcp_registry(
+            None,
+            "search",
+            "sse",
+            "https://a/sse",
+            true,
+            false,
+            None,
+            "org",
+            None,
+            "all",
+            "u1",
+        )
+        .await
+        .unwrap();
         let err = svc
-            .upsert_mcp_registry(None, "search", "sse", "https://b/sse", true, false, None, "u1")
+            .upsert_mcp_registry(
+                None,
+                "search",
+                "sse",
+                "https://b/sse",
+                true,
+                false,
+                None,
+                "org",
+                None,
+                "all",
+                "u1",
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code(), "BAD_REQUEST");
@@ -1787,8 +2023,11 @@ mod tests {
         assert_eq!(svc.user_org_role("u1").await.unwrap(), None);
 
         // Enterprise: role rows resolve, distinguishing member from admin.
+        // Phase 2: `user_org_role` scopes to the active tenant, so the
+        // cross-crate `one_active_tenant` table must exist too (empty is fine).
         sqlx::raw_sql(
-            "CREATE TABLE one_user_org (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
+            "CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id));
+             CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('member1', 't1', 'member');
              INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('admin1', 't1', 'org_admin');",
         )
@@ -1800,33 +2039,311 @@ mod tests {
         assert_eq!(svc.user_org_role("stranger").await.unwrap(), None);
     }
 
+    /// Seed a two-group enterprise: memberA∈Group A, memberB∈Group B, admin1 is
+    /// org_admin. Shared by the P0-4 read-ACL tests.
+    async fn seed_two_group_enterprise(svc: &DevopsService) {
+        sqlx::raw_sql(
+            "CREATE TABLE one_tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id));
+             CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO one_tenants (id, name) VALUES ('tA', 'Group A'), ('tB', 'Group B');
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('memberA', 'tA', 'member'), ('memberB', 'tB', 'member'), ('admin1', 'tA', 'org_admin');
+             INSERT INTO one_active_tenant (user_id, tenant_id) VALUES ('memberA', 'tA'), ('memberB', 'tB'), ('admin1', 'tA');",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn registry_read_acl_filters_by_team_and_role() {
+        let svc = service().await;
+        seed_two_group_enterprise(&svc).await;
+
+        // Four resources per registry: org-wide, Group-A-only, Group-B-only,
+        // and admin-only (org-wide but visibility='admin'). admin1 authors them.
+        for (name, scope, team, vis) in [
+            ("org-skill", "org", None, "all"),
+            ("a-skill", "team", Some("tA"), "all"),
+            ("b-skill", "team", Some("tB"), "all"),
+            ("secret-skill", "org", None, "admin"),
+        ] {
+            svc.upsert_skill(None, name, "", "", true, false, scope, team, vis, "admin1")
+                .await
+                .unwrap();
+        }
+        for (name, scope, team, vis) in [
+            ("org-mcp", "org", None, "all"),
+            ("a-mcp", "team", Some("tA"), "all"),
+            ("b-mcp", "team", Some("tB"), "all"),
+            ("secret-mcp", "org", None, "admin"),
+        ] {
+            svc.upsert_mcp_registry(
+                None,
+                name,
+                "sse",
+                "https://x/sse",
+                true,
+                false,
+                None,
+                scope,
+                team,
+                vis,
+                "admin1",
+            )
+            .await
+            .unwrap();
+        }
+        for (title, scope, team, vis) in [
+            ("org-doc", "org", None, "all"),
+            ("a-doc", "team", Some("tA"), "all"),
+            ("b-doc", "team", Some("tB"), "all"),
+            ("secret-doc", "org", None, "admin"),
+        ] {
+            svc.register_rag_document(title, None, None, None, scope, team, vis, "admin1")
+                .await
+                .unwrap();
+        }
+
+        // memberA (Group A): org + Group-A only; never Group B, never admin-only.
+        let a_skills: Vec<String> = svc
+            .list_skills("memberA")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(a_skills.len(), 2, "memberA sees org + Group A skills");
+        assert!(a_skills.contains(&"org-skill".to_string()));
+        assert!(a_skills.contains(&"a-skill".to_string()));
+        assert!(
+            !a_skills.contains(&"b-skill".to_string()),
+            "Group B hidden from memberA"
+        );
+        assert!(
+            !a_skills.contains(&"secret-skill".to_string()),
+            "admin-only hidden from member"
+        );
+        assert_eq!(svc.list_mcp_registry("memberA").await.unwrap().len(), 2);
+        assert_eq!(svc.list_rag_documents("memberA").await.unwrap().len(), 2);
+
+        // memberB (Group B): org + Group-B only.
+        let b_skills: Vec<String> = svc
+            .list_skills("memberB")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(b_skills.len(), 2);
+        assert!(b_skills.contains(&"b-skill".to_string()));
+        assert!(!b_skills.contains(&"a-skill".to_string()));
+        assert_eq!(svc.list_mcp_registry("memberB").await.unwrap().len(), 2);
+        assert_eq!(svc.list_rag_documents("memberB").await.unwrap().len(), 2);
+
+        // admin1 (org_admin) sees everything, including both groups + admin-only.
+        assert_eq!(svc.list_skills("admin1").await.unwrap().len(), 4);
+        assert_eq!(svc.list_mcp_registry("admin1").await.unwrap().len(), 4);
+        assert_eq!(svc.list_rag_documents("admin1").await.unwrap().len(), 4);
+
+        // Standalone/personal owner (no one_user_org row) sees everything too —
+        // the machine owner is never filtered (red line).
+        assert_eq!(svc.list_skills("nobody").await.unwrap().len(), 4);
+        assert_eq!(svc.list_rag_documents("nobody").await.unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn search_rag_visibility_join_scopes_documents_to_viewer() {
+        // search_rag's embedding call needs a live endpoint, so exercise its ACL
+        // predicate directly: run the exact `d.`-qualified join filter it builds
+        // and assert which documents a member can retrieve chunks from.
+        let svc = service().await;
+        seed_two_group_enterprise(&svc).await;
+        for (title, scope, team, vis) in [
+            ("org-doc", "org", None, "all"),
+            ("a-doc", "team", Some("tA"), "all"),
+            ("b-doc", "team", Some("tB"), "all"),
+            ("secret-doc", "org", None, "admin"),
+        ] {
+            let doc = svc
+                .register_rag_document(title, None, None, None, scope, team, vis, "admin1")
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO one_rag_chunks (id, document_id, chunk_index, content, embedding, created_at) VALUES (?, ?, 0, ?, ?, 0)")
+                .bind(new_id("chunk"))
+                .bind(&doc.id)
+                .bind(format!("{title} body"))
+                .bind(Vec::<u8>::new())
+                .execute(&svc.pool)
+                .await
+                .unwrap();
+        }
+
+        let sql = format!(
+            "SELECT d.title FROM one_rag_chunks c JOIN one_rag_documents d ON d.id = c.document_id WHERE {}",
+            DevopsService::member_visibility_where("d.")
+        );
+        let titles: Vec<String> = sqlx::query_scalar(&sql)
+            .bind("memberA")
+            .fetch_all(&svc.pool)
+            .await
+            .unwrap();
+        assert_eq!(titles.len(), 2, "memberA retrieves only org + Group A chunks");
+        assert!(titles.contains(&"org-doc".to_string()));
+        assert!(titles.contains(&"a-doc".to_string()));
+        assert!(!titles.contains(&"b-doc".to_string()));
+        assert!(!titles.contains(&"secret-doc".to_string()));
+    }
+
+    #[tokio::test]
+    async fn free_tier_company_cannot_write_team_scoped_or_admin_only() {
+        let svc = service().await;
+        seed_two_group_enterprise(&svc).await;
+        // Install billing + put admin1's company on the free tier.
+        sqlx::raw_sql(
+            "CREATE TABLE one_enterprise_members (user_id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, role TEXT);
+             CREATE TABLE one_enterprise_license (enterprise_id TEXT PRIMARY KEY, tier TEXT NOT NULL, seat_limit INTEGER, expires_at INTEGER, updated_at INTEGER);
+             INSERT INTO one_enterprise_members (user_id, enterprise_id, role) VALUES ('admin1', 'ent1', 'admin');
+             INSERT INTO one_enterprise_license (enterprise_id, tier, updated_at) VALUES ('ent1', 'free', 0);",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+
+        // Free tier: team scope + admin-only visibility are both gated.
+        let err = svc
+            .upsert_skill(None, "s", "", "", true, false, "team", Some("tA"), "all", "admin1")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "FORBIDDEN");
+        let err = svc
+            .upsert_skill(None, "s2", "", "", true, false, "org", None, "admin", "admin1")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "FORBIDDEN");
+        // Plain org/all still works on free tier.
+        svc.upsert_skill(None, "s3", "", "", true, false, "org", None, "all", "admin1")
+            .await
+            .unwrap();
+
+        // Upgrade to enterprise → both allowed.
+        sqlx::query("UPDATE one_enterprise_license SET tier = 'enterprise' WHERE enterprise_id = 'ent1'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        svc.upsert_skill(None, "s4", "", "", true, false, "team", Some("tA"), "admin", "admin1")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn registry_write_rejects_invalid_scope_or_unknown_group() {
+        let svc = service().await;
+        seed_two_group_enterprise(&svc).await;
+
+        // Unknown project group.
+        let err = svc
+            .upsert_skill(None, "s", "", "", true, false, "team", Some("ghost"), "all", "admin1")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "BAD_REQUEST");
+
+        // team scope without a team_id.
+        let err = svc
+            .upsert_skill(None, "s2", "", "", true, false, "team", None, "all", "admin1")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "BAD_REQUEST");
+
+        // Bad scope / visibility values.
+        assert_eq!(
+            svc.upsert_skill(None, "s3", "", "", true, false, "planet", None, "all", "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+        assert_eq!(
+            svc.register_rag_document("d", None, None, None, "org", None, "secret", "admin1")
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+
+        // A valid team-scoped write to an existing group succeeds and persists.
+        let ok = svc
+            .upsert_skill(None, "s4", "", "", true, false, "team", Some("tA"), "admin", "admin1")
+            .await
+            .unwrap();
+        assert_eq!(ok.scope, "team");
+        assert_eq!(ok.team_id.as_deref(), Some("tA"));
+        assert_eq!(ok.visibility, "admin");
+    }
+
     #[tokio::test]
     async fn registries_crud() {
         let svc = service().await;
 
         let skill = svc
-            .upsert_skill(None, "review", "code review", "...", true, false, "u1")
+            .upsert_skill(
+                None,
+                "review",
+                "code review",
+                "...",
+                true,
+                false,
+                "org",
+                None,
+                "all",
+                "u1",
+            )
             .await
             .unwrap();
         assert!(!skill.auto_active);
+        assert_eq!(skill.scope, "org");
+        assert_eq!(skill.visibility, "all");
         let skill = svc
-            .upsert_skill(Some(&skill.id), "review", "better desc", "...", false, true, "u1")
+            .upsert_skill(
+                Some(&skill.id),
+                "review",
+                "better desc",
+                "...",
+                false,
+                true,
+                "org",
+                None,
+                "all",
+                "u1",
+            )
             .await
             .unwrap();
         assert!(!skill.enabled);
         assert!(skill.auto_active, "admin can flip a skill to auto-active");
-        assert_eq!(svc.list_skills().await.unwrap().len(), 1);
+        assert_eq!(svc.list_skills("u1").await.unwrap().len(), 1);
         svc.delete_skill(&skill.id).await.unwrap();
-        assert!(svc.list_skills().await.unwrap().is_empty());
+        assert!(svc.list_skills("u1").await.unwrap().is_empty());
 
         let mcp = svc
-            .upsert_mcp_registry(None, "search", "sse", "https://mcp.corp/sse", true, true, None, "u1")
+            .upsert_mcp_registry(
+                None,
+                "search",
+                "sse",
+                "https://mcp.corp/sse",
+                true,
+                true,
+                None,
+                "org",
+                None,
+                "all",
+                "u1",
+            )
             .await
             .unwrap();
         assert!(mcp.has_keys);
-        assert_eq!(svc.list_mcp_registry().await.unwrap().len(), 1);
+        assert_eq!(svc.list_mcp_registry("u1").await.unwrap().len(), 1);
         let err = svc
-            .upsert_mcp_registry(None, "bad", "ws", "", true, false, None, "u1")
+            .upsert_mcp_registry(None, "bad", "ws", "", true, false, None, "org", None, "all", "u1")
             .await
             .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));
@@ -1838,14 +2355,17 @@ mod tests {
                 Some("/data/handbook.pdf"),
                 Some(1024),
                 Some("application/pdf"),
+                "org",
+                None,
+                "all",
                 "u1",
             )
             .await
             .unwrap();
         assert_eq!(doc.status, "pending");
-        assert_eq!(svc.list_rag_documents().await.unwrap().len(), 1);
+        assert_eq!(svc.list_rag_documents("u1").await.unwrap().len(), 1);
         svc.delete_rag_document(&doc.id).await.unwrap();
-        assert!(svc.list_rag_documents().await.unwrap().is_empty());
+        assert!(svc.list_rag_documents("u1").await.unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@ mod enums;
 mod error;
 mod hooks;
 mod id;
+pub mod license;
 mod pagination;
 mod timestamp;
 mod types;

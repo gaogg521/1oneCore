@@ -270,6 +270,12 @@ async fn send_msg(
         .send_message(&user.id, &id, req, &state.task_manager)
         .await
         .map_err(ApiError::from)?;
+    // P0-3 usage metering: one accepted send = one metered turn. Fire-and-forget
+    // — never blocks or fails the send. No-op when no recorder is wired
+    // (personal builds).
+    if let Some(recorder) = &state.usage_recorder {
+        recorder.record_turn(user.id.clone(), id.clone());
+    }
     Ok((StatusCode::ACCEPTED, Json(ApiResponse::ok(response))))
 }
 

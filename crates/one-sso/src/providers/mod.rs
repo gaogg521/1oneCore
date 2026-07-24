@@ -8,15 +8,21 @@
 //!
 //! LDAP is password-based and lives in `ldap.rs`; it exposes
 //! `authenticate(config, username, password) -> LdapAuthSuccess`.
+//!
+//! OIDC (`oidc.rs`) is the standard OpenID Connect authorization-code flow
+//! (Okta / Azure AD / Google Workspace); it discovers its endpoints and adds a
+//! `discover` step before `build_authorize_url` / `exchange_code`.
 
 pub mod dingtalk;
 pub mod feishu;
 pub mod ldap;
+pub mod oidc;
 pub mod wecom;
 
 pub use dingtalk::DingtalkProvider;
 pub use feishu::FeishuProvider;
 pub use ldap::LdapProvider;
+pub use oidc::OidcProvider;
 pub use wecom::WecomProvider;
 
 /// Normalized user info across OAuth providers.

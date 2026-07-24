@@ -291,7 +291,8 @@ async fn dispatch_core(state: &OneDevopsRouterState, user_id: &str, id: &str) ->
     // best-effort — RAG unconfigured, embedding endpoint down, or an empty
     // index must never block a dispatch (and standalone mode has no RAG).
     let rag_query = format!("{} {}", req.subject, req.description.as_deref().unwrap_or(""));
-    if let Ok(hits) = state.service.search_rag(&rag_query, 3).await {
+    // Scope retrieval to what the dispatching user may see (P0-4 ACL).
+    if let Ok(hits) = state.service.search_rag(user_id, &rag_query, 3).await {
         let relevant: Vec<_> = hits.into_iter().filter(|h| h.score >= 0.35).collect();
         if !relevant.is_empty() {
             task_context.push_str("\n\n——团队知识库参考（自动检索，按相关度）——\n");
@@ -535,8 +536,9 @@ async fn require_registry_admin(state: &OneDevopsRouterState, user_id: &str) -> 
 
 async fn list_skills(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<SkillRegistryDto>>>, DevopsError> {
-    Ok(Json(ApiResponse::ok(state.service.list_skills().await?)))
+    Ok(Json(ApiResponse::ok(state.service.list_skills(&user.id).await?)))
 }
 
 #[derive(Deserialize)]
@@ -555,10 +557,27 @@ struct UpsertSkillBody {
     /// member agents. Defaults to opt-in (false).
     #[serde(default)]
     auto_active: bool,
+    /// P0-4 read ACL: `'org'` (whole enterprise) or `'team'` (a project group).
+    #[serde(default = "default_scope_org")]
+    scope: String,
+    /// Project group id when scope is `'team'`.
+    #[serde(default)]
+    team_id: Option<String>,
+    /// `'all'` (every member in scope) or `'admin'` (admins only).
+    #[serde(default = "default_visibility_all")]
+    visibility: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_scope_org() -> String {
+    "org".into()
+}
+
+fn default_visibility_all() -> String {
+    "all".into()
 }
 
 async fn upsert_skill(
@@ -576,6 +595,9 @@ async fn upsert_skill(
             &body.content,
             body.enabled,
             body.auto_active,
+            &body.scope,
+            body.team_id.as_deref(),
+            &body.visibility,
             &user.id,
         )
         .await?;
@@ -596,8 +618,9 @@ async fn delete_skill(
 
 async fn list_mcp(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<McpRegistryDto>>>, DevopsError> {
-    Ok(Json(ApiResponse::ok(state.service.list_mcp_registry().await?)))
+    Ok(Json(ApiResponse::ok(state.service.list_mcp_registry(&user.id).await?)))
 }
 
 #[derive(Deserialize)]
@@ -617,6 +640,13 @@ struct UpsertMcpBody {
     /// stdio `env` / sse `headers` JSON, distributed to members (D5).
     #[serde(default)]
     secrets_json: Option<String>,
+    /// P0-4 read ACL — see UpsertSkillBody.
+    #[serde(default = "default_scope_org")]
+    scope: String,
+    #[serde(default)]
+    team_id: Option<String>,
+    #[serde(default = "default_visibility_all")]
+    visibility: String,
 }
 
 fn default_stdio() -> String {
@@ -639,6 +669,9 @@ async fn upsert_mcp(
             body.enabled,
             body.has_keys,
             body.secrets_json.as_deref(),
+            &body.scope,
+            body.team_id.as_deref(),
+            &body.visibility,
             &user.id,
         )
         .await?;
@@ -659,8 +692,9 @@ async fn delete_mcp(
 
 async fn list_rag(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<RagDocumentDto>>>, DevopsError> {
-    Ok(Json(ApiResponse::ok(state.service.list_rag_documents().await?)))
+    Ok(Json(ApiResponse::ok(state.service.list_rag_documents(&user.id).await?)))
 }
 
 #[derive(Deserialize)]
@@ -673,6 +707,13 @@ struct RegisterRagBody {
     file_size: Option<i64>,
     #[serde(default)]
     mime_type: Option<String>,
+    /// P0-4 read ACL — see UpsertSkillBody.
+    #[serde(default = "default_scope_org")]
+    scope: String,
+    #[serde(default)]
+    team_id: Option<String>,
+    #[serde(default = "default_visibility_all")]
+    visibility: String,
 }
 
 async fn register_rag(
@@ -688,6 +729,9 @@ async fn register_rag(
             body.file_path.as_deref(),
             body.file_size,
             body.mime_type.as_deref(),
+            &body.scope,
+            body.team_id.as_deref(),
+            &body.visibility,
             &user.id,
         )
         .await?;
@@ -775,9 +819,13 @@ struct SearchRagBody {
 
 async fn search_rag(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Json(body): Json<SearchRagBody>,
 ) -> Result<Json<ApiResponse<Vec<RagSearchHit>>>, DevopsError> {
-    let hits = state.service.search_rag(&body.query, body.top_k.unwrap_or(5)).await?;
+    let hits = state
+        .service
+        .search_rag(&user.id, &body.query, body.top_k.unwrap_or(5))
+        .await?;
     Ok(Json(ApiResponse::ok(hits)))
 }
 

@@ -15,14 +15,16 @@ use serde::Serialize;
 use sqlx::SqlitePool;
 
 use aionui_auth::{generate_random_secret_string, hash_password, verify_password};
+use aionui_common::license::{Feature, Tier, tier_allows};
 use aionui_common::now_ms;
 use aionui_db::IUserRepository;
 
 use crate::error::OrgError;
 use crate::models::{
-    AdminUserDto, AuditLogRow, DEFAULT_TENANT_ID, EnterpriseTenantDto, InviteDto, InviteRow, OrgContextDto,
-    ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow,
-    SYSTEM_DEFAULT_USER_ID, TenantRow, UserOrgRow, is_admin_role, is_enterprise_tenant_id, is_system_admin_role,
+    AdminUserDto, AgentAuditEntry, AuditLogRow, DEFAULT_TENANT_ID, EnterpriseTenantDto, InviteDto, InviteRow,
+    MyTenantDto, OrgContextDto, ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto,
+    RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, TenantRow, UserOrgRow, is_admin_role, is_enterprise_tenant_id,
+    is_system_admin_role,
 };
 
 pub struct OrgService {
@@ -75,19 +77,67 @@ impl OrgService {
         &self.pool
     }
 
-    // --- membership / roles ---
+    // --- membership / roles / active tenant ---
 
-    pub async fn membership(&self, user_id: &str) -> Result<Option<UserOrgRow>, OrgError> {
-        let row = sqlx::query_as::<_, UserOrgRow>("SELECT * FROM one_user_org WHERE user_id = ?")
+    /// The project group a user is currently acting in (Phase 2
+    /// multi-membership). Resolution order: the explicit `one_active_tenant`
+    /// pointer *if the user is still a member of it*; else the user's
+    /// most-recently-joined membership; else the personal-edition default.
+    ///
+    /// Read-only — never repairs the pointer (join/switch/leave own that), so
+    /// the personal / standalone edition (no membership rows, empty
+    /// `one_active_tenant`) always resolves to `DEFAULT_TENANT_ID` with zero
+    /// writes, exactly as the single-membership model did. This is the single
+    /// choke point every `tenant_of`/`effective_role` caller flows through, so
+    /// the RBAC extractors and the team-resource TenantResolver keep working
+    /// unchanged — they just now see the *active* group.
+    pub async fn active_tenant_id(&self, user_id: &str) -> Result<String, OrgError> {
+        // Preferred: the explicit active-tenant pointer, but only when it still
+        // points at a group the user actually belongs to (the JOIN drops a
+        // pointer left dangling by a `leave`).
+        let active: Option<String> = sqlx::query_scalar(
+            "SELECT at.tenant_id FROM one_active_tenant at \
+             JOIN one_user_org uo ON uo.user_id = at.user_id AND uo.tenant_id = at.tenant_id \
+             WHERE at.user_id = ?",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(tenant_id) = active {
+            return Ok(tenant_id);
+        }
+        // Fallback: any membership, most-recently-joined first.
+        let any: Option<String> = sqlx::query_scalar(
+            "SELECT tenant_id FROM one_user_org WHERE user_id = ? ORDER BY created_at DESC, tenant_id ASC LIMIT 1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(any.unwrap_or_else(|| DEFAULT_TENANT_ID.to_string()))
+    }
+
+    /// The user's membership row in a specific tenant, if any.
+    async fn membership_row(&self, user_id: &str, tenant_id: &str) -> Result<Option<UserOrgRow>, OrgError> {
+        let row = sqlx::query_as::<_, UserOrgRow>("SELECT * FROM one_user_org WHERE user_id = ? AND tenant_id = ?")
             .bind(user_id)
+            .bind(tenant_id)
             .fetch_optional(&self.pool)
             .await?;
         Ok(row)
     }
 
-    /// Effective role: explicit `one_user_org` row wins; the upstream
-    /// built-in operator user is system_admin by default (desktop-operator
-    /// semantics); everyone else is a plain member.
+    /// The user's membership row in their *active* tenant. Kept as the
+    /// single-row accessor the rest of the service (and `effective_role`)
+    /// reads through, so switching the active tenant transparently switches
+    /// which row is "the" membership.
+    pub async fn membership(&self, user_id: &str) -> Result<Option<UserOrgRow>, OrgError> {
+        let tenant_id = self.active_tenant_id(user_id).await?;
+        self.membership_row(user_id, &tenant_id).await
+    }
+
+    /// Effective role in the *active* tenant: explicit `one_user_org` row
+    /// wins; the upstream built-in operator user is system_admin by default
+    /// (desktop-operator semantics); everyone else is a plain member.
     pub async fn effective_role(&self, user_id: &str) -> Result<String, OrgError> {
         if let Some(row) = self.membership(user_id).await? {
             return Ok(row.role);
@@ -99,11 +149,61 @@ impl OrgService {
     }
 
     pub async fn tenant_of(&self, user_id: &str) -> Result<String, OrgError> {
-        Ok(self
-            .membership(user_id)
-            .await?
-            .map(|row| row.tenant_id)
-            .unwrap_or_else(|| DEFAULT_TENANT_ID.to_string()))
+        self.active_tenant_id(user_id).await
+    }
+
+    /// All project groups a user belongs to, for the "my project groups"
+    /// switcher — each with the user's role there, the group's member count,
+    /// and whether it's the currently-active group.
+    pub async fn list_memberships(&self, user_id: &str) -> Result<Vec<MyTenantDto>, OrgError> {
+        let active = self.active_tenant_id(user_id).await?;
+        let rows = sqlx::query_as::<_, (String, String, String, i64)>(
+            "SELECT t.id, t.name, uo.role, \
+                    (SELECT COUNT(*) FROM one_user_org m WHERE m.tenant_id = t.id) AS member_count \
+             FROM one_user_org uo JOIN one_tenants t ON t.id = uo.tenant_id \
+             WHERE uo.user_id = ? ORDER BY uo.created_at ASC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(tenant_id, name, role, member_count)| MyTenantDto {
+                is_active: tenant_id == active,
+                tenant_id,
+                name,
+                role,
+                member_count,
+            })
+            .collect())
+    }
+
+    /// Switch which project group a user is acting in. Validates membership
+    /// (you can only activate a group you belong to) and upserts the pointer.
+    /// No token rotation: the JWT carries only the user id, and every request
+    /// re-resolves tenant/role server-side, so a switch takes effect on the
+    /// next request without re-authentication.
+    pub async fn set_active_tenant(&self, user_id: &str, tenant_id: &str) -> Result<(), OrgError> {
+        let is_member: bool =
+            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_user_org WHERE user_id = ? AND tenant_id = ?")
+                .bind(user_id)
+                .bind(tenant_id)
+                .fetch_one(&self.pool)
+                .await?;
+        if !is_member {
+            return Err(OrgError::NotInEnterprise);
+        }
+        let now = now_ms() as i64;
+        sqlx::query(
+            "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at",
+        )
+        .bind(user_id)
+        .bind(tenant_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Best-effort read of the most recent SSO profile snapshot for a user
@@ -242,16 +342,25 @@ impl OrgService {
     // --- join / create / exit ---
 
     pub async fn join_with_invite(&self, user_id: &str, code_raw: &str) -> Result<(String, String), OrgError> {
-        let current_tenant = self.tenant_of(user_id).await?;
-        if is_enterprise_tenant_id(&current_tenant) {
-            return Err(OrgError::AlreadyInEnterprise);
-        }
-
         let code = normalize_invite_code(code_raw);
         let invite = self
             .find_active_invite_by_code(&code)
             .await?
             .ok_or(OrgError::InvalidCode)?;
+
+        // Phase 2 multi-membership: a user may belong to several project
+        // groups, so joining is only rejected when they are already in *this*
+        // group (idempotency guard that also avoids burning an invite use).
+        // The old "already in any enterprise" gate is gone.
+        let already_member: bool =
+            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_user_org WHERE user_id = ? AND tenant_id = ?")
+                .bind(user_id)
+                .bind(&invite.tenant_id)
+                .fetch_one(&self.pool)
+                .await?;
+        if already_member {
+            return Err(OrgError::AlreadyInEnterprise);
+        }
 
         let now = now_ms() as i64;
         // Snapshot the joiner's SSO profile (if any) onto the new membership
@@ -275,7 +384,7 @@ impl OrgService {
              (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
               org_profile_synced_at, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at, \
+             ON CONFLICT(user_id, tenant_id) DO UPDATE SET updated_at = excluded.updated_at, \
                  display_name = excluded.display_name, org_unit_path = excluded.org_unit_path, \
                  job_title = excluded.job_title, org_profile_source = excluded.org_profile_source, \
                  org_profile_synced_at = excluded.org_profile_synced_at",
@@ -289,6 +398,16 @@ impl OrgService {
         .bind(&org_profile_source)
         .bind(org_profile_synced_at)
         .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        // The group just joined becomes the active one.
+        sqlx::query(
+            "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at",
+        )
+        .bind(user_id)
+        .bind(&invite.tenant_id)
         .bind(now)
         .execute(&mut *tx)
         .await?;
@@ -369,8 +488,8 @@ impl OrgService {
              (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
               org_profile_synced_at, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(user_id) DO UPDATE SET \
-                 tenant_id = excluded.tenant_id, role = excluded.role, updated_at = excluded.updated_at, \
+             ON CONFLICT(user_id, tenant_id) DO UPDATE SET \
+                 role = excluded.role, updated_at = excluded.updated_at, \
                  display_name = excluded.display_name, org_unit_path = excluded.org_unit_path, \
                  job_title = excluded.job_title, org_profile_source = excluded.org_profile_source, \
                  org_profile_synced_at = excluded.org_profile_synced_at",
@@ -384,6 +503,15 @@ impl OrgService {
         .bind(&org_profile_source)
         .bind(org_profile_synced_at)
         .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO one_active_tenant (user_id, tenant_id, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(user_id) DO UPDATE SET tenant_id = excluded.tenant_id, updated_at = excluded.updated_at",
+        )
+        .bind(user_id)
+        .bind(&tenant_id)
         .bind(now)
         .execute(&mut *tx)
         .await?;
@@ -402,10 +530,11 @@ impl OrgService {
     /// intact), this:
     /// - does NOT enforce the global "one server = one enterprise" D3 limit — a
     ///   company legitimately owns many project groups;
-    /// - does NOT auto-join the creator, so `one_user_org`'s one-membership-per-
-    ///   user PK is never stressed (the group starts empty);
-    /// - optionally seeds `initial_admin_user_id` as the group's org_admin, but
-    ///   only if that user has no existing `one_user_org` row (respects the PK);
+    /// - does NOT auto-join the creator (the group starts empty);
+    /// - optionally seeds `initial_admin_user_id` as the group's org_admin —
+    ///   Phase 2 multi-membership allows this even when that user already
+    ///   belongs to other groups (the composite PK `(user_id, tenant_id)` makes
+    ///   a second membership row legitimate);
     /// - auto-generates one invite so the empty group is immediately joinable.
     ///
     /// Authorization (system_admin OR company-admin of `enterprise_id`) is
@@ -420,13 +549,6 @@ impl OrgService {
         let name = name_raw.trim();
         if name.is_empty() {
             return Err(OrgError::NameRequired);
-        }
-        if let Some(admin) = initial_admin_user_id
-            && self.membership(admin).await?.is_some()
-        {
-            return Err(OrgError::Forbidden(
-                "The initial administrator already belongs to a project group".into(),
-            ));
         }
 
         let tenant_id = short_id("tenant");
@@ -464,6 +586,17 @@ impl OrgService {
         )
         .await;
         Ok((tenant_id, name.to_string(), code))
+    }
+
+    /// Every project group on this server (id + name), for admin pickers such
+    /// as the devops resource scope selector (P0-4). Ordered by creation.
+    pub async fn list_all_tenants(&self) -> Result<Vec<crate::models::TenantSummaryDto>, OrgError> {
+        let rows = sqlx::query_as::<_, crate::models::TenantSummaryDto>(
+            "SELECT id, name FROM one_tenants ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 
     /// The project groups a company owns, with per-group member counts.
@@ -558,6 +691,7 @@ impl OrgService {
 
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM one_user_org").execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM one_active_tenant").execute(&mut *tx).await?;
         sqlx::query("DELETE FROM one_tenants").execute(&mut *tx).await?;
         sqlx::query("DELETE FROM one_tenant_invites").execute(&mut *tx).await?;
         tx.commit().await?;
@@ -582,8 +716,15 @@ impl OrgService {
         })
     }
 
-    pub async fn leave(&self, user_id: &str, exit_code: &str) -> Result<(), OrgError> {
-        let membership = self.membership(user_id).await?;
+    /// Leave a project group. `tenant_id` selects which group to leave;
+    /// `None` leaves the user's currently-active group. Scoped delete so a
+    /// user who belongs to several groups only leaves the one named.
+    pub async fn leave(&self, user_id: &str, tenant_id: Option<&str>, exit_code: &str) -> Result<(), OrgError> {
+        let target = match tenant_id {
+            Some(t) => t.to_string(),
+            None => self.active_tenant_id(user_id).await?,
+        };
+        let membership = self.membership_row(user_id, &target).await?;
         let Some(membership) = membership.filter(|m| is_enterprise_tenant_id(&m.tenant_id)) else {
             return Err(OrgError::NotInEnterprise);
         };
@@ -599,10 +740,14 @@ impl OrgService {
             self.ensure_not_last_admin(&membership.tenant_id, user_id).await?;
         }
 
-        sqlx::query("DELETE FROM one_user_org WHERE user_id = ?")
+        sqlx::query("DELETE FROM one_user_org WHERE user_id = ? AND tenant_id = ?")
             .bind(user_id)
+            .bind(&membership.tenant_id)
             .execute(&self.pool)
             .await?;
+        // If the group just left was the active one, repoint to another
+        // membership (or clear the pointer so resolution falls back to default).
+        self.reselect_active_after_leave(user_id, &membership.tenant_id).await?;
         self.invalidate_user_tokens(user_id).await?;
         let username = self.lookup_username(user_id).await;
         self.audit(
@@ -613,6 +758,43 @@ impl OrgService {
             None,
         )
         .await;
+        Ok(())
+    }
+
+    /// After leaving `left_tenant`, if the active pointer named it, move the
+    /// pointer to any remaining membership (most-recently-joined) or delete it
+    /// (so resolution falls back to the personal-edition default). Keeps
+    /// `one_active_tenant` from dangling.
+    async fn reselect_active_after_leave(&self, user_id: &str, left_tenant: &str) -> Result<(), OrgError> {
+        let active: Option<String> = sqlx::query_scalar("SELECT tenant_id FROM one_active_tenant WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        if active.as_deref() != Some(left_tenant) {
+            return Ok(());
+        }
+        let next: Option<String> = sqlx::query_scalar(
+            "SELECT tenant_id FROM one_user_org WHERE user_id = ? ORDER BY created_at DESC, tenant_id ASC LIMIT 1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        match next {
+            Some(t) => {
+                sqlx::query("UPDATE one_active_tenant SET tenant_id = ?, updated_at = ? WHERE user_id = ?")
+                    .bind(&t)
+                    .bind(now_ms() as i64)
+                    .bind(user_id)
+                    .execute(&self.pool)
+                    .await?;
+            }
+            None => {
+                sqlx::query("DELETE FROM one_active_tenant WHERE user_id = ?")
+                    .bind(user_id)
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
         Ok(())
     }
 
@@ -766,6 +948,30 @@ impl OrgService {
             .map(|u| u.username)
     }
 
+    /// Whether the caller's company plan includes `feature`. company
+    /// (`one_enterprise_members`) → tier (`one_enterprise_license`) → the
+    /// `aionui-common` matrix. No enterprise / billing not installed → allowed
+    /// (personal-edition red line). Tolerant of absent tables.
+    pub async fn enterprise_feature_allowed(&self, user_id: &str, feature: Feature) -> Result<bool, OrgError> {
+        let enterprise_id: Option<String> =
+            sqlx::query_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?")
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await
+                .unwrap_or(None);
+        let Some(enterprise_id) = enterprise_id else {
+            return Ok(true);
+        };
+        let tier: Option<String> =
+            sqlx::query_scalar("SELECT tier FROM one_enterprise_license WHERE enterprise_id = ?")
+                .bind(&enterprise_id)
+                .fetch_optional(&self.pool)
+                .await
+                .unwrap_or(None);
+        let tier = tier.map(|t| Tier::parse(&t)).unwrap_or(Tier::Free);
+        Ok(tier_allows(tier, feature))
+    }
+
     pub async fn list_audit_logs(&self, tenant_id: &str, limit: i64) -> Result<Vec<AuditLogRow>, OrgError> {
         let limit = limit.clamp(1, 500);
         let rows = sqlx::query_as::<_, AuditLogRow>(
@@ -777,6 +983,58 @@ impl OrgService {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    /// Agent-run audit (P1-1): every tool the agents invoked — which file /
+    /// command / tool — reconstructed from the persisted `messages` tool-call
+    /// rows joined to the owning conversation. Server-wide (one instance = one
+    /// company); admin-only + AuditLog-gated at the route. Optional filters by
+    /// user, tool name, and time; newest first.
+    pub async fn list_agent_audit(
+        &self,
+        user_filter: Option<&str>,
+        tool_filter: Option<&str>,
+        since_ms: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<AgentAuditEntry>, OrgError> {
+        let limit = limit.clamp(1, 2000);
+        // Tool name / target vary by backend (aionrs vs ACP) — extract
+        // best-effort from a few well-known JSON shapes.
+        let name_expr = "COALESCE(json_extract(m.content,'$.name'), json_extract(m.content,'$.toolName'), \
+                         json_extract(m.content,'$.tool'), '')";
+        let detail_expr = "COALESCE(json_extract(m.content,'$.args.command'), json_extract(m.content,'$.args.path'), \
+                          json_extract(m.content,'$.args.file_path'), json_extract(m.content,'$.args.pattern'), \
+                          json_extract(m.content,'$.args.url'), json_extract(m.content,'$.input.command'), \
+                          json_extract(m.content,'$.input.path'), json_extract(m.content,'$.description'))";
+        let mut sql = format!(
+            "SELECT m.id AS id, m.conversation_id AS conversation_id, c.user_id AS user_id, \
+                    {name_expr} AS tool_name, {detail_expr} AS detail, m.status AS status, m.created_at AS created_at \
+             FROM messages m JOIN conversations c ON c.id = m.conversation_id \
+             WHERE m.type IN ('tool_call', 'acp_tool_call')"
+        );
+        if user_filter.is_some() {
+            sql.push_str(" AND c.user_id = ?");
+        }
+        if tool_filter.is_some() {
+            sql.push_str(&format!(" AND {name_expr} = ?"));
+        }
+        if since_ms.is_some() {
+            sql.push_str(" AND m.created_at >= ?");
+        }
+        sql.push_str(" ORDER BY m.created_at DESC LIMIT ?");
+
+        let mut q = sqlx::query_as::<_, AgentAuditEntry>(&sql);
+        if let Some(u) = user_filter {
+            q = q.bind(u);
+        }
+        if let Some(tool) = tool_filter {
+            q = q.bind(tool);
+        }
+        if let Some(s) = since_ms {
+            q = q.bind(s);
+        }
+        q = q.bind(limit);
+        Ok(q.fetch_all(&self.pool).await?)
     }
 
     // --- admin: users ---
@@ -962,6 +1220,62 @@ mod tests {
         user_repo.create_user(username, "x").await.unwrap().id
     }
 
+    #[tokio::test]
+    async fn agent_audit_reconstructs_tool_calls_from_messages() {
+        let (db, service, user_repo) = setup().await;
+        let uid = create_user(&user_repo, "alice").await;
+        let pool = db.pool();
+        sqlx::query("INSERT INTO conversations (id, user_id, name, type, created_at, updated_at) VALUES ('c1', ?, 'chat', 'acp', 0, 0)")
+            .bind(&uid)
+            .execute(pool)
+            .await
+            .unwrap();
+        // A Read (aionrs shape), a Bash (acp shape), and a non-tool message.
+        sqlx::query(r#"INSERT INTO messages (id, conversation_id, type, content, created_at) VALUES ('m1', 'c1', 'tool_call', '{"name":"Read","args":{"path":"/tmp/a.txt"}}', 10)"#)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO messages (id, conversation_id, type, content, created_at) VALUES ('m2', 'c1', 'acp_tool_call', '{"name":"Bash","args":{"command":"ls -la"}}', 20)"#)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO messages (id, conversation_id, type, content, created_at) VALUES ('m3', 'c1', 'text', '{"text":"hi"}', 5)"#)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // All tool calls, newest first; non-tool message excluded.
+        let all = service.list_agent_audit(None, None, None, 100).await.unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].tool_name, "Bash");
+        assert_eq!(all[0].detail.as_deref(), Some("ls -la"));
+        assert_eq!(all[0].user_id.as_deref(), Some(uid.as_str()));
+        assert_eq!(all[1].tool_name, "Read");
+        assert_eq!(all[1].detail.as_deref(), Some("/tmp/a.txt"));
+
+        // Filter by tool + by user.
+        assert_eq!(
+            service
+                .list_agent_audit(None, Some("Read"), None, 100)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            service
+                .list_agent_audit(Some("bob"), None, None, 100)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // Time filter drops the older Read (created_at 10 < 15).
+        assert_eq!(
+            service.list_agent_audit(None, None, Some(15), 100).await.unwrap().len(),
+            1
+        );
+    }
+
     /// `one_sso_identities` is one-sso's table, not one-org's — recreate the
     /// minimal shape here (same pattern one-sso's own tests use for
     /// `one_user_org`) so `sso_profile_for` has something to read.
@@ -1081,7 +1395,7 @@ mod tests {
         assert_eq!(err.code(), "ALREADY_IN_ENTERPRISE");
 
         // Exit: no password set — member may leave without a code.
-        service.leave(member, "").await.unwrap();
+        service.leave(member, None, "").await.unwrap();
         assert_eq!(service.member_count(&tenant_id).await.unwrap(), 1);
 
         // Re-join to exercise password-gated exit.
@@ -1092,12 +1406,12 @@ mod tests {
         service.set_exit_password(&tenant_id, "s3cret").await.unwrap();
         assert!(service.exit_password_status(&tenant_id).await.unwrap());
 
-        let err = service.leave(member, "wrong").await.unwrap_err();
+        let err = service.leave(member, None, "wrong").await.unwrap_err();
         assert_eq!(err.code(), "WRONG_EXIT_CODE");
 
-        service.leave(member, "s3cret").await.unwrap();
+        service.leave(member, None, "s3cret").await.unwrap();
         assert_eq!(service.member_count(&tenant_id).await.unwrap(), 1);
-        let err = service.leave(member, "s3cret").await.unwrap_err();
+        let err = service.leave(member, None, "s3cret").await.unwrap_err();
         assert_eq!(err.code(), "NOT_IN_ENTERPRISE");
 
         db.close().await;
@@ -1311,7 +1625,7 @@ mod tests {
         // SYSTEM_DEFAULT_USER_ID is the tenant's sole admin; member1 is a
         // plain member. Leaving now would orphan member1 with no one who can
         // invite, configure SSO, or promote a replacement.
-        let err = service.leave(SYSTEM_DEFAULT_USER_ID, "").await.unwrap_err();
+        let err = service.leave(SYSTEM_DEFAULT_USER_ID, None, "").await.unwrap_err();
         assert_eq!(err.code(), "LAST_ADMIN_CANNOT_LEAVE");
         assert_eq!(service.member_count(&tenant_id).await.unwrap(), 2);
 
@@ -1335,7 +1649,7 @@ mod tests {
 
         // Two admins now — SYSTEM_DEFAULT_USER_ID leaving is fine, member1
         // stays behind as org_admin.
-        service.leave(SYSTEM_DEFAULT_USER_ID, "").await.unwrap();
+        service.leave(SYSTEM_DEFAULT_USER_ID, None, "").await.unwrap();
         assert_eq!(service.member_count(&tenant_id).await.unwrap(), 1);
 
         db.close().await;
@@ -1348,7 +1662,7 @@ mod tests {
 
         // Sole admin, sole member — leaving just empties the tenant, no one
         // is orphaned.
-        service.leave(SYSTEM_DEFAULT_USER_ID, "").await.unwrap();
+        service.leave(SYSTEM_DEFAULT_USER_ID, None, "").await.unwrap();
 
         db.close().await;
     }
@@ -1498,21 +1812,139 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_for_enterprise_seeds_initial_admin_and_respects_pk() {
+    async fn create_for_enterprise_seeds_initial_admin_across_multiple_groups() {
         let (db, service, repo) = setup().await;
         let admin = create_user(&repo, "grpadmin").await;
         service
             .create_tenant_for_enterprise("ent1", "Group A", SYSTEM_DEFAULT_USER_ID, Some(&admin))
             .await
             .unwrap();
-        let membership = service.membership(&admin).await.unwrap().unwrap();
-        assert_eq!(membership.role, ROLE_ORG_ADMIN);
-        // Seeding the same user into a second group violates the PK → rejected.
-        let err = service
+        // Phase 2 multi-membership: seeding the same admin into a second group
+        // now succeeds (composite PK), and they belong to both as org_admin.
+        service
             .create_tenant_for_enterprise("ent1", "Group B", SYSTEM_DEFAULT_USER_ID, Some(&admin))
             .await
-            .unwrap_err();
-        assert!(matches!(err, OrgError::Forbidden(_)));
+            .unwrap();
+        let mine = service.list_memberships(&admin).await.unwrap();
+        assert_eq!(mine.len(), 2);
+        assert!(mine.iter().all(|m| m.role == ROLE_ORG_ADMIN));
+        // Exactly one active group (fallback picks the most-recently-created).
+        assert_eq!(mine.iter().filter(|m| m.is_active).count(), 1);
+        db.close().await;
+    }
+
+    // --- Direction B / Phase 2: multi-membership + active-tenant switching ---
+
+    /// Helper: create the standalone tenant + a second company-owned group and
+    /// have `member` join both. Returns (group1_id, group2_id).
+    async fn setup_two_groups(
+        service: &Arc<OrgService>,
+        user_repo: &Arc<dyn IUserRepository>,
+    ) -> (String, String, String) {
+        let (g1, _) = service
+            .create_tenant(SYSTEM_DEFAULT_USER_ID, "Group One")
+            .await
+            .unwrap();
+        let (g2, _, code2) = service
+            .create_tenant_for_enterprise("ent1", "Group Two", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+        let (_, code1) = service
+            .create_invite(&g1, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+        let member = create_user(user_repo, "multi").await;
+        service.join_with_invite(&member, &code1).await.unwrap();
+        service.join_with_invite(&member, &code2).await.unwrap();
+        (g1, g2, member)
+    }
+
+    #[tokio::test]
+    async fn join_second_group_auto_activates_and_lists_both() {
+        let (db, service, user_repo) = setup().await;
+        let (g1, g2, member) = setup_two_groups(&service, &user_repo).await;
+
+        // Belongs to both groups.
+        let mine = service.list_memberships(&member).await.unwrap();
+        assert_eq!(mine.len(), 2);
+        // The most-recently-joined group (g2) is active.
+        assert_eq!(service.active_tenant_id(&member).await.unwrap(), g2);
+        assert_eq!(service.tenant_of(&member).await.unwrap(), g2);
+        assert!(mine.iter().find(|m| m.tenant_id == g2).unwrap().is_active);
+        assert!(!mine.iter().find(|m| m.tenant_id == g1).unwrap().is_active);
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn switch_active_tenant_changes_resolution() {
+        let (db, service, user_repo) = setup().await;
+        let (g1, g2, member) = setup_two_groups(&service, &user_repo).await;
+        assert_eq!(service.active_tenant_id(&member).await.unwrap(), g2);
+
+        service.set_active_tenant(&member, &g1).await.unwrap();
+        assert_eq!(service.active_tenant_id(&member).await.unwrap(), g1);
+        assert_eq!(service.tenant_of(&member).await.unwrap(), g1);
+        let ctx = service.context(&member).await.unwrap();
+        assert_eq!(ctx.tenant_id, g1);
+
+        // Switching to a group you don't belong to is rejected.
+        let err = service.set_active_tenant(&member, "tenant_bogus").await.unwrap_err();
+        assert_eq!(err.code(), "NOT_IN_ENTERPRISE");
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn effective_role_follows_active_tenant() {
+        let (db, service, user_repo) = setup().await;
+        let (g1, g2, member) = setup_two_groups(&service, &user_repo).await;
+        // Promote the member to org_admin in g1 only.
+        service
+            .set_user_role(&g1, SYSTEM_DEFAULT_USER_ID, &member, ROLE_ORG_ADMIN)
+            .await
+            .unwrap();
+
+        // Active is g2 → plain member; switch to g1 → org_admin.
+        assert_eq!(service.active_tenant_id(&member).await.unwrap(), g2);
+        assert_eq!(service.effective_role(&member).await.unwrap(), ROLE_MEMBER);
+        service.set_active_tenant(&member, &g1).await.unwrap();
+        assert_eq!(service.effective_role(&member).await.unwrap(), ROLE_ORG_ADMIN);
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn leave_active_group_reselects_remaining_and_is_scoped() {
+        let (db, service, user_repo) = setup().await;
+        let (g1, g2, member) = setup_two_groups(&service, &user_repo).await;
+        assert_eq!(service.active_tenant_id(&member).await.unwrap(), g2);
+
+        // Leave the active group (g2) → still a member of g1, which becomes
+        // active. Scoped: g1 membership untouched.
+        service.leave(&member, Some(&g2), "").await.unwrap();
+        let mine = service.list_memberships(&member).await.unwrap();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].tenant_id, g1);
+        assert_eq!(service.active_tenant_id(&member).await.unwrap(), g1);
+
+        // Leaving the last group falls back to personal-edition default.
+        service.leave(&member, None, "").await.unwrap();
+        assert!(service.list_memberships(&member).await.unwrap().is_empty());
+        assert_eq!(service.active_tenant_id(&member).await.unwrap(), DEFAULT_TENANT_ID);
+
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn active_tenant_defaults_when_no_membership() {
+        // Red line: personal edition (no membership rows) resolves to the
+        // default tenant with no active-tenant row, exactly as before Phase 2.
+        let (db, service, user_repo) = setup().await;
+        let solo = create_user(&user_repo, "solo").await;
+        assert_eq!(service.active_tenant_id(&solo).await.unwrap(), DEFAULT_TENANT_ID);
+        assert_eq!(service.tenant_of(&solo).await.unwrap(), DEFAULT_TENANT_ID);
+        assert!(service.list_memberships(&solo).await.unwrap().is_empty());
         db.close().await;
     }
 }

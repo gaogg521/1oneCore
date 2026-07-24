@@ -13,8 +13,8 @@ use aionui_api_types::ApiResponse;
 
 use crate::error::OrgError;
 use crate::models::{
-    AdminUserDto, AuditLogRow, EnterpriseTenantDto, InviteDto, OrgContextDto, ResetLocalResult, RuntimeNodeDto,
-    is_enterprise_tenant_id, is_system_admin_role,
+    AdminUserDto, AgentAuditEntry, AuditLogRow, EnterpriseTenantDto, InviteDto, MyTenantDto, OrgContextDto,
+    ResetLocalResult, RuntimeNodeDto, TenantSummaryDto, is_enterprise_tenant_id, is_system_admin_role,
 };
 use crate::rbac::{OrgActor, RequireOrgAdmin};
 use crate::state::OneOrgRouterState;
@@ -25,7 +25,10 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         .route("/api/one/org/public-info", get(org_public_info))
         .route("/api/one/org/invites/preview", post(org_preview_invite))
         .route("/api/one/org/join", post(org_join))
+        .route("/api/one/org/my-tenants", get(org_my_tenants))
+        .route("/api/one/org/switch", post(org_switch))
         .route("/api/one/org/members", get(org_members))
+        .route("/api/one/org/tenants", get(org_list_tenants))
         .route("/api/one/org/invites", get(org_invites))
         .route("/api/one/org/exit", post(org_exit))
         .route("/api/one/org/create", post(org_create))
@@ -45,6 +48,7 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         .route("/api/one/admin/users", get(admin_list_users))
         .route("/api/one/admin/users/{user_id}/role", put(admin_set_user_role))
         .route("/api/one/admin/audit", get(admin_list_audit))
+        .route("/api/one/admin/agent-audit", get(admin_list_agent_audit))
         .route("/api/one/admin/runtime/nodes", get(admin_list_runtime_nodes))
         .route("/api/one/admin/runtime/heartbeat", post(admin_runtime_heartbeat))
         // Direction B: company-scoped project-group management. Gated
@@ -185,6 +189,36 @@ async fn org_join(
     Ok(Json(ApiResponse::ok(TenantDto { tenant_id, tenant_name })))
 }
 
+/// Every project group the caller belongs to (Phase 2 multi-membership), for
+/// the "my project groups" switcher — with role, member count, and which one
+/// is currently active.
+async fn org_my_tenants(
+    State(state): State<OneOrgRouterState>,
+    actor: OrgActor,
+) -> Result<Json<ApiResponse<Vec<MyTenantDto>>>, OrgError> {
+    let tenants = state.service.list_memberships(&actor.user_id).await?;
+    Ok(Json(ApiResponse::ok(tenants)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SwitchBody {
+    tenant_id: String,
+}
+
+/// Switch which project group the caller is acting in. Returns the refreshed
+/// context so the client can update in one round-trip. No token rotation — a
+/// switch takes effect on the next request (see `set_active_tenant`).
+async fn org_switch(
+    State(state): State<OneOrgRouterState>,
+    actor: OrgActor,
+    Json(body): Json<SwitchBody>,
+) -> Result<Json<ApiResponse<OrgContextDto>>, OrgError> {
+    state.service.set_active_tenant(&actor.user_id, &body.tenant_id).await?;
+    let ctx = state.service.context(&actor.user_id).await?;
+    Ok(Json(ApiResponse::ok(ctx)))
+}
+
 /// Read-only tenant roster for any enterprise member (client-mode terminals
 /// see their team without admin rights). Mutations stay on `/api/one/admin/*`
 /// behind `RequireOrgAdmin`.
@@ -197,6 +231,18 @@ async fn org_members(
     }
     let users = state.service.list_users(&actor.tenant_id).await?;
     Ok(Json(ApiResponse::ok(users)))
+}
+
+/// Every project group on this server (id + name), admin-gated — populates the
+/// devops resource scope picker so an admin can bind a distributed skill / MCP
+/// / knowledge doc to a specific project group (P0-4). Standalone/personal mode
+/// has no groups; `RequireOrgAdmin` rejects there and the UI shows no options.
+async fn org_list_tenants(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(_actor): RequireOrgAdmin,
+) -> Result<Json<ApiResponse<Vec<TenantSummaryDto>>>, OrgError> {
+    let tenants = state.service.list_all_tenants().await?;
+    Ok(Json(ApiResponse::ok(tenants)))
 }
 
 /// Read-only invite list for any enterprise member. Members accepted this
@@ -217,6 +263,10 @@ async fn org_invites(
 #[serde(rename_all = "camelCase")]
 struct ExitBody {
     exit_code: String,
+    /// Which project group to leave; omitted = the currently-active group
+    /// (Phase 2 multi-membership).
+    #[serde(default)]
+    tenant_id: Option<String>,
 }
 
 async fn org_exit(
@@ -224,7 +274,10 @@ async fn org_exit(
     actor: OrgActor,
     Json(body): Json<ExitBody>,
 ) -> Result<Json<ApiResponse<()>>, OrgError> {
-    state.service.leave(&actor.user_id, &body.exit_code).await?;
+    state
+        .service
+        .leave(&actor.user_id, body.tenant_id.as_deref(), &body.exit_code)
+        .await?;
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -432,8 +485,68 @@ async fn admin_list_audit(
     RequireOrgAdmin(actor): RequireOrgAdmin,
     Query(query): Query<ListAuditQuery>,
 ) -> Result<Json<ApiResponse<Vec<AuditLogRow>>>, OrgError> {
+    // P0-3 license gate: the audit log is an enterprise-tier feature. Personal /
+    // no-enterprise callers pass (the gate resolves to allowed).
+    if !state
+        .service
+        .enterprise_feature_allowed(&actor.user_id, aionui_common::license::Feature::AuditLog)
+        .await?
+    {
+        return Err(OrgError::Forbidden(
+            "the audit log is not included in the current plan".into(),
+        ));
+    }
     let logs = state.service.list_audit_logs(&actor.tenant_id, query.limit).await?;
     Ok(Json(ApiResponse::ok(logs)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentAuditQuery {
+    /// Filter to one member's runs.
+    #[serde(default)]
+    user_id: Option<String>,
+    /// Filter to one tool name (Read / Write / Bash / …).
+    #[serde(default)]
+    tool: Option<String>,
+    /// Inclusive lower bound (ms).
+    #[serde(default)]
+    since: Option<i64>,
+    #[serde(default = "default_agent_audit_limit")]
+    limit: i64,
+}
+
+fn default_agent_audit_limit() -> i64 {
+    500
+}
+
+/// Agent-run audit (P1-1): which tools the agents invoked — files touched,
+/// commands run — server-wide. Admin-only + AuditLog-tier-gated, matching the
+/// governance audit log. Reconstructed from persisted tool-call messages.
+async fn admin_list_agent_audit(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Query(query): Query<AgentAuditQuery>,
+) -> Result<Json<ApiResponse<Vec<AgentAuditEntry>>>, OrgError> {
+    if !state
+        .service
+        .enterprise_feature_allowed(&actor.user_id, aionui_common::license::Feature::AuditLog)
+        .await?
+    {
+        return Err(OrgError::Forbidden(
+            "agent audit is not included in the current plan".into(),
+        ));
+    }
+    let entries = state
+        .service
+        .list_agent_audit(
+            query.user_id.as_deref(),
+            query.tool.as_deref(),
+            query.since,
+            query.limit,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(entries)))
 }
 
 async fn admin_list_runtime_nodes(

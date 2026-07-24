@@ -12,9 +12,12 @@ use serde_json::json;
 use tower::ServiceExt;
 
 use aionui_db::{
-    CreateMcpServerParams, IConversationRepository, ICronRepository, IMcpServerRepository,
-    SqliteConversationRepository, SqliteCronRepository, SqliteMcpServerRepository,
+    CreateMcpServerParams, IConversationRepository, IMcpServerRepository, SqliteConversationRepository,
+    SqliteMcpServerRepository,
 };
+// Only used by the POSIX-only whitespace-workspace test `cj5b` below.
+#[cfg(not(windows))]
+use aionui_db::{ICronRepository, SqliteCronRepository};
 
 use common::{
     body_json, build_app, build_app_with_mock_agents, delete_with_token, get_request, get_with_token, json_with_token,
@@ -249,6 +252,12 @@ async fn cj3_create_missing_required_fields() {
     }
 }
 
+// POSIX-only: the workspace dir name ends in a space (`"Archive "`). Windows
+// silently strips trailing spaces/dots from path segments, so such a directory
+// can't be faithfully created or addressed there, and
+// `validate_workspace_path_availability` correctly rejects the ambiguous form.
+// Runs on Linux/macOS where trailing-space directory names are valid.
+#[cfg(not(windows))]
 #[tokio::test]
 async fn cj3b_create_accepts_workspace_with_whitespace_segment() {
     let (mut app, services) = build_app().await;
@@ -357,6 +366,9 @@ async fn cj5_get_nonexistent() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
+// POSIX-only for the same reason as `cj3b` above: the workspace dir name ends
+// in a space, which Windows cannot faithfully store.
+#[cfg(not(windows))]
 #[tokio::test]
 async fn cj5b_run_now_legacy_workspace_with_whitespace_succeeds() {
     let (mut app, services) = build_app_with_mock_agents().await;
