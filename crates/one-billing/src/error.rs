@@ -18,6 +18,10 @@ pub enum BillingError {
     EnterpriseNotFound,
     #[error("Seat limit reached for the current plan")]
     SeatLimitExceeded,
+    #[error("The team's usage budget for this period has been reached")]
+    BudgetExceeded,
+    #[error("Model '{0}' is not allowed by the team's policy")]
+    ModelNotAllowed(String),
 }
 
 impl BillingError {
@@ -28,6 +32,8 @@ impl BillingError {
             Self::BadRequest(_) => "BAD_REQUEST",
             Self::EnterpriseNotFound => "ENTERPRISE_NOT_FOUND",
             Self::SeatLimitExceeded => "SEAT_LIMIT_EXCEEDED",
+            Self::BudgetExceeded => "BUDGET_EXCEEDED",
+            Self::ModelNotAllowed(_) => "MODEL_NOT_ALLOWED",
         }
     }
 
@@ -37,7 +43,7 @@ impl BillingError {
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::EnterpriseNotFound => StatusCode::NOT_FOUND,
-            Self::SeatLimitExceeded => StatusCode::CONFLICT,
+            Self::SeatLimitExceeded | Self::BudgetExceeded | Self::ModelNotAllowed(_) => StatusCode::CONFLICT,
         }
     }
 }

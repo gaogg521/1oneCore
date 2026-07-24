@@ -131,6 +131,28 @@ impl aionui_conversation::UsageRecorder for BillingUsageRecorder {
     }
 }
 
+/// Adapts one-billing's `check_send_allowed` to the conversation crate's
+/// `SendGate` trait (P1-2 model control). Blocks a send when the team is over
+/// its spend budget / off-allowlist; personal users always pass.
+struct BillingSendGate(std::sync::Arc<one_billing::BillingService>);
+
+#[async_trait::async_trait]
+impl aionui_conversation::SendGate for BillingSendGate {
+    async fn check_send(&self, user_id: &str, model: Option<&str>) -> Result<(), String> {
+        self.0
+            .check_send_allowed(user_id, model)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn check_model(&self, user_id: &str, model: &str) -> Result<(), String> {
+        self.0
+            .check_model_allowed(user_id, model)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
 use super::health::health_check;
 use super::runtime_team_tools::{RuntimeTeamToolsState, runtime_team_tools_routes};
 use super::state::{ModuleStates, RouterBuildError, build_module_states, build_ws_state};
@@ -300,12 +322,19 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         states
             .conversation
             .clone()
-            .with_usage_recorder(std::sync::Arc::new(BillingUsageRecorder(one_billing_service.clone()))),
+            .with_usage_recorder(std::sync::Arc::new(BillingUsageRecorder(one_billing_service.clone())))
+            .with_send_gate(std::sync::Arc::new(BillingSendGate(one_billing_service.clone()))),
     )
     .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
-    let conversation_ops_authenticated = conversation_ops_routes(states.conversation)
-        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+    // The ops router hosts set-config-option (model switch) — gate it too so
+    // the P1-2 model allowlist is enforced at model selection.
+    let conversation_ops_authenticated = conversation_ops_routes(
+        states
+            .conversation
+            .with_send_gate(std::sync::Arc::new(BillingSendGate(one_billing_service.clone()))),
+    )
+    .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // Remote agent routes protected by auth middleware
     let remote_agent_authenticated = remote_agent_routes(states.remote_agent)

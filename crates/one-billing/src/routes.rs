@@ -22,6 +22,7 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
         .route("/api/one/billing/plan", get(billing_plan))
         .route("/api/one/billing/usage", get(billing_usage))
         .route("/api/one/billing/tier", put(billing_set_tier))
+        .route("/api/one/billing/model-control", put(billing_set_model_control))
         .route("/api/one/billing/checkout", post(billing_checkout))
         .route("/api/one/billing/webhook", post(billing_webhook))
         .with_state(state)
@@ -93,6 +94,38 @@ async fn billing_set_tier(
     state
         .service
         .set_tier(&eid, Tier::parse(&body.tier), body.seat_limit)
+        .await?;
+    Ok(Json(ApiResponse::ok(state.service.plan(&eid).await?)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelControlBody {
+    /// Rolling-30-day spend cap in USD-micros; `null` = remove the cap.
+    #[serde(default)]
+    cost_cap_micros: Option<i64>,
+    /// Allowed model names; empty = allow all.
+    #[serde(default)]
+    allowed_models: Vec<String>,
+}
+
+/// Set the model-control policy (spend cap + model allowlist). Billing-admin.
+async fn billing_set_model_control(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<ModelControlBody>,
+) -> Result<Json<ApiResponse<PlanDto>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden("only an admin can change model control".into()));
+    }
+    let eid = state
+        .service
+        .resolve_enterprise_id(&user.id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)?;
+    state
+        .service
+        .set_model_control(&eid, body.cost_cap_micros, &body.allowed_models)
         .await?;
     Ok(Json(ApiResponse::ok(state.service.plan(&eid).await?)))
 }

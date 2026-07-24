@@ -31,11 +31,20 @@ pub fn conversation_ops_routes(state: ConversationRouterState) -> Router {
 
 async fn set_config_option(
     State(state): State<ConversationRouterState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     Path((id, option_id)): Path<(String, String)>,
     body: Result<Json<SetConfigOptionRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<SetConfigOptionResponse>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    // P1-2 model allowlist (hard): switching the model to one off the team's
+    // allowlist is rejected here — the model-selection layer. Only the "model"
+    // option carries a model value; personal / no-allowlist users pass.
+    if option_id == "model"
+        && let Some(gate) = &state.send_gate
+        && let Err(reason) = gate.check_model(&user.id, &req.value).await
+    {
+        return Err(ApiError::Forbidden(reason));
+    }
     Ok(Json(ApiResponse::ok(
         state
             .service

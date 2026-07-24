@@ -53,6 +53,20 @@ struct License {
     tier: Tier,
     seat_limit: Option<i64>,
     expires_at: Option<i64>,
+    /// Rolling-30-day estimated-cost budget in USD-micros; `None` = no cap (P1-2).
+    cost_cap_micros: Option<i64>,
+    /// Allowed model names; empty = all allowed (P1-2).
+    allowed_models: Vec<String>,
+}
+
+/// Rolling budget window (P1-2): 30 days.
+const BUDGET_WINDOW_MS: i64 = 30 * 24 * 3600 * 1000;
+
+/// Parse the stored `allowed_models` JSON array; malformed / null → empty
+/// (= all models allowed).
+fn parse_allowed_models(json: Option<&str>) -> Vec<String> {
+    json.and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .unwrap_or_default()
 }
 
 impl BillingService {
@@ -73,16 +87,20 @@ impl BillingService {
     }
 
     async fn license_of(&self, enterprise_id: &str) -> Result<License, BillingError> {
-        let row: Option<(String, Option<i64>, Option<i64>)> =
-            sqlx::query_as("SELECT tier, seat_limit, expires_at FROM one_enterprise_license WHERE enterprise_id = ?")
-                .bind(enterprise_id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let row: Option<(String, Option<i64>, Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
+            "SELECT tier, seat_limit, expires_at, monthly_cost_cap_micros, allowed_models \
+             FROM one_enterprise_license WHERE enterprise_id = ?",
+        )
+        .bind(enterprise_id)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(match row {
-            Some((tier, seat_limit, expires_at)) => License {
+            Some((tier, seat_limit, expires_at, cost_cap_micros, allowed_models_json)) => License {
                 tier: Tier::parse(&tier),
                 seat_limit,
                 expires_at,
+                cost_cap_micros,
+                allowed_models: parse_allowed_models(allowed_models_json.as_deref()),
             },
             // No row → a company created before it was licensed, or an unknown
             // id: default to the entry tier (least privilege).
@@ -90,6 +108,8 @@ impl BillingService {
                 tier: Tier::Free,
                 seat_limit: None,
                 expires_at: None,
+                cost_cap_micros: None,
+                allowed_models: Vec::new(),
             },
         })
     }
@@ -152,6 +172,94 @@ impl BillingService {
         Ok(())
     }
 
+    /// Set the model-control policy (P1-2): rolling-30-day spend cap
+    /// (USD-micros; `None` = no cap) and allowed model list (`None`/empty = all
+    /// allowed). Billing-admin path.
+    pub async fn set_model_control(
+        &self,
+        enterprise_id: &str,
+        cost_cap_micros: Option<i64>,
+        allowed_models: &[String],
+    ) -> Result<(), BillingError> {
+        let allowed_json = if allowed_models.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(allowed_models).unwrap_or_else(|_| "[]".to_owned()))
+        };
+        // Upsert onto the (existing or default) license row.
+        sqlx::query(
+            "INSERT INTO one_enterprise_license (enterprise_id, tier, monthly_cost_cap_micros, allowed_models, updated_at) \
+             VALUES (?, 'free', ?, ?, ?) \
+             ON CONFLICT(enterprise_id) DO UPDATE SET monthly_cost_cap_micros = excluded.monthly_cost_cap_micros, \
+                 allowed_models = excluded.allowed_models, updated_at = excluded.updated_at",
+        )
+        .bind(enterprise_id)
+        .bind(cost_cap_micros)
+        .bind(allowed_json)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Estimated spend (USD-micros) for the company over the rolling budget
+    /// window.
+    async fn budget_used_micros(&self, enterprise_id: &str) -> Result<i64, BillingError> {
+        let since = now_ms() - BUDGET_WINDOW_MS;
+        let used: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(estimated_cost_micros), 0) FROM one_usage_events \
+             WHERE enterprise_id = ? AND created_at >= ?",
+        )
+        .bind(enterprise_id)
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+        Ok(used)
+    }
+
+    /// Pre-send gate (P1-2): reject when the company is over its spend budget,
+    /// or the requested `model` is not on its allowlist. Personal / no-company
+    /// users, and companies with neither control set, always pass (red line).
+    pub async fn check_send_allowed(&self, user_id: &str, model: Option<&str>) -> Result<(), BillingError> {
+        let Some(enterprise_id) = self.resolve_enterprise_id(user_id).await? else {
+            return Ok(());
+        };
+        let license = self.license_of(&enterprise_id).await?;
+
+        // Model allowlist.
+        if !license.allowed_models.is_empty()
+            && let Some(model) = model.map(str::trim).filter(|s| !s.is_empty())
+            && !license.allowed_models.iter().any(|m| m == model)
+        {
+            return Err(BillingError::ModelNotAllowed(model.to_owned()));
+        }
+
+        // Spend cap.
+        if let Some(cap) = license.cost_cap_micros
+            && self.budget_used_micros(&enterprise_id).await? >= cap
+        {
+            return Err(BillingError::BudgetExceeded);
+        }
+        Ok(())
+    }
+
+    /// Allowlist-only check (P1-2): whether `model` may be selected under the
+    /// company policy. Used at the model-switch point (budget is enforced
+    /// separately at send). Personal / no-allowlist → allowed.
+    pub async fn check_model_allowed(&self, user_id: &str, model: &str) -> Result<(), BillingError> {
+        let Some(enterprise_id) = self.resolve_enterprise_id(user_id).await? else {
+            return Ok(());
+        };
+        let license = self.license_of(&enterprise_id).await?;
+        let model = model.trim();
+        if !license.allowed_models.is_empty() && !model.is_empty() && !license.allowed_models.iter().any(|m| m == model)
+        {
+            return Err(BillingError::ModelNotAllowed(model.to_owned()));
+        }
+        Ok(())
+    }
+
     /// The company plan for the dashboard: tier, seat usage, entitlements.
     pub async fn plan(&self, enterprise_id: &str) -> Result<PlanDto, BillingError> {
         let license = self.license_of(enterprise_id).await?;
@@ -169,6 +277,9 @@ impl BillingService {
             seat_limit: Self::effective_seat_limit(&license),
             expires_at: license.expires_at,
             entitlements,
+            cost_cap_micros: license.cost_cap_micros,
+            cost_used_micros: self.budget_used_micros(enterprise_id).await?,
+            allowed_models: license.allowed_models,
         })
     }
 
@@ -412,5 +523,56 @@ mod tests {
         let result = svc.create_checkout("ent1", "team");
         assert_eq!(result.status, "manual");
         assert!(result.checkout_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn model_control_gates_send_by_allowlist_and_budget() {
+        let svc = service().await;
+        // Red line: no company → always allowed.
+        assert!(svc.check_send_allowed("nobody", Some("gpt-4")).await.is_ok());
+
+        add_members(&svc, "entX", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'zoe' WHERE enterprise_id = 'entX'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+
+        // Allowlist: only claude-opus-4-8 permitted.
+        svc.set_model_control("entX", None, &["claude-opus-4-8".to_owned()])
+            .await
+            .unwrap();
+        assert!(svc.check_send_allowed("zoe", Some("claude-opus-4-8")).await.is_ok());
+        assert_eq!(
+            svc.check_send_allowed("zoe", Some("gpt-4")).await.unwrap_err().code(),
+            "MODEL_NOT_ALLOWED"
+        );
+        // Unknown model (None) can't be checked → passes the allowlist.
+        assert!(svc.check_send_allowed("zoe", None).await.is_ok());
+        // Dedicated allowlist-only check (model-switch layer).
+        assert!(svc.check_model_allowed("zoe", "claude-opus-4-8").await.is_ok());
+        assert_eq!(
+            svc.check_model_allowed("zoe", "gpt-4").await.unwrap_err().code(),
+            "MODEL_NOT_ALLOWED"
+        );
+        assert!(svc.check_model_allowed("nobody", "anything").await.is_ok()); // personal red line
+
+        // Spend cap: clear the allowlist, set a tiny cap, then overspend.
+        svc.set_model_control("entX", Some(100), &[]).await.unwrap();
+        assert!(svc.check_send_allowed("zoe", Some("gpt-4")).await.is_ok()); // under budget so far
+        svc.record_turn("zoe", Some("c1"), Some("claude-opus-4-8"), Some(1000), Some(1000))
+            .await
+            .unwrap(); // ~90000 micros >> 100
+        assert_eq!(
+            svc.check_send_allowed("zoe", Some("claude-opus-4-8"))
+                .await
+                .unwrap_err()
+                .code(),
+            "BUDGET_EXCEEDED"
+        );
+
+        // The plan surfaces the cap + spend.
+        let plan = svc.plan("entX").await.unwrap();
+        assert_eq!(plan.cost_cap_micros, Some(100));
+        assert!(plan.cost_used_micros >= 100);
     }
 }

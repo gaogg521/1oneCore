@@ -9,7 +9,13 @@ use sqlx::SqlitePool;
 
 use crate::error::BillingError;
 
-const MIGRATIONS: &[(&str, &str)] = &[("billing_001_init", include_str!("../migrations/billing_001_init.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("billing_001_init", include_str!("../migrations/billing_001_init.sql")),
+    (
+        "billing_002_model_control",
+        include_str!("../migrations/billing_002_model_control.sql"),
+    ),
+];
 
 /// Run all pending one-billing migrations. Idempotent; call once at startup
 /// after the upstream database AND one-enterprise migrations have run.

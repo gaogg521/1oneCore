@@ -265,6 +265,14 @@ async fn send_msg(
     body: Result<Json<SendMessageRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ApiResponse<SendMessageResponse>>), ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    // P1-2 model control: block the send when the team is over its spend budget
+    // (or the model is off-allowlist, when a model is known). No-op for
+    // personal / no-company users, or when no gate is wired.
+    if let Some(gate) = &state.send_gate
+        && let Err(reason) = gate.check_send(&user.id, None).await
+    {
+        return Err(ApiError::Forbidden(reason));
+    }
     let response = state
         .service
         .send_message(&user.id, &id, req, &state.task_manager)

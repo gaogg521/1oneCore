@@ -21,6 +21,12 @@ pub struct PlanDto {
     pub seat_limit: Option<i64>,
     pub expires_at: Option<i64>,
     pub entitlements: Vec<EntitlementDto>,
+    /// P1-2 model control: rolling-30-day spend cap (USD-micros); `null` = no cap.
+    pub cost_cap_micros: Option<i64>,
+    /// Estimated spend this budget window (USD-micros).
+    pub cost_used_micros: i64,
+    /// Allowed model names; empty = all allowed.
+    pub allowed_models: Vec<String>,
 }
 
 /// One aggregation bucket (by user, by model, or by day).
