@@ -13,9 +13,11 @@ use aionui_api_types::ApiResponse;
 
 use crate::email::SendEmailResult;
 use crate::error::OrgError;
+use crate::integration::IntegrationTestResult;
 use crate::models::{
-    AdminUserDto, AgentAuditEntry, AuditLogRow, EnterpriseTenantDto, InviteDto, MyTenantDto, OrgContextDto,
-    ResetLocalResult, RuntimeNodeDto, SmtpConfigDto, TenantSummaryDto, is_enterprise_tenant_id, is_system_admin_role,
+    AdminUserDto, AgentAuditEntry, AuditLogRow, DepartmentDto, EnterpriseTenantDto, IntegrationDto, InviteDto,
+    MyTenantDto, OrgContextDto, ResetLocalResult, RuntimeNodeDto, SmtpConfigDto, TenantSummaryDto,
+    is_enterprise_tenant_id, is_system_admin_role,
 };
 use crate::rbac::{OrgActor, RequireOrgAdmin};
 use crate::state::OneOrgRouterState;
@@ -61,6 +63,25 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         // M2e: user management + audit + runtime nodes
         .route("/api/one/admin/users", get(admin_list_users))
         .route("/api/one/admin/users/{user_id}/role", put(admin_set_user_role))
+        .route(
+            "/api/one/admin/users/{user_id}/department",
+            put(admin_assign_member_department),
+        )
+        .route(
+            "/api/one/admin/departments",
+            get(admin_list_departments).post(admin_create_department),
+        )
+        .route(
+            "/api/one/admin/departments/{department_id}",
+            put(admin_rename_department).delete(admin_delete_department),
+        )
+        // P2-1 integration connectors (reserved framework)
+        .route("/api/one/admin/integrations", get(admin_list_integrations))
+        .route("/api/one/admin/integrations/{provider}", put(admin_set_integration))
+        .route(
+            "/api/one/admin/integrations/{provider}/test",
+            post(admin_test_integration),
+        )
         .route("/api/one/admin/audit", get(admin_list_audit))
         .route("/api/one/admin/agent-audit", get(admin_list_agent_audit))
         .route("/api/one/admin/runtime/nodes", get(admin_list_runtime_nodes))
@@ -526,6 +547,76 @@ async fn admin_set_smtp_config(
     Ok(Json(ApiResponse::ok(dto)))
 }
 
+// --- P2-1 integration connectors (reserved framework) ---
+
+async fn admin_list_integrations(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+) -> Result<Json<ApiResponse<Vec<IntegrationDto>>>, OrgError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_integrations(&actor.tenant_id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetIntegrationBody {
+    #[serde(default)]
+    base_url: Option<String>,
+    /// Non-secret provider-specific fields (org / project / repo / board ...).
+    #[serde(default)]
+    config: serde_json::Value,
+    /// Absent/empty = keep the stored secret (if any).
+    #[serde(default)]
+    secret: Option<String>,
+    #[serde(default)]
+    enabled: bool,
+}
+
+/// Reserved connector configuration (P2-1). Saving this does not, by itself,
+/// sync anything — no connector client is wired into this crate. It stores the
+/// admin's credentials so a real `IntegrationProvider` can be dropped in at the
+/// app layer (`OrgService::with_integration_provider`) when ready.
+async fn admin_set_integration(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Path(provider): Path<String>,
+    Json(body): Json<SetIntegrationBody>,
+) -> Result<Json<ApiResponse<IntegrationDto>>, OrgError> {
+    let dto = state
+        .service
+        .set_integration(
+            &actor.tenant_id,
+            &provider,
+            body.base_url.as_deref(),
+            &body.config,
+            body.secret.as_deref(),
+            body.enabled,
+        )
+        .await?;
+    state
+        .service
+        .audit(
+            &actor.tenant_id,
+            Some(&actor.user_id),
+            Some(&actor.username),
+            "org.integration.set",
+            Some(&provider),
+        )
+        .await;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn admin_test_integration(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Path(provider): Path<String>,
+) -> Result<Json<ApiResponse<IntegrationTestResult>>, OrgError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.test_integration(&actor.tenant_id, &provider).await?,
+    )))
+}
+
 async fn admin_revoke_invite(
     State(state): State<OneOrgRouterState>,
     RequireOrgAdmin(actor): RequireOrgAdmin,
@@ -639,6 +730,107 @@ async fn admin_set_user_role(
     state
         .service
         .set_user_role(&actor.tenant_id, &actor.user_id, &user_id, role)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+// --- departments / organizational hierarchy (P2-3) ---
+
+async fn admin_list_departments(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+) -> Result<Json<ApiResponse<Vec<DepartmentDto>>>, OrgError> {
+    let departments = state.service.list_departments(&actor.tenant_id).await?;
+    Ok(Json(ApiResponse::ok(departments)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateDepartmentBody {
+    name: String,
+    #[serde(default)]
+    parent_id: Option<String>,
+}
+
+async fn admin_create_department(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Json(body): Json<CreateDepartmentBody>,
+) -> Result<Json<ApiResponse<DepartmentDto>>, OrgError> {
+    let dept = state
+        .service
+        .create_department(&actor.tenant_id, &body.name, body.parent_id.as_deref())
+        .await?;
+    state
+        .service
+        .audit(
+            &actor.tenant_id,
+            Some(&actor.user_id),
+            Some(&actor.username),
+            "org.department.create",
+            Some(&dept.id),
+        )
+        .await;
+    Ok(Json(ApiResponse::ok(dept)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameDepartmentBody {
+    name: String,
+}
+
+async fn admin_rename_department(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Path(department_id): Path<String>,
+    Json(body): Json<RenameDepartmentBody>,
+) -> Result<Json<ApiResponse<DepartmentDto>>, OrgError> {
+    let dept = state
+        .service
+        .rename_department(&actor.tenant_id, &department_id, &body.name)
+        .await?;
+    Ok(Json(ApiResponse::ok(dept)))
+}
+
+async fn admin_delete_department(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Path(department_id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, OrgError> {
+    state
+        .service
+        .delete_department(&actor.tenant_id, &department_id)
+        .await?;
+    state
+        .service
+        .audit(
+            &actor.tenant_id,
+            Some(&actor.user_id),
+            Some(&actor.username),
+            "org.department.delete",
+            Some(&department_id),
+        )
+        .await;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AssignDepartmentBody {
+    /// `null` clears the member's department assignment.
+    department_id: Option<String>,
+}
+
+async fn admin_assign_member_department(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Path(user_id): Path<String>,
+    Json(body): Json<AssignDepartmentBody>,
+) -> Result<Json<ApiResponse<()>>, OrgError> {
+    state
+        .service
+        .assign_member_department(&actor.tenant_id, &user_id, body.department_id.as_deref())
         .await?;
     Ok(Json(ApiResponse::ok(())))
 }

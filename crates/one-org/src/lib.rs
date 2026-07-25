@@ -12,6 +12,7 @@
 pub mod bridge;
 pub mod email;
 pub mod error;
+pub mod integration;
 pub mod migrate;
 pub mod models;
 pub mod rbac;
@@ -22,6 +23,9 @@ pub mod state;
 pub use bridge::CompanyAdminResolver;
 pub use email::{EmailSender, SendEmailResult, StubEmailSender};
 pub use error::OrgError;
+pub use integration::{
+    IntegrationCredentials, IntegrationProvider, IntegrationTestResult, KNOWN_PROVIDERS, StubIntegrationProvider,
+};
 pub use migrate::run_one_migrations;
 pub use rbac::{OrgActor, RequireOrgAdmin, RequireSystemAdmin};
 pub use routes::one_org_routes;

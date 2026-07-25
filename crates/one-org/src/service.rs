@@ -21,10 +21,11 @@ use aionui_db::IUserRepository;
 
 use crate::email::{EmailSender, SendEmailResult, StubEmailSender};
 use crate::error::OrgError;
+use crate::integration::{IntegrationCredentials, IntegrationProvider, IntegrationTestResult, StubIntegrationProvider};
 use crate::models::{
-    AdminUserDto, AgentAuditEntry, AuditLogRow, DEFAULT_TENANT_ID, EnterpriseTenantDto, InviteDto, InviteRow,
-    MyTenantDto, OrgContextDto, ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto,
-    RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, SmtpConfigDto, TenantRow, UserOrgRow, is_admin_role,
+    AdminUserDto, AgentAuditEntry, AuditLogRow, DEFAULT_TENANT_ID, DepartmentDto, EnterpriseTenantDto, IntegrationDto,
+    InviteDto, InviteRow, MyTenantDto, OrgContextDto, ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult,
+    RuntimeNodeDto, RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, SmtpConfigDto, TenantRow, UserOrgRow, is_admin_role,
     is_enterprise_tenant_id, is_system_admin_role,
 };
 
@@ -39,6 +40,11 @@ pub struct OrgService {
     /// (reports "not configured"); the app layer can swap in a real sender via
     /// `with_email_sender` once SMTP is actually wired.
     email_sender: Arc<dyn EmailSender>,
+    /// Tests integration connectors (P2-1 reserved framework). Defaults to
+    /// `StubIntegrationProvider` (reports "not configured"); the app layer can
+    /// swap in a real provider via `with_integration_provider` once a connector
+    /// client is actually wired.
+    integration_provider: Arc<dyn IntegrationProvider>,
 }
 
 /// Normalize an invite code: strip whitespace/dashes, uppercase.
@@ -85,6 +91,7 @@ impl OrgService {
             data_dir,
             encryption_key,
             email_sender: Arc::new(StubEmailSender),
+            integration_provider: Arc::new(StubIntegrationProvider),
         }
     }
 
@@ -92,6 +99,13 @@ impl OrgService {
     /// the app layer. Chainable at construction time.
     pub fn with_email_sender(mut self, sender: Arc<dyn EmailSender>) -> Self {
         self.email_sender = sender;
+        self
+    }
+
+    /// Swap in a real `IntegrationProvider` once a connector client is wired at
+    /// the app layer (P2-1). Chainable at construction time.
+    pub fn with_integration_provider(mut self, provider: Arc<dyn IntegrationProvider>) -> Self {
+        self.integration_provider = provider;
         self
     }
 
@@ -706,6 +720,153 @@ impl OrgService {
         Ok(self.email_sender.send_invite(to, &display_code, &tenant.name).await)
     }
 
+    // --- Integration connectors (P2-1 reserved framework) ---
+    //
+    // Per-(tenant, provider) connector config. Storing a row does NOT sync
+    // anything — the secret is encrypted at rest and a real
+    // `IntegrationProvider` (wired at the app layer) does the actual work. Until
+    // then a "test" reports "not configured" via `StubIntegrationProvider`.
+
+    /// Parse the stored non-secret `config_json` into a JSON object, defaulting
+    /// to `{}` when null/blank/invalid (never fails the read on bad data).
+    fn parse_config(config_json: Option<String>) -> serde_json::Value {
+        config_json
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    }
+
+    /// All configured connectors for a project group (redacted — no secrets).
+    pub async fn list_integrations(&self, tenant_id: &str) -> Result<Vec<IntegrationDto>, OrgError> {
+        type IntegrationRow = (String, Option<String>, Option<String>, Option<String>, bool, i64);
+        let rows: Vec<IntegrationRow> = sqlx::query_as(
+            "SELECT provider, base_url, config_json, secret_encrypted, enabled, updated_at \
+             FROM one_integrations WHERE tenant_id = ? ORDER BY provider",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(provider, base_url, config_json, secret_encrypted, enabled, updated_at)| IntegrationDto {
+                    provider,
+                    base_url,
+                    config: Self::parse_config(config_json),
+                    has_secret: secret_encrypted.is_some(),
+                    enabled,
+                    updated_at: Some(updated_at),
+                },
+            )
+            .collect())
+    }
+
+    /// One connector's redacted config, or an empty/disabled default when this
+    /// provider has never been configured for the tenant.
+    pub async fn get_integration(&self, tenant_id: &str, provider: &str) -> Result<IntegrationDto, OrgError> {
+        type IntegrationRow = (Option<String>, Option<String>, Option<String>, bool, i64);
+        let row: Option<IntegrationRow> = sqlx::query_as(
+            "SELECT base_url, config_json, secret_encrypted, enabled, updated_at \
+             FROM one_integrations WHERE tenant_id = ? AND provider = ?",
+        )
+        .bind(tenant_id)
+        .bind(provider)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(match row {
+            Some((base_url, config_json, secret_encrypted, enabled, updated_at)) => IntegrationDto {
+                provider: provider.to_owned(),
+                base_url,
+                config: Self::parse_config(config_json),
+                has_secret: secret_encrypted.is_some(),
+                enabled,
+                updated_at: Some(updated_at),
+            },
+            None => IntegrationDto {
+                provider: provider.to_owned(),
+                base_url: None,
+                config: serde_json::json!({}),
+                has_secret: false,
+                enabled: false,
+                updated_at: None,
+            },
+        })
+    }
+
+    /// Upsert a connector. `secret` absent/empty = keep the stored one (if any);
+    /// present = replace (encrypted at rest, same helper as the SMTP password).
+    /// `config` is a non-secret JSON object stored verbatim.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_integration(
+        &self,
+        tenant_id: &str,
+        provider: &str,
+        base_url: Option<&str>,
+        config: &serde_json::Value,
+        secret: Option<&str>,
+        enabled: bool,
+    ) -> Result<IntegrationDto, OrgError> {
+        let existing_secret: Option<String> =
+            sqlx::query_scalar("SELECT secret_encrypted FROM one_integrations WHERE tenant_id = ? AND provider = ?")
+                .bind(tenant_id)
+                .bind(provider)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
+        let secret_encrypted = match secret {
+            Some(s) if !s.is_empty() => {
+                Some(encrypt_string(s, &self.encryption_key).map_err(|e| OrgError::Internal(e.to_string()))?)
+            }
+            _ => existing_secret,
+        };
+        let config_json = serde_json::to_string(config).map_err(|e| OrgError::Internal(e.to_string()))?;
+        sqlx::query(
+            "INSERT INTO one_integrations (tenant_id, provider, base_url, config_json, secret_encrypted, enabled, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(tenant_id, provider) DO UPDATE SET base_url = excluded.base_url, config_json = excluded.config_json, \
+                 secret_encrypted = excluded.secret_encrypted, enabled = excluded.enabled, updated_at = excluded.updated_at",
+        )
+        .bind(tenant_id)
+        .bind(provider)
+        .bind(base_url)
+        .bind(&config_json)
+        .bind(&secret_encrypted)
+        .bind(enabled)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        self.get_integration(tenant_id, provider).await
+    }
+
+    /// The decrypted connector secret, for a real `IntegrationProvider` to
+    /// consume. `None` when unset or decryption fails (never panics).
+    pub async fn integration_secret(&self, tenant_id: &str, provider: &str) -> Result<Option<String>, OrgError> {
+        let encrypted: Option<String> =
+            sqlx::query_scalar("SELECT secret_encrypted FROM one_integrations WHERE tenant_id = ? AND provider = ?")
+                .bind(tenant_id)
+                .bind(provider)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
+        Ok(encrypted.and_then(|e| decrypt_string(&e, &self.encryption_key).ok()))
+    }
+
+    /// Probe a saved connector through whatever `IntegrationProvider` is wired
+    /// (`StubIntegrationProvider` by default — reports "not configured").
+    pub async fn test_integration(&self, tenant_id: &str, provider: &str) -> Result<IntegrationTestResult, OrgError> {
+        let dto = self.get_integration(tenant_id, provider).await?;
+        let secret = self.integration_secret(tenant_id, provider).await?;
+        Ok(self
+            .integration_provider
+            .test_connection(IntegrationCredentials {
+                provider,
+                base_url: dto.base_url.as_deref(),
+                config: &dto.config,
+                secret: secret.as_deref(),
+            })
+            .await)
+    }
+
     pub async fn create_tenant(&self, user_id: &str, name_raw: &str) -> Result<(String, String), OrgError> {
         let name = name_raw.trim();
         if name.is_empty() {
@@ -1317,7 +1478,7 @@ impl OrgService {
     pub async fn list_users(&self, tenant_id: &str) -> Result<Vec<AdminUserDto>, OrgError> {
         let rows = sqlx::query_as::<_, AdminUserDto>(
             "SELECT uo.user_id, u.username, uo.tenant_id, uo.role, uo.display_name, uo.org_unit_path, \
-                    uo.job_title, u.last_login, uo.created_at \
+                    uo.job_title, uo.department_id, u.last_login, uo.created_at \
              FROM one_user_org uo \
              JOIN users u ON u.id = uo.user_id \
              WHERE uo.tenant_id = ? \
@@ -1327,6 +1488,159 @@ impl OrgService {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    // --- departments / organizational hierarchy (P2-3) ---
+
+    /// Create a department (top-level when `parent_id` is `None`). The parent,
+    /// if given, must already exist in the same tenant.
+    pub async fn create_department(
+        &self,
+        tenant_id: &str,
+        name: &str,
+        parent_id: Option<&str>,
+    ) -> Result<DepartmentDto, OrgError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(OrgError::BadRequest("department name is required".into()));
+        }
+        if let Some(pid) = parent_id {
+            let exists: bool =
+                sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_departments WHERE id = ? AND tenant_id = ?")
+                    .bind(pid)
+                    .bind(tenant_id)
+                    .fetch_one(&self.pool)
+                    .await?;
+            if !exists {
+                return Err(OrgError::DepartmentNotFound);
+            }
+        }
+        let id = short_id("dept");
+        let now = now_ms() as i64;
+        sqlx::query(
+            "INSERT INTO one_departments (id, tenant_id, parent_id, name, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(tenant_id)
+        .bind(parent_id)
+        .bind(name)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query_as::<_, DepartmentDto>("SELECT * FROM one_departments WHERE id = ?")
+            .bind(&id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Every department in the tenant (flat; the frontend assembles the tree
+    /// from `parent_id`).
+    pub async fn list_departments(&self, tenant_id: &str) -> Result<Vec<DepartmentDto>, OrgError> {
+        let rows = sqlx::query_as::<_, DepartmentDto>(
+            "SELECT * FROM one_departments WHERE tenant_id = ? ORDER BY created_at ASC",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn rename_department(
+        &self,
+        tenant_id: &str,
+        department_id: &str,
+        name: &str,
+    ) -> Result<DepartmentDto, OrgError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(OrgError::BadRequest("department name is required".into()));
+        }
+        let updated = sqlx::query("UPDATE one_departments SET name = ?, updated_at = ? WHERE id = ? AND tenant_id = ?")
+            .bind(name)
+            .bind(now_ms() as i64)
+            .bind(department_id)
+            .bind(tenant_id)
+            .execute(&self.pool)
+            .await?;
+        if updated.rows_affected() == 0 {
+            return Err(OrgError::DepartmentNotFound);
+        }
+        sqlx::query_as::<_, DepartmentDto>("SELECT * FROM one_departments WHERE id = ?")
+            .bind(department_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Delete a department. Rejected (not cascaded) when it still has child
+    /// departments or assigned members — the caller must reassign those first,
+    /// the same "explicit over surprising" rule as elsewhere in this crate.
+    pub async fn delete_department(&self, tenant_id: &str, department_id: &str) -> Result<(), OrgError> {
+        let has_children: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_departments WHERE parent_id = ?")
+            .bind(department_id)
+            .fetch_one(&self.pool)
+            .await?;
+        if has_children {
+            return Err(OrgError::BadRequest(
+                "department has sub-departments; move or delete them first".into(),
+            ));
+        }
+        let has_members: bool =
+            sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_user_org WHERE department_id = ? AND tenant_id = ?")
+                .bind(department_id)
+                .bind(tenant_id)
+                .fetch_one(&self.pool)
+                .await?;
+        if has_members {
+            return Err(OrgError::BadRequest(
+                "department still has members assigned; reassign them first".into(),
+            ));
+        }
+        let deleted = sqlx::query("DELETE FROM one_departments WHERE id = ? AND tenant_id = ?")
+            .bind(department_id)
+            .bind(tenant_id)
+            .execute(&self.pool)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(OrgError::DepartmentNotFound);
+        }
+        Ok(())
+    }
+
+    /// Assign (or clear, `department_id = None`) a member's department.
+    pub async fn assign_member_department(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        department_id: Option<&str>,
+    ) -> Result<(), OrgError> {
+        if let Some(did) = department_id {
+            let exists: bool =
+                sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_departments WHERE id = ? AND tenant_id = ?")
+                    .bind(did)
+                    .bind(tenant_id)
+                    .fetch_one(&self.pool)
+                    .await?;
+            if !exists {
+                return Err(OrgError::DepartmentNotFound);
+            }
+        }
+        let updated = sqlx::query(
+            "UPDATE one_user_org SET department_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ?",
+        )
+        .bind(department_id)
+        .bind(now_ms() as i64)
+        .bind(user_id)
+        .bind(tenant_id)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Err(OrgError::Forbidden("user is not a member of this tenant".into()));
+        }
+        Ok(())
     }
 
     /// Promote/demote a user's role within a tenant. `role` must be one of
@@ -1609,6 +1923,174 @@ mod tests {
             .send_invite_email(&tenant_id, &invite.id, "new-hire@acme.com")
             .await
             .unwrap();
+        assert_eq!(result.status, "not_configured");
+    }
+
+    #[tokio::test]
+    async fn department_tree_crud_and_member_assignment() {
+        let (_db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        // Top-level + nested department.
+        let eng = service
+            .create_department(&tenant_id, "Engineering", None)
+            .await
+            .unwrap();
+        assert_eq!(eng.parent_id, None);
+        let backend = service
+            .create_department(&tenant_id, "Backend", Some(&eng.id))
+            .await
+            .unwrap();
+        assert_eq!(backend.parent_id.as_deref(), Some(eng.id.as_str()));
+
+        // Unknown parent → DEPARTMENT_NOT_FOUND.
+        assert_eq!(
+            service
+                .create_department(&tenant_id, "Ghost", Some("nope"))
+                .await
+                .unwrap_err()
+                .code(),
+            "DEPARTMENT_NOT_FOUND"
+        );
+        // Empty name rejected.
+        assert_eq!(
+            service
+                .create_department(&tenant_id, "  ", None)
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+
+        let all = service.list_departments(&tenant_id).await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        // Rename.
+        let renamed = service
+            .rename_department(&tenant_id, &backend.id, "Platform")
+            .await
+            .unwrap();
+        assert_eq!(renamed.name, "Platform");
+
+        // Deleting a department with a child is rejected.
+        assert_eq!(
+            service.delete_department(&tenant_id, &eng.id).await.unwrap_err().code(),
+            "BAD_REQUEST"
+        );
+
+        // Assign a member, then deletion of their department is rejected.
+        let alice = create_user(&user_repo, "alice").await;
+        let (_, code) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+        service.join_with_invite(&alice, &code).await.unwrap();
+        service
+            .assign_member_department(&tenant_id, &alice, Some(&backend.id))
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .delete_department(&tenant_id, &backend.id)
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+        let users = service.list_users(&tenant_id).await.unwrap();
+        let alice_row = users.iter().find(|u| u.user_id == alice).unwrap();
+        assert_eq!(alice_row.department_id.as_deref(), Some(backend.id.as_str()));
+
+        // Clear assignment, then deletion succeeds (leaf, no members).
+        service
+            .assign_member_department(&tenant_id, &alice, None)
+            .await
+            .unwrap();
+        service.delete_department(&tenant_id, &backend.id).await.unwrap();
+        // Now eng has no children → deletable too.
+        service.delete_department(&tenant_id, &eng.id).await.unwrap();
+        assert!(service.list_departments(&tenant_id).await.unwrap().is_empty());
+
+        // Assigning to an unknown department → DEPARTMENT_NOT_FOUND.
+        assert_eq!(
+            service
+                .assign_member_department(&tenant_id, &alice, Some("nope"))
+                .await
+                .unwrap_err()
+                .code(),
+            "DEPARTMENT_NOT_FOUND"
+        );
+        // Assigning a non-member → FORBIDDEN.
+        let bob = create_user(&user_repo, "bob").await;
+        assert_eq!(
+            service
+                .assign_member_department(&tenant_id, &bob, None)
+                .await
+                .unwrap_err()
+                .code(),
+            "FORBIDDEN"
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_connector_roundtrips_redacts_and_stubs_test() {
+        let (_db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        // Absent by default.
+        let empty = service.list_integrations(&tenant_id).await.unwrap();
+        assert!(empty.is_empty());
+        let default = service.get_integration(&tenant_id, "github").await.unwrap();
+        assert!(!default.enabled && !default.has_secret);
+
+        // Save a connector with a secret + non-secret config.
+        let config = serde_json::json!({ "org": "acme" });
+        let saved = service
+            .set_integration(
+                &tenant_id,
+                "github",
+                Some("https://api.github.com"),
+                &config,
+                Some("ghp_secret"),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.base_url.as_deref(), Some("https://api.github.com"));
+        assert!(saved.has_secret);
+        assert_eq!(saved.config["org"], "acme");
+        // The DTO never carries the plaintext/ciphertext secret.
+        let serialized = serde_json::to_string(&saved).unwrap();
+        assert!(!serialized.contains("ghp_secret"));
+
+        // Omitting the secret on a later save keeps the stored one; other
+        // fields update.
+        let updated = service
+            .set_integration(&tenant_id, "github", Some("https://ghe.acme.com"), &config, None, false)
+            .await
+            .unwrap();
+        assert!(updated.has_secret);
+        assert!(!updated.enabled);
+        assert_eq!(updated.base_url.as_deref(), Some("https://ghe.acme.com"));
+        assert_eq!(
+            service
+                .integration_secret(&tenant_id, "github")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("ghp_secret")
+        );
+
+        // A second provider is independent; list returns both.
+        service
+            .set_integration(&tenant_id, "jira", None, &serde_json::json!({}), Some("jira_tok"), true)
+            .await
+            .unwrap();
+        let all = service.list_integrations(&tenant_id).await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        // The default stub provider reports "not configured" for a test.
+        let result = service.test_integration(&tenant_id, "github").await.unwrap();
         assert_eq!(result.status, "not_configured");
     }
 

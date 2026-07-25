@@ -179,8 +179,26 @@ pub struct AdminUserDto {
     pub display_name: Option<String>,
     pub org_unit_path: Option<String>,
     pub job_title: Option<String>,
+    /// Structured department assignment (P2-3), distinct from the free-text
+    /// SSO-synced `org_unit_path` above.
+    pub department_id: Option<String>,
     pub last_login: Option<i64>,
     pub created_at: i64,
+}
+
+/// A department/sub-team node within a project group (P2-3 organizational
+/// hierarchy). `parent_id` is `None` for a top-level department. The frontend
+/// builds the tree client-side from the flat list returned by
+/// `OrgService::list_departments`.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct DepartmentDto {
+    pub id: String,
+    pub tenant_id: String,
+    pub parent_id: Option<String>,
+    pub name: String,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -283,6 +301,23 @@ pub struct SmtpConfigDto {
     pub username: Option<String>,
     pub has_password: bool,
     pub from_address: Option<String>,
+    pub enabled: bool,
+    pub updated_at: Option<i64>,
+}
+
+/// Redacted integration-connector config for the admin settings UI (P2-1
+/// reserved framework). The secret (token / API key) is never echoed back —
+/// only whether one is stored. `enabled` reflects the operator's own toggle; a
+/// real sync additionally requires an `IntegrationProvider` implementation to
+/// be wired at the app layer — until then a "test" reports "not configured".
+/// `config` is the parsed non-secret JSON object (empty object when unset).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationDto {
+    pub provider: String,
+    pub base_url: Option<String>,
+    pub config: serde_json::Value,
+    pub has_secret: bool,
     pub enabled: bool,
     pub updated_at: Option<i64>,
 }

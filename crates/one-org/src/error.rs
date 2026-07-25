@@ -46,6 +46,9 @@ pub enum OrgError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    #[error("Department not found")]
+    DepartmentNotFound,
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -65,6 +68,7 @@ impl OrgError {
             Self::WrongExitCode => "WRONG_EXIT_CODE",
             Self::LastAdminCannotLeave => "LAST_ADMIN_CANNOT_LEAVE",
             Self::BadRequest(_) => "BAD_REQUEST",
+            Self::DepartmentNotFound => "DEPARTMENT_NOT_FOUND",
             Self::Internal(_) => "INTERNAL_ERROR",
         }
     }
@@ -73,7 +77,7 @@ impl OrgError {
         match self {
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::AlreadyHostsEnterprise => StatusCode::FORBIDDEN,
-            Self::TenantNotFound => StatusCode::NOT_FOUND,
+            Self::TenantNotFound | Self::DepartmentNotFound => StatusCode::NOT_FOUND,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::BAD_REQUEST,
         }
