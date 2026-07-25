@@ -44,6 +44,7 @@ one-sso.workspace = true
 one-devops.workspace = true
 one-enterprise.workspace = true
 one-billing.workspace = true
+one-platform.workspace = true
 aion-config.workspace = true
 axum.workspace = true
 chrono.workspace = true

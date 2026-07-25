@@ -255,6 +255,12 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
         .map_err(|e| {
             RouterBuildError::new("router.one_billing.migrate", "failed to run one-billing migrations").with_source(e)
         })?;
+    // one-platform: deployment infra config (P1-3 container + P2-2 collab).
+    one_platform::run_one_platform_migrations(services.database.pool())
+        .await
+        .map_err(|e| {
+            RouterBuildError::new("router.one_platform.migrate", "failed to run one-platform migrations").with_source(e)
+        })?;
 
     // Start channel orchestrator (message loop)
     tokio::spawn(
@@ -498,6 +504,18 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let one_billing_authenticated = one_billing::one_billing_routes(one_billing_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // one-platform routes (/api/one/admin/platform/*) — deployment infra config
+    // (P1-3 container runtime + P2-2 realtime collaboration). Reserved adapters:
+    // the Noop defaults report "not configured" until a real runtime/provider
+    // is wired here via `with_container_runtime` / `with_collaboration_provider`.
+    let one_platform_service = std::sync::Arc::new(one_platform::PlatformService::new(
+        services.database.pool().clone(),
+        crate::config::derive_encryption_key(&services.data_secret_raw),
+    ));
+    let one_platform_state = one_platform::OnePlatformRouterState::new(one_platform_service);
+    let one_platform_authenticated = one_platform::one_platform_routes(one_platform_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // one-sso routes. Public half (providers/authorize/callback) is
     // unauthenticated so OAuth can run before the user has a session;
     // admin half (upsert provider) sits behind the auth middleware.
@@ -581,6 +599,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(one_devops_authenticated)
         .merge(one_enterprise_authenticated)
         .merge(one_billing_authenticated)
+        .merge(one_platform_authenticated)
         .merge(one_sso_public)
         .merge(one_sso_admin);
 

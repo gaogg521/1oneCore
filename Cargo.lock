@@ -432,6 +432,7 @@ dependencies = [
  "one-employee",
  "one-enterprise",
  "one-org",
+ "one-platform",
  "one-sso",
  "reqwest",
  "rmcp",
@@ -4044,6 +4045,24 @@ dependencies = [
  "tower",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "one-platform"
+version = "0.1.49-one.2"
+dependencies = [
+ "aionui-api-types",
+ "aionui-auth",
+ "aionui-common",
+ "aionui-db",
+ "async-trait",
+ "axum",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
