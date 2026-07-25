@@ -31,3 +31,27 @@ pub struct CollaborationConfigDto {
     pub enabled: bool,
     pub updated_at: Option<i64>,
 }
+
+/// IP allowlist config (P1-4). `cidrs` is the parsed list of allowed CIDR/IP
+/// strings. Enforcement (request blocking) is a reserved drop-in — storing this
+/// does not by itself block anyone.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IpAllowlistConfigDto {
+    pub cidrs: Vec<String>,
+    pub enabled: bool,
+    pub updated_at: Option<i64>,
+}
+
+/// SIEM audit-log export config (P1-4), redacted. A real export requires a
+/// `SiemExporter` wired at the app layer; until then a probe reports
+/// "not configured". The token is never echoed — only `has_secret`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SiemConfigDto {
+    pub kind: Option<String>,
+    pub endpoint: Option<String>,
+    pub has_secret: bool,
+    pub enabled: bool,
+    pub updated_at: Option<i64>,
+}

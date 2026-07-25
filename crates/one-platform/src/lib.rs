@@ -12,11 +12,13 @@
 pub mod collaboration;
 pub mod container;
 pub mod error;
+pub mod ip_allowlist;
 pub mod migrate;
 pub mod models;
 pub mod rbac;
 pub mod routes;
 pub mod service;
+pub mod siem;
 pub mod state;
 
 pub use collaboration::{CollaborationProvider, CollaborationSettings, CollaborationStatus, NoopCollaborationProvider};
@@ -26,4 +28,5 @@ pub use migrate::run_one_platform_migrations;
 pub use rbac::RequirePlatformAdmin;
 pub use routes::one_platform_routes;
 pub use service::{PlatformActor, PlatformService};
+pub use siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 pub use state::OnePlatformRouterState;

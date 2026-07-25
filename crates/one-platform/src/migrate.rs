@@ -8,7 +8,10 @@ use crate::error::PlatformError;
 
 /// Embedded migrations, applied in array order. Append-only: never edit or
 /// reorder shipped entries — add a new file instead.
-const MIGRATIONS: &[(&str, &str)] = &[("001_init", include_str!("../migrations/001_init.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("001_init", include_str!("../migrations/001_init.sql")),
+    ("002_security", include_str!("../migrations/002_security.sql")),
+];
 
 /// Run all pending one-platform migrations. Idempotent; call once at startup
 /// after the upstream database has been initialized.

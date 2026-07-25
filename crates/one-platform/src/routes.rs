@@ -14,8 +14,9 @@ use aionui_api_types::ApiResponse;
 use crate::collaboration::CollaborationStatus;
 use crate::container::ContainerStatus;
 use crate::error::PlatformError;
-use crate::models::{CollaborationConfigDto, ContainerConfigDto};
+use crate::models::{CollaborationConfigDto, ContainerConfigDto, IpAllowlistConfigDto, SiemConfigDto};
 use crate::rbac::RequirePlatformAdmin;
+use crate::siem::SiemStatus;
 use crate::state::OnePlatformRouterState;
 
 pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
@@ -29,10 +30,14 @@ pub fn one_platform_routes(state: OnePlatformRouterState) -> Router {
             "/api/one/admin/platform/collaboration",
             get(get_collaboration).put(set_collaboration),
         )
+        .route("/api/one/admin/platform/collaboration/probe", post(probe_collaboration))
         .route(
-            "/api/one/admin/platform/collaboration/probe",
-            post(probe_collaboration),
+            "/api/one/admin/platform/ip-allowlist",
+            get(get_ip_allowlist).put(set_ip_allowlist),
         )
+        .route("/api/one/admin/platform/ip-allowlist/check", post(check_ip_allowlist))
+        .route("/api/one/admin/platform/siem", get(get_siem).put(set_siem))
+        .route("/api/one/admin/platform/siem/probe", post(probe_siem))
         .with_state(state)
 }
 
@@ -147,4 +152,109 @@ async fn probe_collaboration(
     Ok(Json(ApiResponse::ok(
         state.service.probe_collaboration(&actor.tenant_id).await?,
     )))
+}
+
+// --- P1-4 IP allowlist ---
+
+async fn get_ip_allowlist(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<IpAllowlistConfigDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.get_ip_allowlist(&actor.tenant_id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetIpAllowlistBody {
+    #[serde(default)]
+    cidrs: Vec<String>,
+    #[serde(default)]
+    enabled: bool,
+}
+
+async fn set_ip_allowlist(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Json(body): Json<SetIpAllowlistBody>,
+) -> Result<Json<ApiResponse<IpAllowlistConfigDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .set_ip_allowlist(&actor.tenant_id, &body.cidrs, body.enabled)
+            .await?,
+    )))
+}
+
+#[derive(Deserialize)]
+struct CheckIpBody {
+    ip: String,
+}
+
+#[derive(serde::Serialize)]
+struct CheckIpResult {
+    allowed: bool,
+}
+
+/// Test whether an IP would be allowed under the current allowlist — lets an
+/// admin validate rules (and confirm they won't lock themselves out) before
+/// enabling enforcement.
+async fn check_ip_allowlist(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Json(body): Json<CheckIpBody>,
+) -> Result<Json<ApiResponse<CheckIpResult>>, PlatformError> {
+    let allowed = state.service.is_ip_allowed(&actor.tenant_id, &body.ip).await?;
+    Ok(Json(ApiResponse::ok(CheckIpResult { allowed })))
+}
+
+// --- P1-4 SIEM export ---
+
+async fn get_siem(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<SiemConfigDto>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.get_siem_config(&actor.tenant_id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetSiemBody {
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    endpoint: Option<String>,
+    /// Absent/empty = keep the stored token.
+    #[serde(default)]
+    secret: Option<String>,
+    #[serde(default)]
+    enabled: bool,
+}
+
+async fn set_siem(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+    Json(body): Json<SetSiemBody>,
+) -> Result<Json<ApiResponse<SiemConfigDto>>, PlatformError> {
+    let dto = state
+        .service
+        .set_siem_config(
+            &actor.tenant_id,
+            body.kind.as_deref(),
+            body.endpoint.as_deref(),
+            body.secret.as_deref(),
+            body.enabled,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn probe_siem(
+    State(state): State<OnePlatformRouterState>,
+    RequirePlatformAdmin(actor): RequirePlatformAdmin,
+) -> Result<Json<ApiResponse<SiemStatus>>, PlatformError> {
+    Ok(Json(ApiResponse::ok(state.service.probe_siem(&actor.tenant_id).await?)))
 }

@@ -19,7 +19,9 @@ use crate::collaboration::{
 };
 use crate::container::{ContainerRuntime, ContainerSettings, ContainerStatus, NoopContainerRuntime};
 use crate::error::PlatformError;
-use crate::models::{CollaborationConfigDto, ContainerConfigDto};
+use crate::ip_allowlist::ip_allowed;
+use crate::models::{CollaborationConfigDto, ContainerConfigDto, IpAllowlistConfigDto, SiemConfigDto};
+use crate::siem::{NoopSiemExporter, SiemExporter, SiemSettings, SiemStatus};
 
 /// The caller's resolved enterprise membership (active tenant + role).
 #[derive(Debug, Clone)]
@@ -35,6 +37,7 @@ pub struct PlatformService {
     encryption_key: [u8; 32],
     container_runtime: Arc<dyn ContainerRuntime>,
     collaboration_provider: Arc<dyn CollaborationProvider>,
+    siem_exporter: Arc<dyn SiemExporter>,
 }
 
 fn is_admin_role(role: &str) -> bool {
@@ -48,6 +51,7 @@ impl PlatformService {
             encryption_key,
             container_runtime: Arc::new(NoopContainerRuntime),
             collaboration_provider: Arc::new(NoopCollaborationProvider),
+            siem_exporter: Arc::new(NoopSiemExporter),
         }
     }
 
@@ -61,6 +65,12 @@ impl PlatformService {
     /// Swap in a real `CollaborationProvider` once a backend is wired.
     pub fn with_collaboration_provider(mut self, provider: Arc<dyn CollaborationProvider>) -> Self {
         self.collaboration_provider = provider;
+        self
+    }
+
+    /// Swap in a real `SiemExporter` once log forwarding is wired.
+    pub fn with_siem_exporter(mut self, exporter: Arc<dyn SiemExporter>) -> Self {
+        self.siem_exporter = exporter;
         self
     }
 
@@ -317,6 +327,152 @@ impl PlatformService {
             })
             .await)
     }
+
+    // --- IP allowlist (P1-4) ---
+
+    pub async fn get_ip_allowlist(&self, tenant_id: &str) -> Result<IpAllowlistConfigDto, PlatformError> {
+        let row: Option<(Option<String>, bool, i64)> =
+            sqlx::query_as("SELECT cidrs, enabled, updated_at FROM one_ip_allowlist_config WHERE tenant_id = ?")
+                .bind(tenant_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(match row {
+            Some((cidrs, enabled, updated_at)) => IpAllowlistConfigDto {
+                cidrs: cidrs
+                    .filter(|s| !s.trim().is_empty())
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_default(),
+                enabled,
+                updated_at: Some(updated_at),
+            },
+            None => IpAllowlistConfigDto {
+                cidrs: Vec::new(),
+                enabled: false,
+                updated_at: None,
+            },
+        })
+    }
+
+    pub async fn set_ip_allowlist(
+        &self,
+        tenant_id: &str,
+        cidrs: &[String],
+        enabled: bool,
+    ) -> Result<IpAllowlistConfigDto, PlatformError> {
+        let cidrs_json = serde_json::to_string(cidrs).map_err(|e| PlatformError::Internal(e.to_string()))?;
+        sqlx::query(
+            "INSERT INTO one_ip_allowlist_config (tenant_id, cidrs, enabled, updated_at) VALUES (?, ?, ?, ?) \
+             ON CONFLICT(tenant_id) DO UPDATE SET cidrs = excluded.cidrs, enabled = excluded.enabled, \
+                 updated_at = excluded.updated_at",
+        )
+        .bind(tenant_id)
+        .bind(&cidrs_json)
+        .bind(enabled)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        self.get_ip_allowlist(tenant_id).await
+    }
+
+    /// Whether `ip` may reach `tenant_id`'s server per the allowlist. When the
+    /// allowlist is disabled, everyone is allowed (the reserved default — no
+    /// blocking). When enabled, the IP must match a configured CIDR/address.
+    pub async fn is_ip_allowed(&self, tenant_id: &str, ip: &str) -> Result<bool, PlatformError> {
+        let cfg = self.get_ip_allowlist(tenant_id).await?;
+        Ok(!cfg.enabled || ip_allowed(&cfg.cidrs, ip))
+    }
+
+    // --- SIEM export (P1-4) ---
+
+    pub async fn get_siem_config(&self, tenant_id: &str) -> Result<SiemConfigDto, PlatformError> {
+        type SiemRow = (Option<String>, Option<String>, Option<String>, bool, i64);
+        let row: Option<SiemRow> = sqlx::query_as(
+            "SELECT kind, endpoint, secret_encrypted, enabled, updated_at FROM one_siem_config WHERE tenant_id = ?",
+        )
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(match row {
+            Some((kind, endpoint, secret_encrypted, enabled, updated_at)) => SiemConfigDto {
+                kind,
+                endpoint,
+                has_secret: secret_encrypted.is_some(),
+                enabled,
+                updated_at: Some(updated_at),
+            },
+            None => SiemConfigDto {
+                kind: None,
+                endpoint: None,
+                has_secret: false,
+                enabled: false,
+                updated_at: None,
+            },
+        })
+    }
+
+    /// `secret` absent/empty = keep the stored one (if any).
+    pub async fn set_siem_config(
+        &self,
+        tenant_id: &str,
+        kind: Option<&str>,
+        endpoint: Option<&str>,
+        secret: Option<&str>,
+        enabled: bool,
+    ) -> Result<SiemConfigDto, PlatformError> {
+        let existing: Option<String> =
+            sqlx::query_scalar("SELECT secret_encrypted FROM one_siem_config WHERE tenant_id = ?")
+                .bind(tenant_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
+        let secret_encrypted = match secret {
+            Some(s) if !s.is_empty() => {
+                Some(encrypt_string(s, &self.encryption_key).map_err(|e| PlatformError::Internal(e.to_string()))?)
+            }
+            _ => existing,
+        };
+        sqlx::query(
+            "INSERT INTO one_siem_config (tenant_id, kind, endpoint, secret_encrypted, enabled, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(tenant_id) DO UPDATE SET kind = excluded.kind, endpoint = excluded.endpoint, \
+                 secret_encrypted = excluded.secret_encrypted, enabled = excluded.enabled, \
+                 updated_at = excluded.updated_at",
+        )
+        .bind(tenant_id)
+        .bind(kind)
+        .bind(endpoint)
+        .bind(&secret_encrypted)
+        .bind(enabled)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        self.get_siem_config(tenant_id).await
+    }
+
+    /// Decrypted SIEM token, for a real `SiemExporter` to consume.
+    pub async fn siem_secret(&self, tenant_id: &str) -> Result<Option<String>, PlatformError> {
+        let encrypted: Option<String> =
+            sqlx::query_scalar("SELECT secret_encrypted FROM one_siem_config WHERE tenant_id = ?")
+                .bind(tenant_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
+        Ok(encrypted.and_then(|e| decrypt_string(&e, &self.encryption_key).ok()))
+    }
+
+    /// Probe the SIEM endpoint (`NoopSiemExporter` by default).
+    pub async fn probe_siem(&self, tenant_id: &str) -> Result<SiemStatus, PlatformError> {
+        let cfg = self.get_siem_config(tenant_id).await?;
+        let secret = self.siem_secret(tenant_id).await?;
+        Ok(self
+            .siem_exporter
+            .probe(SiemSettings {
+                kind: cfg.kind.as_deref(),
+                endpoint: cfg.endpoint.as_deref(),
+                secret: secret.as_deref(),
+            })
+            .await)
+    }
 }
 
 #[cfg(test)]
@@ -369,10 +525,7 @@ mod tests {
         seed_membership(db.pool(), "admin1", "t1", "org_admin").await;
         seed_membership(db.pool(), "member1", "t1", "member").await;
         assert_eq!(service.require_admin("admin1").await.unwrap().tenant_id, "t1");
-        assert_eq!(
-            service.require_admin("member1").await.unwrap_err().code(),
-            "FORBIDDEN"
-        );
+        assert_eq!(service.require_admin("member1").await.unwrap_err().code(), "FORBIDDEN");
     }
 
     #[tokio::test]
@@ -421,7 +574,14 @@ mod tests {
         assert!(!cfg.enabled && !cfg.has_secret && !cfg.presence);
 
         let saved = service
-            .set_collaboration_config("t1", Some("external"), Some("wss://collab.acme.com"), Some("relay_tok"), true, true)
+            .set_collaboration_config(
+                "t1",
+                Some("external"),
+                Some("wss://collab.acme.com"),
+                Some("relay_tok"),
+                true,
+                true,
+            )
             .await
             .unwrap();
         assert_eq!(saved.provider.as_deref(), Some("external"));
@@ -429,7 +589,14 @@ mod tests {
         assert!(!serde_json::to_string(&saved).unwrap().contains("relay_tok"));
 
         let updated = service
-            .set_collaboration_config("t1", Some("external"), Some("wss://collab.acme.com"), None, false, false)
+            .set_collaboration_config(
+                "t1",
+                Some("external"),
+                Some("wss://collab.acme.com"),
+                None,
+                false,
+                false,
+            )
             .await
             .unwrap();
         assert!(updated.has_secret && !updated.presence && !updated.enabled);
@@ -442,5 +609,62 @@ mod tests {
             service.probe_collaboration("t1").await.unwrap().status,
             "not_configured"
         );
+    }
+
+    #[tokio::test]
+    async fn ip_allowlist_roundtrips_and_enforces_when_enabled() {
+        let (_db, service) = setup().await;
+        // Disabled by default → everyone allowed.
+        assert!(service.is_ip_allowed("t1", "8.8.8.8").await.unwrap());
+
+        let saved = service
+            .set_ip_allowlist("t1", &["10.0.0.0/8".to_owned(), "192.168.1.5".to_owned()], true)
+            .await
+            .unwrap();
+        assert_eq!(saved.cidrs.len(), 2);
+        assert!(saved.enabled);
+
+        // Enabled → only matching IPs allowed.
+        assert!(service.is_ip_allowed("t1", "10.3.4.5").await.unwrap());
+        assert!(service.is_ip_allowed("t1", "192.168.1.5").await.unwrap());
+        assert!(!service.is_ip_allowed("t1", "8.8.8.8").await.unwrap());
+
+        // Toggling off re-allows everyone (no blocking).
+        service
+            .set_ip_allowlist("t1", &["10.0.0.0/8".to_owned()], false)
+            .await
+            .unwrap();
+        assert!(service.is_ip_allowed("t1", "8.8.8.8").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn siem_config_roundtrips_redacts_and_stubs_probe() {
+        let (_db, service) = setup().await;
+        let cfg = service.get_siem_config("t1").await.unwrap();
+        assert!(!cfg.enabled && !cfg.has_secret);
+
+        let saved = service
+            .set_siem_config(
+                "t1",
+                Some("splunk"),
+                Some("https://splunk.acme.com:8088"),
+                Some("hec_token"),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.kind.as_deref(), Some("splunk"));
+        assert!(saved.has_secret);
+        assert!(!serde_json::to_string(&saved).unwrap().contains("hec_token"));
+
+        // Omitting the token on a later save keeps the stored one.
+        let updated = service
+            .set_siem_config("t1", Some("splunk"), Some("https://splunk.acme.com:8088"), None, false)
+            .await
+            .unwrap();
+        assert!(updated.has_secret && !updated.enabled);
+        assert_eq!(service.siem_secret("t1").await.unwrap().as_deref(), Some("hec_token"));
+
+        assert_eq!(service.probe_siem("t1").await.unwrap().status, "not_configured");
     }
 }
