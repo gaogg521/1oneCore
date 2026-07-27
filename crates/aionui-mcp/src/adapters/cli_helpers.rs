@@ -24,13 +24,44 @@ pub async fn is_cli_installed(name: &str) -> Result<bool, McpError> {
     Ok(resolve_command_path(name).is_some())
 }
 
+/// Environment overrides applied to an agent CLI invocation.
+///
+/// Adapters whose agent runs against an isolated config home (rather than
+/// the operator's real one) **must** pass the same overrides here that the
+/// agent factory passes when spawning the agent. Otherwise `mcp list` reads
+/// one config file while the agent reads another, and `mcp add`/`mcp remove`
+/// silently mutate the user's own CLI installation. See
+/// [`aionui_common::agent_bridge`].
+pub type CliEnv<'a> = &'a [(&'a str, String)];
+
+/// No environment overrides — the CLI resolves its config the way it would
+/// for the user in a terminal.
+///
+/// Only correct for agents this app does *not* isolate. Using it for an
+/// isolated agent reintroduces the split-config bug.
+pub const INHERIT_ENV: CliEnv<'static> = &[];
+
 /// Run a CLI command with a timeout and clean environment variables.
 ///
 /// Returns `(stdout, stderr)` on success. Returns an error if the command
 /// fails to start, times out, or exits with a non-zero status.
 pub async fn run_cli(program: &str, args: &[&str], timeout: Duration) -> Result<(String, String), McpError> {
+    run_cli_with_env(program, args, INHERIT_ENV, timeout).await
+}
+
+/// Run a CLI command with a timeout, clean environment, and explicit
+/// environment overrides (see [`CliEnv`]).
+pub async fn run_cli_with_env(
+    program: &str,
+    args: &[&str],
+    env: CliEnv<'_>,
+    timeout: Duration,
+) -> Result<(String, String), McpError> {
     let mut builder = CmdBuilder::clean_cli(program);
     builder.args(args);
+    for (key, value) in env {
+        builder.env(key, value);
+    }
     let result = tokio::time::timeout(timeout, builder.output()).await;
 
     let output = match result {
@@ -58,8 +89,21 @@ pub async fn run_cli(program: &str, args: &[&str], timeout: Duration) -> Result<
 
 /// Run a CLI command and require zero exit status.
 pub async fn run_cli_strict(program: &str, args: &[&str], timeout: Duration) -> Result<String, McpError> {
+    run_cli_strict_with_env(program, args, INHERIT_ENV, timeout).await
+}
+
+/// Run a CLI command with environment overrides and require zero exit status.
+pub async fn run_cli_strict_with_env(
+    program: &str,
+    args: &[&str],
+    env: CliEnv<'_>,
+    timeout: Duration,
+) -> Result<String, McpError> {
     let mut builder = CmdBuilder::clean_cli(program);
     builder.args(args);
+    for (key, value) in env {
+        builder.env(key, value);
+    }
     let result = tokio::time::timeout(timeout, builder.output()).await;
 
     let output = match result {

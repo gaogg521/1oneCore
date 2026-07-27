@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use aionui_api_types::{McpServerResponse, McpToolResponse, McpTransport};
 use aionui_common::{McpServerStatus, TimestampMs};
 use aionui_db::models::McpServerRow;
+use serde::Deserialize;
 
 use crate::error::McpError;
 
@@ -164,13 +165,90 @@ impl From<McpToolResponse> for McpTool {
 }
 
 impl From<McpTool> for McpToolResponse {
+    /// Compatibility is re-derived here rather than carried on `McpTool`,
+    /// so tools persisted before the check existed are still evaluated when
+    /// they are read back out of the database.
     fn from(t: McpTool) -> Self {
-        McpToolResponse {
-            name: t.name,
-            description: t.description,
-            input_schema: t.input_schema,
-        }
+        McpToolResponse::new(t.name, t.description, t.input_schema)
     }
+}
+
+impl McpTool {
+    /// Whether this tool's definition is accepted by the model API.
+    ///
+    /// A single non-conforming tool causes the provider to reject the whole
+    /// request, so callers building a tool set must filter on this.
+    pub fn is_model_api_compatible(&self) -> bool {
+        aionui_common::is_tool_compatible(&self.name, self.input_schema.as_ref())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Model-API compatibility screening
+// ---------------------------------------------------------------------------
+
+/// One tool whose definition the model API will reject, in a form suitable
+/// for logs and user-facing messages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncompatibleTool {
+    /// Name of the offending tool.
+    pub tool: String,
+    /// The specific key that violates the rule.
+    pub key: String,
+    /// Machine-readable rule that was violated.
+    pub reason: &'static str,
+}
+
+/// Screen a persisted `mcp_servers.tools` JSON array for tools the model API
+/// will reject.
+///
+/// # Why the whole server is the unit of enforcement
+///
+/// The ACP session protocol injects MCP *server* configurations (command or
+/// URL) — the agent then connects to each server and collects its tools
+/// itself. This app never assembles the tool array that reaches the
+/// provider, so it cannot drop an individual tool from it. Excluding the
+/// server is the only enforcement point available, and it is necessary:
+/// one non-conforming tool makes the provider reject every request in the
+/// session, so including the server would trade a partial capability loss
+/// for a completely dead conversation.
+///
+/// Returns an empty vec for servers that have never been tested (no tools
+/// recorded) — absence of evidence is not screened as failure.
+pub fn incompatible_tools_in_persisted_json(tools_json: &str) -> Vec<IncompatibleTool> {
+    /// Minimal shape: persisted rows are written from `McpToolResponse`,
+    /// but its `incompatibilities` field is derived at construction and not
+    /// recomputed by `Deserialize` — so validate from name + schema here.
+    #[derive(Deserialize)]
+    struct PersistedTool {
+        name: String,
+        #[serde(default, alias = "inputSchema")]
+        input_schema: Option<serde_json::Value>,
+    }
+
+    let trimmed = tools_json.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let Ok(tools) = serde_json::from_str::<Vec<PersistedTool>>(trimmed) else {
+        // A malformed tools column is a separate problem; screening cannot
+        // make a claim either way, so report nothing.
+        return Vec::new();
+    };
+
+    tools
+        .into_iter()
+        .flat_map(|tool| {
+            aionui_common::validate_tool(&tool.name, tool.input_schema.as_ref())
+                .into_iter()
+                .map(move |issue| IncompatibleTool {
+                    tool: tool.name.clone(),
+                    key: issue.key,
+                    reason: issue.reason.as_str(),
+                })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -414,11 +492,11 @@ mod tests {
 
     #[test]
     fn tool_from_response() {
-        let resp = McpToolResponse {
-            name: "read_file".into(),
-            description: Some("Read a file".into()),
-            input_schema: Some(serde_json::json!({"type": "object"})),
-        };
+        let resp = McpToolResponse::new(
+            "read_file".into(),
+            Some("Read a file".into()),
+            Some(serde_json::json!({"type": "object"})),
+        );
         let tool = McpTool::from(resp);
         assert_eq!(tool.name, "read_file");
         assert_eq!(tool.description.as_deref(), Some("Read a file"));

@@ -1278,11 +1278,11 @@ mod tests {
         let created = svc.add_server(stdio_create_req("persist-success")).await.unwrap();
         let result = McpConnectionTestResult {
             success: true,
-            tools: Some(vec![aionui_api_types::McpToolResponse {
-                name: "read_file".into(),
-                description: Some("Read a file".into()),
-                input_schema: None,
-            }]),
+            tools: Some(vec![aionui_api_types::McpToolResponse::new(
+                "read_file".into(),
+                Some("Read a file".into()),
+                None,
+            )]),
             error: None,
             code: None,
             details: None,
@@ -1306,11 +1306,11 @@ mod tests {
 
         let success = McpConnectionTestResult {
             success: true,
-            tools: Some(vec![aionui_api_types::McpToolResponse {
-                name: "read_file".into(),
-                description: Some("Read a file".into()),
-                input_schema: None,
-            }]),
+            tools: Some(vec![aionui_api_types::McpToolResponse::new(
+                "read_file".into(),
+                Some("Read a file".into()),
+                None,
+            )]),
             error: None,
             code: None,
             details: None,

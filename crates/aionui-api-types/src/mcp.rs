@@ -39,6 +39,30 @@ pub enum McpTransport {
 // B. Tool description
 // ---------------------------------------------------------------------------
 
+/// One reason a tool cannot be forwarded to the model API.
+///
+/// Surfaced to the UI so the user sees *which* tool and *which* parameter
+/// is at fault, instead of an opaque `tools.214...` index from the provider.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpToolIncompatibility {
+    /// JSON path inside the tool definition, e.g. `inputSchema.properties`.
+    pub path: String,
+    /// The offending key (parameter name, or the tool name itself).
+    pub key: String,
+    /// Machine-readable rule that was violated.
+    pub reason: String,
+}
+
+impl From<aionui_common::SchemaIncompatibility> for McpToolIncompatibility {
+    fn from(value: aionui_common::SchemaIncompatibility) -> Self {
+        Self {
+            path: value.path,
+            key: value.key,
+            reason: value.reason.as_str().to_owned(),
+        }
+    }
+}
+
 /// MCP tool description returned from connection tests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolResponse {
@@ -47,6 +71,38 @@ pub struct McpToolResponse {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<serde_json::Value>,
+    /// Model-API compatibility problems found in this tool's definition.
+    ///
+    /// Empty for well-formed tools. Always **derived** from `name` +
+    /// `input_schema` at construction time (see [`McpToolResponse::new`])
+    /// rather than persisted, so tools stored before this check existed are
+    /// still evaluated when they are read back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub incompatibilities: Vec<McpToolIncompatibility>,
+}
+
+impl McpToolResponse {
+    /// Build a tool response, evaluating model-API compatibility.
+    ///
+    /// This is the only correct way to construct one: it guarantees the
+    /// `incompatibilities` list matches the schema actually being reported.
+    pub fn new(name: String, description: Option<String>, input_schema: Option<serde_json::Value>) -> Self {
+        let incompatibilities = aionui_common::validate_tool(&name, input_schema.as_ref())
+            .into_iter()
+            .map(McpToolIncompatibility::from)
+            .collect();
+        Self {
+            name,
+            description,
+            input_schema,
+            incompatibilities,
+        }
+    }
+
+    /// Whether this tool is safe to forward to the model API.
+    pub fn is_compatible(&self) -> bool {
+        self.incompatibilities.is_empty()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -471,11 +527,11 @@ mod tests {
     fn test_connection_test_success() {
         let result = McpConnectionTestResult {
             success: true,
-            tools: Some(vec![McpToolResponse {
-                name: "read_file".into(),
-                description: Some("Read a file".into()),
-                input_schema: None,
-            }]),
+            tools: Some(vec![McpToolResponse::new(
+                "read_file".into(),
+                Some("Read a file".into()),
+                None,
+            )]),
             error: None,
             code: None,
             details: None,
@@ -488,6 +544,62 @@ mod tests {
         assert_eq!(json["tools"][0]["name"], "read_file");
         assert!(json.get("error").is_none());
         assert!(json.get("needs_auth").is_none());
+        // Clean tools carry no incompatibility noise on the wire.
+        assert!(json["tools"][0].get("incompatibilities").is_none());
+    }
+
+    // -- McpToolResponse compatibility ----------------------------------------
+
+    #[test]
+    fn tool_response_new_marks_clean_tool_compatible() {
+        let tool = McpToolResponse::new(
+            "get_quotes".into(),
+            None,
+            Some(serde_json::json!({
+                "type": "object",
+                "properties": { "codes": { "type": "array", "items": { "type": "string" } } }
+            })),
+        );
+        assert!(tool.is_compatible());
+        assert!(tool.incompatibilities.is_empty());
+    }
+
+    #[test]
+    fn tool_response_new_reports_illegal_property_key() {
+        let tool = McpToolResponse::new(
+            "ft_goodwill_market_overview".into(),
+            None,
+            Some(serde_json::json!({
+                "type": "object",
+                "properties": { "（无业务参数）": { "type": "string" } }
+            })),
+        );
+        assert!(!tool.is_compatible());
+        assert_eq!(tool.incompatibilities.len(), 1);
+        assert_eq!(tool.incompatibilities[0].key, "（无业务参数）");
+        assert_eq!(tool.incompatibilities[0].reason, "illegal_characters");
+    }
+
+    #[test]
+    fn tool_response_incompatibilities_serialize_for_the_ui() {
+        let tool = McpToolResponse::new(
+            "bad".into(),
+            None,
+            Some(serde_json::json!({ "type": "object", "properties": { "股票代码": { "type": "string" } } })),
+        );
+        let json = serde_json::to_value(&tool).unwrap();
+        assert_eq!(json["incompatibilities"][0]["key"], "股票代码");
+        assert_eq!(json["incompatibilities"][0]["path"], "inputSchema.properties");
+        assert_eq!(json["incompatibilities"][0]["reason"], "illegal_characters");
+    }
+
+    #[test]
+    fn tool_response_deserializes_legacy_payload_without_the_field() {
+        // Rows persisted before this check existed must still load.
+        let tool: McpToolResponse =
+            serde_json::from_value(serde_json::json!({ "name": "legacy", "description": "old" })).unwrap();
+        assert_eq!(tool.name, "legacy");
+        assert!(tool.incompatibilities.is_empty());
     }
 
     #[test]

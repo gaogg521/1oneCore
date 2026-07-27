@@ -361,20 +361,35 @@ pub(super) fn build_tools_list_request(id: u64) -> JsonRpcRequest {
 // Result builders
 // ---------------------------------------------------------------------------
 
+/// Build a successful test result from a `tools/list` response.
+///
+/// A completed MCP handshake only proves the *server* works. Each tool is
+/// additionally checked against the model API's schema rules via
+/// [`McpToolResponse::new`], because a server can be perfectly reachable
+/// while advertising a tool the provider will reject — which fails the
+/// user's next message, not this test. Those tools are reported (not
+/// dropped) so the UI can name them; the injection layer is what excludes
+/// them from the request.
 pub(super) fn success_result(tools_value: Option<serde_json::Value>) -> McpConnectionTestResult {
-    let tools = tools_value
+    let tools: Vec<McpToolResponse> = tools_value
         .and_then(|v| serde_json::from_value::<ToolsListResult>(v).ok())
         .map(|r| {
             r.tools
                 .into_iter()
-                .map(|t| McpToolResponse {
-                    name: t.name,
-                    description: t.description,
-                    input_schema: t.input_schema,
-                })
+                .map(|t| McpToolResponse::new(t.name, t.description, t.input_schema))
                 .collect()
         })
         .unwrap_or_default();
+
+    let incompatible: Vec<&McpToolResponse> = tools.iter().filter(|t| !t.is_compatible()).collect();
+    if !incompatible.is_empty() {
+        tracing::warn!(
+            count = incompatible.len(),
+            total = tools.len(),
+            tools = ?incompatible.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            "mcp: server advertises tools the model API will reject; they will be excluded from sessions"
+        );
+    }
 
     McpConnectionTestResult {
         success: true,
@@ -666,6 +681,53 @@ mod tests {
         assert_eq!(tools[0].name, "read_file");
         assert_eq!(tools[0].description.as_deref(), Some("Read a file"));
         assert!(tools[1].description.is_none());
+        assert!(tools.iter().all(|t| t.is_compatible()));
+    }
+
+    #[test]
+    fn success_result_flags_tool_with_illegal_property_key() {
+        // A reachable server can still advertise a tool the model API
+        // rejects. The handshake succeeded, so this stays a success — but
+        // the offending tool must be identified by name and parameter.
+        let tools_json = serde_json::json!({
+            "tools": [
+                {
+                    "name": "get_a_share_quotes",
+                    "inputSchema": { "type": "object", "properties": { "codes": { "type": "string" } } }
+                },
+                {
+                    "name": "ft_goodwill_market_overview",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": { "（无业务参数）": { "type": "string", "maxLength": 4096 } }
+                    }
+                }
+            ]
+        });
+        let result = success_result(Some(tools_json));
+        assert!(result.success, "handshake succeeded; the server itself is fine");
+
+        let tools = result.tools.unwrap();
+        assert_eq!(tools.len(), 2, "the good tool must not be dropped");
+        assert!(tools[0].is_compatible());
+
+        assert!(!tools[1].is_compatible());
+        assert_eq!(tools[1].incompatibilities.len(), 1);
+        assert_eq!(tools[1].incompatibilities[0].key, "（无业务参数）");
+        assert_eq!(tools[1].incompatibilities[0].reason, "illegal_characters");
+        assert_eq!(tools[1].incompatibilities[0].path, "inputSchema.properties");
+    }
+
+    #[test]
+    fn success_result_tools_with_empty_properties_are_compatible() {
+        let tools_json = serde_json::json!({
+            "tools": [
+                { "name": "no_params", "inputSchema": { "type": "object", "properties": {} } }
+            ]
+        });
+        let tools = success_result(Some(tools_json)).tools.unwrap();
+        assert!(tools[0].is_compatible());
+        assert!(tools[0].incompatibilities.is_empty());
     }
 
     #[test]

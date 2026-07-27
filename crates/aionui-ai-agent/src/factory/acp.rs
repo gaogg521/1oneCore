@@ -40,7 +40,11 @@ const CLAUDE_BRIDGE_MODEL_ENV_KEY: &str = "ANTHROPIC_MODEL";
 /// `~/.claude` is read from; pointing it at an app-private, real-settings
 /// free directory is the only way (short of patching the wrapper) to make
 /// our injected env vars authoritative instead of silently overridden.
-const CLAUDE_BRIDGE_CONFIG_DIR_ENV_KEY: &str = "CLAUDE_CONFIG_DIR";
+/// Re-exported from `aionui_common` so the MCP management layer, which
+/// shells out to the same `claude` CLI, cannot drift from the directory
+/// this bridge spawns agents against. See
+/// [`aionui_common::agent_bridge`] for why that drift is dangerous.
+const CLAUDE_BRIDGE_CONFIG_DIR_ENV_KEY: &str = aionui_common::CLAUDE_CONFIG_DIR_ENV_KEY;
 
 /// `CLAUDE_CONFIG_DIR` only isolates the settings.json *file*. The real
 /// Anthropic SDK also honors `ANTHROPIC_DEFAULT_HAIKU_MODEL` /
@@ -114,8 +118,8 @@ async fn resolve_claude_bridge_env(
         }
     };
 
-    let config_dir = deps.data_dir.join("claude-bridge-isolated-home");
-    if let Err(error) = std::fs::create_dir_all(&config_dir) {
+    let (config_dir, created) = aionui_common::ensure_claude_bridge_home(&deps.data_dir);
+    if let Err(error) = created {
         warn!(
             error = %error,
             path = %config_dir.display(),
@@ -490,6 +494,27 @@ async fn load_user_mcp_servers(
                 server_name = %row.name,
                 transport_type = %row.transport_type,
                 "user_mcp: transport unsupported by ACP agent; skipping"
+            );
+            continue;
+        }
+        // A server advertising even one tool the model API rejects poisons
+        // every request in the session, and the failure surfaces as an
+        // opaque provider 400 rather than anything traceable to this server.
+        // We cannot drop the single bad tool — the agent collects tools from
+        // the server itself — so the server is the unit of exclusion.
+        let incompatible = row
+            .tools
+            .as_deref()
+            .map(aionui_mcp::incompatible_tools_in_persisted_json)
+            .unwrap_or_default();
+        if !incompatible.is_empty() {
+            warn!(
+                conversation_id,
+                server_id = %row.id,
+                server_name = %row.name,
+                offending = ?incompatible,
+                "user_mcp: server advertises tools the model API rejects; skipping to keep the \
+                 conversation usable — fix the tool schema on the MCP server to re-enable it"
             );
             continue;
         }
@@ -1066,6 +1091,82 @@ mod tests {
         async fn update_tools(&self, _id: &str, _tools: Option<&str>) -> Result<(), aionui_db::DbError> {
             unimplemented!()
         }
+    }
+
+    /// Build a row carrying a persisted `tools` array (as written after a
+    /// connection test).
+    fn make_row_with_tools(name: &str, transport_config: &str, tools: serde_json::Value) -> McpServerRow {
+        McpServerRow {
+            tools: Some(tools.to_string()),
+            last_test_status: "connected".into(),
+            ..make_row(name, "stdio", transport_config, true, false)
+        }
+    }
+
+    #[tokio::test]
+    async fn load_user_mcp_servers_skips_server_whose_tool_schema_the_api_rejects() {
+        // The failure this guards against: the server connects fine, so it
+        // looks healthy everywhere, but injecting it makes the provider
+        // reject every message in the conversation with an opaque 400.
+        let stdio_config = stdio_config_for_existing_command();
+        let caps = AcpMcpCapabilities {
+            stdio: true,
+            http: true,
+            sse: true,
+        };
+        let repo: Arc<dyn IMcpServerRepository> = Arc::new(MockRepo {
+            rows: vec![
+                make_row_with_tools(
+                    "healthy",
+                    &stdio_config,
+                    serde_json::json!([
+                        { "name": "get_quotes", "input_schema": { "type": "object", "properties": { "codes": { "type": "string" } } } }
+                    ]),
+                ),
+                make_row_with_tools(
+                    "poisoned",
+                    &stdio_config,
+                    serde_json::json!([
+                        { "name": "ok_tool", "input_schema": { "type": "object", "properties": {} } },
+                        {
+                            "name": "ft_goodwill_market_overview",
+                            "input_schema": {
+                                "type": "object",
+                                "properties": { "（无业务参数）": { "type": "string" } }
+                            }
+                        }
+                    ]),
+                ),
+            ],
+            fail: false,
+        });
+
+        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", &caps).await;
+
+        assert_eq!(servers.len(), 1, "only the healthy server may be injected");
+        assert!(
+            format!("{servers:?}").contains("healthy"),
+            "expected the healthy server to survive, got {servers:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_user_mcp_servers_injects_untested_server_with_no_recorded_tools() {
+        // Absence of a tools column means "never tested", not "known bad".
+        // Screening must not turn that into a silent exclusion.
+        let stdio_config = stdio_config_for_existing_command();
+        let caps = AcpMcpCapabilities {
+            stdio: true,
+            http: true,
+            sse: true,
+        };
+        let repo: Arc<dyn IMcpServerRepository> = Arc::new(MockRepo {
+            rows: vec![make_row("never-tested", "stdio", &stdio_config, true, false)],
+            fail: false,
+        });
+
+        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", &caps).await;
+        assert_eq!(servers.len(), 1);
     }
 
     #[tokio::test]

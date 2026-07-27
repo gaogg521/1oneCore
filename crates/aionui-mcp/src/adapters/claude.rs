@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use aionui_common::McpSource;
 
@@ -7,7 +8,8 @@ use crate::error::McpError;
 use crate::types::McpServerTransport;
 
 use super::cli_helpers::{
-    DETECT_TIMEOUT, MUTATE_TIMEOUT, is_cli_installed, normalize_detection_status, run_cli, strip_ansi,
+    DETECT_TIMEOUT, INHERIT_ENV, MUTATE_TIMEOUT, is_cli_installed, normalize_detection_status, run_cli_with_env,
+    strip_ansi,
 };
 
 const CLI_NAME: &str = "claude";
@@ -16,6 +18,25 @@ const CLI_NAME: &str = "claude";
 const REMOVE_SCOPES: &[&str] = &["user", "local", "project"];
 
 /// MCP Agent adapter for Claude CLI.
+///
+/// # Config isolation: reads and writes target different homes on purpose
+///
+/// | Operation | `CLAUDE_CONFIG_DIR` | Why |
+/// |---|---|---|
+/// | [`Self::detect_existing`] | the operator's real home | It is the *import source* — the whole point is to discover what the user already configured in their own Claude Code. Read-only, so it cannot damage anything. |
+/// | [`Self::detect_managed`] | bridge isolated home | Reports what this app's own agent actually has registered. |
+/// | `install_server` / `remove_server` | bridge isolated home | **Never** the real home. |
+///
+/// The mutation rule is load-bearing, not hygiene. Both use `-s user`, so
+/// without the override, managing an MCP server *inside this app* would add
+/// to or delete from the user's own Claude Code installation — and a
+/// malformed server installed here would then break `claude` in their
+/// terminal too, long after they closed this app.
+///
+/// The isolated home is [`aionui_common::claude_bridge_home`] — the same
+/// directory the agent factory hands to `claude-agent-acp` at spawn time.
+/// If these two ever drift apart, MCP servers registered here become
+/// invisible to the agent that is supposed to use them.
 ///
 /// # CLI Commands
 ///
@@ -26,7 +47,47 @@ const REMOVE_SCOPES: &[&str] = &["user", "local", "project"];
 ///
 /// Claude's list output uses a custom format:
 /// `name: command args - ✓ Connected` or `name: command args - ✗ Failed`
-pub struct ClaudeAdapter;
+pub struct ClaudeAdapter {
+    /// Isolated `CLAUDE_CONFIG_DIR` this adapter operates on.
+    config_dir: PathBuf,
+}
+
+impl ClaudeAdapter {
+    /// Build an adapter bound to the Claude bridge's isolated config home
+    /// under `data_dir`.
+    pub fn new(data_dir: &Path) -> Self {
+        Self {
+            config_dir: aionui_common::claude_bridge_home(data_dir),
+        }
+    }
+
+    /// Env overrides pinning an invocation to the bridge's isolated home.
+    ///
+    /// Required for every **mutating** command. Read commands choose
+    /// deliberately — see the struct docs.
+    fn isolated_env(&self) -> [(&'static str, String); 1] {
+        [(
+            aionui_common::CLAUDE_CONFIG_DIR_ENV_KEY,
+            self.config_dir.to_string_lossy().into_owned(),
+        )]
+    }
+
+    /// List MCP servers registered in *this app's* isolated Claude home.
+    ///
+    /// Distinct from [`Self::detect_existing`], which reports the user's own
+    /// Claude Code configuration. This is what the agent spawned by this app
+    /// actually sees — including servers an agent registered for itself by
+    /// running `claude mcp add` mid-session.
+    pub async fn detect_managed(&self) -> Result<Vec<DetectedServer>, McpError> {
+        if !self.is_installed().await? {
+            return Err(McpError::AgentNotInstalled(CLI_NAME.into()));
+        }
+
+        let (stdout, _stderr) =
+            run_cli_with_env(CLI_NAME, &["mcp", "list"], &self.isolated_env(), DETECT_TIMEOUT).await?;
+        Ok(parse_claude_list_output(&stdout))
+    }
+}
 
 #[async_trait::async_trait]
 impl McpAgentAdapter for ClaudeAdapter {
@@ -38,12 +99,21 @@ impl McpAgentAdapter for ClaudeAdapter {
         is_cli_installed(CLI_NAME).await
     }
 
+    /// Read the operator's **real** Claude Code configuration.
+    ///
+    /// Deliberately not isolated: this feeds `GET /api/mcp/agent-configs`,
+    /// whose purpose is to let the user import MCP servers they already set
+    /// up in their own Claude Code. Isolating it would make the import
+    /// feature scan this app's own registry and find nothing to import.
+    ///
+    /// Safe because it is strictly read-only — `mcp list` never writes. All
+    /// mutations go to the isolated home instead (see struct docs).
     async fn detect_existing(&self) -> Result<Vec<DetectedServer>, McpError> {
         if !self.is_installed().await? {
             return Err(McpError::AgentNotInstalled(CLI_NAME.into()));
         }
 
-        let (stdout, _stderr) = run_cli(CLI_NAME, &["mcp", "list"], DETECT_TIMEOUT).await?;
+        let (stdout, _stderr) = run_cli_with_env(CLI_NAME, &["mcp", "list"], INHERIT_ENV, DETECT_TIMEOUT).await?;
         Ok(parse_claude_list_output(&stdout))
     }
 
@@ -52,23 +122,30 @@ impl McpAgentAdapter for ClaudeAdapter {
             return Err(McpError::AgentNotInstalled(CLI_NAME.into()));
         }
 
+        let env = self.isolated_env();
+
         match transport {
-            McpServerTransport::Stdio { command, args, env } => {
-                let config = build_stdio_json(command, args, env);
+            McpServerTransport::Stdio {
+                command,
+                args,
+                env: server_env,
+            } => {
+                let config = build_stdio_json(command, args, server_env);
                 let config_str =
                     serde_json::to_string(&config).map_err(|e| McpError::AgentOperationFailed(e.to_string()))?;
-                run_cli(
+                run_cli_with_env(
                     CLI_NAME,
                     &["mcp", "add-json", "-s", "user", name, &config_str],
+                    &env,
                     MUTATE_TIMEOUT,
                 )
                 .await?;
             }
             McpServerTransport::Sse { url, headers } => {
-                install_http_like(name, "sse", url, headers).await?;
+                install_http_like(name, "sse", url, headers, &env).await?;
             }
             McpServerTransport::Http { url, headers } => {
-                install_http_like(name, "http", url, headers).await?;
+                install_http_like(name, "http", url, headers, &env).await?;
             }
         }
 
@@ -80,9 +157,12 @@ impl McpAgentAdapter for ClaudeAdapter {
             return Err(McpError::AgentNotInstalled(CLI_NAME.into()));
         }
 
+        let env = self.isolated_env();
+
         // Try each scope; stop on first success or "not found".
         for scope in REMOVE_SCOPES {
-            let (stdout, _stderr) = run_cli(CLI_NAME, &["mcp", "remove", "-s", scope, name], MUTATE_TIMEOUT).await?;
+            let (stdout, _stderr) =
+                run_cli_with_env(CLI_NAME, &["mcp", "remove", "-s", scope, name], &env, MUTATE_TIMEOUT).await?;
             let lower = stdout.to_lowercase();
             if lower.contains("removed") || lower.contains("not found") {
                 return Ok(());
@@ -101,6 +181,7 @@ async fn install_http_like(
     transport_type: &str,
     url: &str,
     headers: &HashMap<String, String>,
+    env: &[(&str, String)],
 ) -> Result<(), McpError> {
     let mut args = vec![
         "mcp".to_owned(),
@@ -119,7 +200,7 @@ async fn install_http_like(
     }
 
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    run_cli(CLI_NAME, &arg_refs, MUTATE_TIMEOUT).await?;
+    run_cli_with_env(CLI_NAME, &arg_refs, env, MUTATE_TIMEOUT).await?;
     Ok(())
 }
 
@@ -233,6 +314,60 @@ fn parse_claude_list_line(line: &str) -> Option<DetectedServer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- config isolation (regression guard) ----------------------------------
+
+    #[test]
+    fn adapter_targets_the_bridge_isolated_home_not_an_ad_hoc_path() {
+        // The agent factory spawns Claude against this exact directory. If
+        // the two ever diverge, MCP servers registered here become invisible
+        // to the agent that is supposed to use them.
+        let data_dir = Path::new("/app-data");
+        let adapter = ClaudeAdapter::new(data_dir);
+
+        assert_eq!(adapter.config_dir, aionui_common::claude_bridge_home(data_dir));
+    }
+
+    #[test]
+    fn mutations_are_pinned_to_the_isolated_home() {
+        let adapter = ClaudeAdapter::new(Path::new("/app-data"));
+        let env = adapter.isolated_env();
+
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].0, aionui_common::CLAUDE_CONFIG_DIR_ENV_KEY);
+        assert!(
+            env[0].1.contains(aionui_common::CLAUDE_BRIDGE_HOME_DIR_NAME),
+            "expected isolated home in env value, got {}",
+            env[0].1
+        );
+    }
+
+    #[test]
+    fn isolated_env_value_is_never_empty() {
+        // An empty CLAUDE_CONFIG_DIR makes Claude fall back to the real home,
+        // so isolation would fail *open* — silently reintroducing the bug.
+        let adapter = ClaudeAdapter::new(Path::new(""));
+        let env = adapter.isolated_env();
+        assert!(!env[0].1.is_empty());
+    }
+
+    #[test]
+    fn detect_existing_does_not_pin_the_config_dir() {
+        // Guards the read/write asymmetry: `detect_existing` is the import
+        // source and must see the user's own Claude Code config. Pinning it
+        // to the isolated home would leave the import feature scanning this
+        // app's own registry, with nothing to import.
+        //
+        // Asserted at the source level because the behaviour lives in which
+        // env constant the call site passes, and INHERIT_ENV is the only
+        // value that leaves CLAUDE_CONFIG_DIR untouched.
+        assert!(
+            INHERIT_ENV.is_empty(),
+            "INHERIT_ENV must not set any variable, or detect_existing would stop reading the real config"
+        );
+    }
+
+    // -- list output parsing --------------------------------------------------
 
     #[test]
     fn parse_claude_stdio_connected() {

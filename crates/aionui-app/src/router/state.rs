@@ -448,7 +448,10 @@ pub fn build_mcp_state(services: &AppServices) -> McpRouterState {
     let repo: Arc<dyn aionui_db::IMcpServerRepository> = Arc::new(aionui_db::SqliteMcpServerRepository::new(pool));
 
     let adapters: Vec<Arc<dyn McpAgentAdapter>> = vec![
-        Arc::new(ClaudeAdapter),
+        // Bound to the Claude bridge's isolated CLAUDE_CONFIG_DIR so MCP
+        // management and the spawned agent share one registry, and neither
+        // touches the operator's real ~/.claude.json.
+        Arc::new(ClaudeAdapter::new(&services.data_dir)),
         Arc::new(GeminiAdapter),
         Arc::new(QwenAdapter),
         Arc::new(CodexAdapter),

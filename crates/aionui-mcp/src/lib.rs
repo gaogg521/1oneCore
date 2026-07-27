@@ -27,4 +27,4 @@ pub use session_injection::{
     build_session_mcp_servers, parse_acp_mcp_capabilities,
 };
 pub use sync_service::McpSyncService;
-pub use types::{McpServer, McpServerTransport, McpTool};
+pub use types::{IncompatibleTool, McpServer, McpServerTransport, McpTool, incompatible_tools_in_persisted_json};
