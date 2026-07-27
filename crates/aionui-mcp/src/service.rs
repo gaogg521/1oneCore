@@ -302,6 +302,16 @@ fn split_stdio_command(command: &str) -> Result<Option<(String, Vec<String>)>, M
     Ok(Some((tokens[0].clone(), tokens[1..].to_vec())))
 }
 
+/// Split a shell-style command string into tokens, honoring quotes.
+///
+/// Backslash handling is **platform-dependent by design**. This splits
+/// commands that will be spawned on the local OS, not passed to a POSIX
+/// shell — and on Windows, `\` is the path separator, not an escape
+/// character. Treating it as POSIX escaping silently ate every backslash:
+/// `node D:\1one-command\out\main\x.js` became `node D:1one-commandoutmainx.js`,
+/// a real bug that broke every Windows path with a launcher argument. On
+/// Windows `\` is copied through literally; on Unix it keeps standard
+/// escape semantics (`\` + next char → that char literally).
 fn shell_split(input: &str) -> Result<Vec<String>, String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -313,7 +323,7 @@ fn shell_split(input: &str) -> Result<Vec<String>, String> {
             Some(active) => {
                 if ch == active {
                     quote = None;
-                } else if ch == '\\' && active == '"' {
+                } else if ch == '\\' && active == '"' && !cfg!(windows) {
                     if let Some(next) = chars.next() {
                         current.push(next);
                     }
@@ -323,7 +333,7 @@ fn shell_split(input: &str) -> Result<Vec<String>, String> {
             }
             None => match ch {
                 '"' | '\'' => quote = Some(ch),
-                '\\' => {
+                '\\' if !cfg!(windows) => {
                     if let Some(next) = chars.next() {
                         current.push(next);
                     }
@@ -1245,6 +1255,93 @@ mod tests {
             McpTransport::Stdio { command, args, .. } => {
                 assert_eq!(command, "npx");
                 assert_eq!(args, vec!["@sentry/mcp-server@latest", "--organization-slug=demo"]);
+            }
+            _ => panic!("expected stdio transport"),
+        }
+    }
+
+    // -- shell_split: platform-dependent backslash handling -------------------
+    //
+    // These exercise `shell_split` directly rather than through
+    // `add_server`/`normalize_transport`, because `split_stdio_command` only
+    // ever calls it for a fixed launcher whitelist (`node`, `npx`, ...) — the
+    // backslash bug itself is launcher-agnostic and belongs at this level.
+
+    #[test]
+    #[cfg(windows)]
+    fn shell_split_preserves_windows_path_backslashes() {
+        // The exact regression: this used to come back as
+        // ["node", "D:1one-commandoutmainbuiltin-mcp-web-tools.js"].
+        let tokens = shell_split(r"node D:\1one-command\out\main\builtin-mcp-web-tools.js").unwrap();
+        assert_eq!(
+            tokens,
+            vec!["node", r"D:\1one-command\out\main\builtin-mcp-web-tools.js"]
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn shell_split_preserves_backslashes_inside_quotes_on_windows() {
+        let tokens = shell_split(r#"node "D:\path with spaces\x.js""#).unwrap();
+        assert_eq!(tokens, vec!["node", r"D:\path with spaces\x.js"]);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn shell_split_treats_backslash_as_posix_escape_on_unix() {
+        // Unquoted backslash escapes the next character (classic shell
+        // behavior for escaping a space).
+        let tokens = shell_split(r"node /opt/my\ tool/x.js").unwrap();
+        assert_eq!(tokens, vec!["node", "/opt/my tool/x.js"]);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn shell_split_posix_escape_inside_double_quotes() {
+        let tokens = shell_split(r#"node "/opt/say \"hi\"/x.js""#).unwrap();
+        assert_eq!(tokens, vec!["node", "/opt/say \"hi\"/x.js"]);
+    }
+
+    #[test]
+    fn shell_split_still_honors_quoted_spaces_on_every_platform() {
+        // Quoting behavior (not backslash-specific) must be unaffected by
+        // the platform-dependent branch.
+        let tokens = shell_split(r#"node "C:\Program Files\App\app.js" --flag"#).unwrap();
+        assert_eq!(tokens, vec!["node", r"C:\Program Files\App\app.js", "--flag"]);
+    }
+
+    #[test]
+    fn split_stdio_command_recovers_windows_node_path() {
+        let result = split_stdio_command(r"node D:\1one-command\out\main\builtin-mcp-web-tools.js").unwrap();
+        let (command, args) = result.expect("expected a split result for a whitelisted launcher");
+        assert_eq!(command, "node");
+        assert_eq!(args, vec![r"D:\1one-command\out\main\builtin-mcp-web-tools.js"]);
+    }
+
+    #[tokio::test]
+    async fn add_server_normalizes_windows_node_path_without_losing_backslashes() {
+        // End-to-end through the public API: this is the shape a manually
+        // pasted `{"command": "node D:\\...\\x.js"}` JSON config produces.
+        let svc = make_service();
+        let created = svc
+            .add_server(CreateMcpServerRequest {
+                name: "one-web-tools".into(),
+                description: None,
+                transport: McpTransport::Stdio {
+                    command: r"node D:\1one-command\out\main\builtin-mcp-web-tools.js".into(),
+                    args: vec![],
+                    env: HashMap::new(),
+                },
+                original_json: None,
+                builtin: false,
+            })
+            .await
+            .unwrap();
+
+        match created.transport {
+            McpTransport::Stdio { command, args, .. } => {
+                assert_eq!(command, "node");
+                assert_eq!(args, vec![r"D:\1one-command\out\main\builtin-mcp-web-tools.js"]);
             }
             _ => panic!("expected stdio transport"),
         }

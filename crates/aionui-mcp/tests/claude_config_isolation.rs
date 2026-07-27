@@ -56,8 +56,7 @@ async fn install_and_remove_never_touch_the_operators_real_claude_config() {
     // must not be masked by an early `unwrap`.
     let after = snapshot(&real);
     assert_eq!(
-        before,
-        after,
+        before, after,
         "install_server modified the operator's real ~/.claude.json — config isolation is broken"
     );
 
@@ -80,8 +79,7 @@ async fn install_and_remove_never_touch_the_operators_real_claude_config() {
     adapter.remove_server(PROBE_SERVER).await.expect("remove");
     let after_remove = snapshot(&real);
     assert_eq!(
-        before,
-        after_remove,
+        before, after_remove,
         "remove_server modified the operator's real ~/.claude.json — config isolation is broken"
     );
 }

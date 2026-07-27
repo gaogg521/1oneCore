@@ -108,13 +108,28 @@ impl McpAgentAdapter for ClaudeAdapter {
     ///
     /// Safe because it is strictly read-only — `mcp list` never writes. All
     /// mutations go to the isolated home instead (see struct docs).
+    ///
+    /// Names, live connectivity status, and plugin-managed detection all
+    /// come from `claude mcp list`'s plain-text output — there is no other
+    /// source for "is this server actually reachable right now". But that
+    /// same text has no delimiter between a command and its arguments (see
+    /// `parse_claude_list_line`), so the transport it produces is a guess.
+    /// Once we have the name, [`read_claude_json_mcp_servers`] overlays the
+    /// *structurally correct* command/args/env straight from
+    /// `~/.claude.json` — best-effort, never blocks detection if the file is
+    /// missing or unreadable.
     async fn detect_existing(&self) -> Result<Vec<DetectedServer>, McpError> {
         if !self.is_installed().await? {
             return Err(McpError::AgentNotInstalled(CLI_NAME.into()));
         }
 
         let (stdout, _stderr) = run_cli_with_env(CLI_NAME, &["mcp", "list"], INHERIT_ENV, DETECT_TIMEOUT).await?;
-        Ok(parse_claude_list_output(&stdout))
+        let mut servers = parse_claude_list_output(&stdout);
+
+        let structured = read_claude_json_mcp_servers().await;
+        overlay_structured_transports(&mut servers, &structured);
+
+        Ok(servers)
     }
 
     async fn install_server(&self, name: &str, transport: &McpServerTransport) -> Result<(), McpError> {
@@ -214,6 +229,107 @@ fn build_stdio_json(command: &str, args: &[String], env: &HashMap<String, String
         config["env"] = serde_json::json!(env);
     }
     config
+}
+
+// ---------------------------------------------------------------------------
+// Structured config overlay (~/.claude.json)
+// ---------------------------------------------------------------------------
+
+/// Best-effort read of the user's real `~/.claude.json` `mcpServers` map,
+/// keyed by server name.
+///
+/// This exists solely to recover the structurally correct command/args/env
+/// for entries that [`parse_claude_list_line`] can only guess at — the CLI's
+/// plain-text `mcp list` output has no delimiter between a command and its
+/// arguments, so a launcher like `codegraph serve --mcp` or a Windows path
+/// like `node D:\tools\x.js` cannot be split back apart reliably from text
+/// alone. `~/.claude.json` already has these as separate JSON fields.
+///
+/// Never fails: a missing file, unreadable file, or malformed JSON all just
+/// mean no overlay data for this call — callers fall back to the
+/// text-parsed transport, which is no worse than before this existed.
+async fn read_claude_json_mcp_servers() -> HashMap<String, McpServerTransport> {
+    let Some(home) = dirs::home_dir() else {
+        return HashMap::new();
+    };
+    let Ok(content) = tokio::fs::read_to_string(home.join(".claude.json")).await else {
+        return HashMap::new();
+    };
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return HashMap::new();
+    };
+    let Some(servers) = config.get("mcpServers").and_then(serde_json::Value::as_object) else {
+        return HashMap::new();
+    };
+
+    servers
+        .iter()
+        .filter_map(|(name, entry)| parse_claude_json_entry(entry).map(|transport| (name.clone(), transport)))
+        .collect()
+}
+
+/// Parse one `~/.claude.json` `mcpServers` entry into a transport.
+///
+/// Observed shapes (real config, 2026-07-27):
+/// - stdio, explicit type: `{"type":"stdio","command":"codegraph","args":["serve","--mcp"]}`
+/// - stdio, no type field: `{"command":"cmd","args":["/c","npx",...],"env":{...}}`
+/// - remote servers use `{"type":"http"|"sse","url":"...","headers":{...}}`
+///   (not present in this observation, inferred from `claude mcp add --transport`).
+fn parse_claude_json_entry(entry: &serde_json::Value) -> Option<McpServerTransport> {
+    let transport_type = entry.get("type").and_then(|v| v.as_str());
+
+    match transport_type {
+        Some("http") => Some(McpServerTransport::Http {
+            url: entry.get("url")?.as_str()?.to_owned(),
+            headers: parse_string_map(entry.get("headers")),
+        }),
+        Some("sse") => Some(McpServerTransport::Sse {
+            url: entry.get("url")?.as_str()?.to_owned(),
+            headers: parse_string_map(entry.get("headers")),
+        }),
+        _ if entry.get("command").and_then(|v| v.as_str()).is_some() => Some(McpServerTransport::Stdio {
+            command: entry["command"].as_str()?.to_owned(),
+            args: entry
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            env: parse_string_map(entry.get("env")),
+        }),
+        // No "type" and no "command": only remaining shape worth trying is a
+        // bare url-based entry (legacy / hand-edited configs).
+        _ => Some(McpServerTransport::Http {
+            url: entry.get("url").and_then(|v| v.as_str())?.to_owned(),
+            headers: parse_string_map(entry.get("headers")),
+        }),
+    }
+}
+
+/// Parse a JSON object as `HashMap<String, String>`, dropping non-string
+/// values rather than failing the whole entry.
+fn parse_string_map(value: Option<&serde_json::Value>) -> HashMap<String, String> {
+    value
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Replace each detected server's transport with the structurally correct
+/// one from `structured`, matched by name. Servers with no match (not in
+/// `~/.claude.json`, or the JSON entry didn't parse) keep their text-parsed
+/// transport unchanged — extracted from [`ClaudeAdapter::detect_existing`]
+/// as a pure function so the merge behavior itself is unit-testable without
+/// touching the filesystem.
+fn overlay_structured_transports(servers: &mut [DetectedServer], structured: &HashMap<String, McpServerTransport>) {
+    for server in servers {
+        if let Some(transport) = structured.get(&server.name) {
+            server.transport = transport.clone();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +481,224 @@ mod tests {
             INHERIT_ENV.is_empty(),
             "INHERIT_ENV must not set any variable, or detect_existing would stop reading the real config"
         );
+    }
+
+    // -- ~/.claude.json entry parsing (structured overlay) --------------------
+
+    #[test]
+    fn json_entry_stdio_no_type_field() {
+        // Real shape observed for chrome-devtools/one-image-generation: no
+        // "type" key at all, just command/args/env.
+        let entry = serde_json::json!({
+            "command": "cmd",
+            "args": ["/c", "npx", "-y", "chrome-devtools-mcp@latest"],
+            "env": {}
+        });
+        let transport = parse_claude_json_entry(&entry).unwrap();
+        match transport {
+            McpServerTransport::Stdio { command, args, .. } => {
+                assert_eq!(command, "cmd");
+                assert_eq!(args, vec!["/c", "npx", "-y", "chrome-devtools-mcp@latest"]);
+            }
+            _ => panic!("expected Stdio"),
+        }
+    }
+
+    #[test]
+    fn json_entry_stdio_explicit_type_preserves_windows_backslashes() {
+        // The exact bug this overlay exists to fix: mcp list's text output
+        // for `node D:\1one-command\out\main\x.js` cannot be reliably split
+        // back into command+args, and a naive splitter can eat the
+        // backslashes entirely. The JSON field is already structured.
+        let entry = serde_json::json!({
+            "type": "stdio",
+            "command": "node",
+            "args": [r"D:\1one-command\out\main\builtin-mcp-web-tools.js"],
+            "env": {}
+        });
+        let transport = parse_claude_json_entry(&entry).unwrap();
+        match transport {
+            McpServerTransport::Stdio { command, args, .. } => {
+                assert_eq!(command, "node");
+                assert_eq!(args, vec![r"D:\1one-command\out\main\builtin-mcp-web-tools.js"]);
+            }
+            _ => panic!("expected Stdio"),
+        }
+    }
+
+    #[test]
+    fn json_entry_stdio_multi_word_launcher_not_split() {
+        // codegraph's real entry: no naive whitespace split needed at all,
+        // the launcher and its args are already separate JSON array items.
+        let entry = serde_json::json!({
+            "type": "stdio",
+            "command": "codegraph",
+            "args": ["serve", "--mcp"]
+        });
+        let transport = parse_claude_json_entry(&entry).unwrap();
+        match transport {
+            McpServerTransport::Stdio { command, args, .. } => {
+                assert_eq!(command, "codegraph");
+                assert_eq!(args, vec!["serve", "--mcp"]);
+            }
+            _ => panic!("expected Stdio"),
+        }
+    }
+
+    #[test]
+    fn json_entry_stdio_env_parsed() {
+        let entry = serde_json::json!({
+            "command": "node",
+            "args": ["x.js"],
+            "env": { "PORT": "19820" }
+        });
+        let transport = parse_claude_json_entry(&entry).unwrap();
+        match transport {
+            McpServerTransport::Stdio { env, .. } => {
+                assert_eq!(env.get("PORT").unwrap(), "19820");
+            }
+            _ => panic!("expected Stdio"),
+        }
+    }
+
+    #[test]
+    fn json_entry_http_type() {
+        let entry = serde_json::json!({
+            "type": "http",
+            "url": "https://market.ft.tech/gateway/mcp",
+            "headers": { "Authorization": "Bearer tok" }
+        });
+        let transport = parse_claude_json_entry(&entry).unwrap();
+        match transport {
+            McpServerTransport::Http { url, headers } => {
+                assert_eq!(url, "https://market.ft.tech/gateway/mcp");
+                assert_eq!(headers.get("Authorization").unwrap(), "Bearer tok");
+            }
+            _ => panic!("expected Http"),
+        }
+    }
+
+    #[test]
+    fn json_entry_sse_type() {
+        let entry = serde_json::json!({ "type": "sse", "url": "https://example.com/sse" });
+        let transport = parse_claude_json_entry(&entry).unwrap();
+        assert!(matches!(transport, McpServerTransport::Sse { .. }));
+    }
+
+    #[test]
+    fn json_entry_bare_url_without_type_defaults_to_http() {
+        let entry = serde_json::json!({ "url": "https://example.com/api" });
+        let transport = parse_claude_json_entry(&entry).unwrap();
+        assert!(matches!(transport, McpServerTransport::Http { .. }));
+    }
+
+    #[test]
+    fn json_entry_neither_command_nor_url_is_none() {
+        let entry = serde_json::json!({ "disabled": true });
+        assert!(parse_claude_json_entry(&entry).is_none());
+    }
+
+    #[test]
+    fn read_real_claude_json_mcp_servers_top_level_document() {
+        // Guards the exact file/key: `~/.claude.json` (NOT `~/.claude/settings.json`
+        // or `~/.claude/mcp.json`), top-level `mcpServers` object. Getting this
+        // wrong makes the overlay a silent no-op — parse_claude_json_entry
+        // would never even run.
+        let doc = serde_json::json!({
+            "mcpServers": {
+                "codegraph": { "type": "stdio", "command": "codegraph", "args": ["serve", "--mcp"] }
+            },
+            "unrelatedTopLevelKey": "should not interfere"
+        });
+        let servers = doc.get("mcpServers").and_then(serde_json::Value::as_object).unwrap();
+        assert_eq!(servers.len(), 1);
+        assert!(parse_claude_json_entry(&servers["codegraph"]).is_some());
+    }
+
+    // -- overlay_structured_transports -----------------------------------------
+
+    #[test]
+    fn overlay_replaces_matching_server_by_name() {
+        let mut servers = vec![DetectedServer {
+            name: "codegraph".into(),
+            transport: McpServerTransport::Stdio {
+                command: "codegraph serve --mcp".into(), // the mis-split guess
+                args: vec![],
+                env: HashMap::new(),
+            },
+            importable: true,
+            import_skip_reason: None,
+        }];
+        let mut structured = HashMap::new();
+        structured.insert(
+            "codegraph".to_owned(),
+            McpServerTransport::Stdio {
+                command: "codegraph".into(),
+                args: vec!["serve".into(), "--mcp".into()],
+                env: HashMap::new(),
+            },
+        );
+
+        overlay_structured_transports(&mut servers, &structured);
+
+        match &servers[0].transport {
+            McpServerTransport::Stdio { command, args, .. } => {
+                assert_eq!(command, "codegraph");
+                assert_eq!(args, &vec!["serve".to_owned(), "--mcp".to_owned()]);
+            }
+            _ => panic!("expected Stdio"),
+        }
+    }
+
+    #[test]
+    fn overlay_leaves_unmatched_server_untouched() {
+        let original = McpServerTransport::Stdio {
+            command: "some-guess".into(),
+            args: vec![],
+            env: HashMap::new(),
+        };
+        let mut servers = vec![DetectedServer {
+            name: "not-in-json".into(),
+            transport: original.clone(),
+            importable: true,
+            import_skip_reason: None,
+        }];
+        let structured = HashMap::new(); // nothing to overlay with
+
+        overlay_structured_transports(&mut servers, &structured);
+
+        assert_eq!(servers[0].transport, original);
+    }
+
+    #[test]
+    fn overlay_preserves_live_status_fields() {
+        // The whole point of overlaying instead of replacing detect_existing
+        // wholesale: importable/import_skip_reason come from live `mcp list`
+        // connectivity status and must survive the transport swap untouched.
+        let mut servers = vec![DetectedServer {
+            name: "broken".into(),
+            transport: McpServerTransport::Stdio {
+                command: "node bad.js".into(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+            importable: false,
+            import_skip_reason: Some("Failed to connect".into()),
+        }];
+        let mut structured = HashMap::new();
+        structured.insert(
+            "broken".to_owned(),
+            McpServerTransport::Stdio {
+                command: "node".into(),
+                args: vec!["bad.js".into()],
+                env: HashMap::new(),
+            },
+        );
+
+        overlay_structured_transports(&mut servers, &structured);
+
+        assert!(!servers[0].importable);
+        assert_eq!(servers[0].import_skip_reason.as_deref(), Some("Failed to connect"));
     }
 
     // -- list output parsing --------------------------------------------------
