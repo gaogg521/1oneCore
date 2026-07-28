@@ -54,6 +54,42 @@ pub fn ensure_claude_bridge_home(data_dir: &Path) -> (PathBuf, Result<(), std::i
     (path, created)
 }
 
+/// Directory name (under the app data dir) for isolating `codex` CLI's MCP
+/// registry writes.
+///
+/// **Not the same thing as "the Codex bridge"** elsewhere in this codebase
+/// (`aionui-codex-bridge`, `CODEX_CONFIG`/`MODEL_PROVIDER`) — that bridge
+/// injects a custom LLM provider into the spawned `codex-acp` process and is
+/// unrelated to MCP server management. This constant exists purely so
+/// `aionui-mcp`'s `CodexAdapter` never runs `codex mcp add/remove` against
+/// the operator's real `~/.codex` (confirmed empirically: `codex mcp
+/// add/list/remove` honor `CODEX_HOME` and write `<CODEX_HOME>/config.toml`
+/// under `[mcp_servers.<name>]`). Deliberately **not** wired into agent
+/// spawn — `install_server`/`remove_server` currently have no production
+/// caller (see `CodexAdapter` docs), so isolating them doesn't touch the
+/// running agent's own `CODEX_HOME`/auth lookup at all.
+pub const CODEX_MCP_ISOLATED_HOME_DIR_NAME: &str = "codex-mcp-isolated-home";
+
+/// Env var the `codex` CLI reads to relocate its config home.
+pub const CODEX_HOME_ENV_KEY: &str = "CODEX_HOME";
+
+/// Resolve the isolated `CODEX_HOME` used for MCP registry writes under
+/// `data_dir`.
+pub fn codex_mcp_isolated_home(data_dir: &Path) -> PathBuf {
+    data_dir.join(CODEX_MCP_ISOLATED_HOME_DIR_NAME)
+}
+
+/// Resolve the isolated Codex MCP home and ensure it exists on disk.
+///
+/// Same shape as [`ensure_claude_bridge_home`]: returns the path regardless
+/// of whether creation succeeded, since callers use it as an env var value
+/// and `codex` creates `config.toml` itself on first write.
+pub fn ensure_codex_mcp_isolated_home(data_dir: &Path) -> (PathBuf, Result<(), std::io::Error>) {
+    let path = codex_mcp_isolated_home(data_dir);
+    let created = std::fs::create_dir_all(&path);
+    (path, created)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +130,43 @@ mod tests {
         // Guards against a typo silently disabling isolation: Claude Code
         // ignores unknown env vars, so a misspelling would fail open.
         assert_eq!(CLAUDE_CONFIG_DIR_ENV_KEY, "CLAUDE_CONFIG_DIR");
+    }
+
+    #[test]
+    fn codex_mcp_isolated_home_appends_known_dir_name() {
+        let path = codex_mcp_isolated_home(Path::new("/data"));
+        assert!(path.ends_with(CODEX_MCP_ISOLATED_HOME_DIR_NAME));
+        assert!(path.starts_with("/data"));
+    }
+
+    #[test]
+    fn codex_mcp_isolated_home_is_distinct_from_claude_bridge_home() {
+        // These must never collide — they isolate two different CLIs.
+        let data_dir = Path::new("/data");
+        assert_ne!(claude_bridge_home(data_dir), codex_mcp_isolated_home(data_dir));
+        assert_ne!(CLAUDE_BRIDGE_HOME_DIR_NAME, CODEX_MCP_ISOLATED_HOME_DIR_NAME);
+    }
+
+    #[test]
+    fn ensure_codex_mcp_isolated_home_creates_directory() {
+        let tmp = std::env::temp_dir().join(format!("aionui-codex-mcp-home-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let (path, created) = ensure_codex_mcp_isolated_home(&tmp);
+        assert!(created.is_ok(), "expected directory creation to succeed");
+        assert!(path.is_dir(), "expected {} to exist", path.display());
+
+        let (path_again, created_again) = ensure_codex_mcp_isolated_home(&tmp);
+        assert!(created_again.is_ok());
+        assert_eq!(path, path_again);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn codex_env_key_matches_documented_name() {
+        // Guards against a typo silently disabling isolation: `codex`
+        // ignores unknown env vars, so a misspelling would fail open.
+        assert_eq!(CODEX_HOME_ENV_KEY, "CODEX_HOME");
     }
 }

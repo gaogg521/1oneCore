@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use aionui_common::McpSource;
 
@@ -6,11 +7,35 @@ use crate::adapter::{DetectedServer, McpAgentAdapter};
 use crate::error::McpError;
 use crate::types::McpServerTransport;
 
-use super::cli_helpers::{DETECT_TIMEOUT, MUTATE_TIMEOUT, is_cli_installed, run_cli_strict};
+use super::cli_helpers::{DETECT_TIMEOUT, INHERIT_ENV, MUTATE_TIMEOUT, is_cli_installed, run_cli_strict_with_env};
 
 const CLI_NAME: &str = "codex";
 
 /// MCP Agent adapter for Codex CLI.
+///
+/// # Config isolation: reads and writes target different homes on purpose
+///
+/// Mirrors [`super::claude::ClaudeAdapter`]'s read/write split — see that
+/// struct's docs for the full rationale. The short version:
+///
+/// | Operation | `CODEX_HOME` | Why |
+/// |---|---|---|
+/// | [`Self::detect_existing`] | the operator's real home | Import source: must see what the user already has configured in their own Codex CLI. Read-only, so it cannot damage anything. |
+/// | `install_server` / `remove_server` | isolated home (`aionui_common::codex_mcp_isolated_home`) | **Never** the real home. |
+///
+/// Confirmed empirically (2026-07-27): `codex mcp add/list/remove` honor
+/// `CODEX_HOME` and write `<CODEX_HOME>/config.toml` under
+/// `[mcp_servers.<name>]`.
+///
+/// Unlike Claude, this isolation is **not** wired into agent spawn — Codex's
+/// LLM-provider bridge (`aionui-codex-bridge`, `CODEX_CONFIG`/
+/// `MODEL_PROVIDER`) is a separate mechanism that doesn't touch
+/// `~/.codex/config.toml`'s `mcp_servers` table at all, and
+/// `install_server`/`remove_server` currently have no production caller (see
+/// `router::build_mcp_state`). So there is no existing "agent sees one home,
+/// adapter writes another" split to fix, and isolating the write path alone
+/// doesn't affect the running agent's own `CODEX_HOME`/auth lookup — no
+/// forced re-login.
 ///
 /// # CLI Commands
 ///
@@ -20,7 +45,48 @@ const CLI_NAME: &str = "codex";
 /// - **remove**: `codex mcp remove <name>` (no scope parameter)
 ///
 /// Codex outputs structured JSON for list, unlike the text-based agents.
-pub struct CodexAdapter;
+pub struct CodexAdapter {
+    /// Isolated `CODEX_HOME` this adapter's mutations operate on.
+    config_dir: PathBuf,
+}
+
+impl CodexAdapter {
+    /// Build an adapter bound to an isolated `CODEX_HOME` under `data_dir`.
+    pub fn new(data_dir: &Path) -> Self {
+        Self {
+            config_dir: aionui_common::codex_mcp_isolated_home(data_dir),
+        }
+    }
+
+    /// Env overrides pinning an invocation to the isolated home.
+    ///
+    /// Required for every **mutating** command. `detect_existing` chooses
+    /// deliberately not to use this — see struct docs.
+    fn isolated_env(&self) -> [(&'static str, String); 1] {
+        [(
+            aionui_common::CODEX_HOME_ENV_KEY,
+            self.config_dir.to_string_lossy().into_owned(),
+        )]
+    }
+
+    /// Ensure the isolated home exists before a mutating command runs.
+    ///
+    /// Unlike Claude Code (which creates a missing `CLAUDE_CONFIG_DIR`
+    /// itself), `codex` hard-fails with "CODEX_HOME points to ..., but that
+    /// path does not exist" if the directory isn't already there — caught by
+    /// the real-CLI integration test in `tests/codex_config_isolation.rs`.
+    /// Best-effort: a failure here just means the subsequent CLI call fails
+    /// with its own clear error instead.
+    fn ensure_isolated_home(&self) {
+        if let Err(error) = std::fs::create_dir_all(&self.config_dir) {
+            tracing::warn!(
+                error = %error,
+                path = %self.config_dir.display(),
+                "codex-mcp: failed to create isolated CODEX_HOME; the mutating command will likely fail"
+            );
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl McpAgentAdapter for CodexAdapter {
@@ -32,12 +98,19 @@ impl McpAgentAdapter for CodexAdapter {
         is_cli_installed(CLI_NAME).await
     }
 
+    /// Read the operator's **real** Codex CLI configuration.
+    ///
+    /// Deliberately not isolated: this feeds the one-click import feature,
+    /// whose purpose is to let the user import MCP servers they already set
+    /// up in their own Codex CLI. Safe because `mcp list` is strictly
+    /// read-only. All mutations go to the isolated home instead (see struct
+    /// docs).
     async fn detect_existing(&self) -> Result<Vec<DetectedServer>, McpError> {
         if !self.is_installed().await? {
             return Err(McpError::AgentNotInstalled(CLI_NAME.into()));
         }
 
-        let stdout = run_cli_strict(CLI_NAME, &["mcp", "list", "--json"], DETECT_TIMEOUT).await?;
+        let stdout = run_cli_strict_with_env(CLI_NAME, &["mcp", "list", "--json"], INHERIT_ENV, DETECT_TIMEOUT).await?;
 
         parse_codex_list_json(&stdout)
     }
@@ -47,12 +120,19 @@ impl McpAgentAdapter for CodexAdapter {
             return Err(McpError::AgentNotInstalled(CLI_NAME.into()));
         }
 
+        let env = self.isolated_env();
+        self.ensure_isolated_home();
+
         match transport {
-            McpServerTransport::Stdio { command, args, env } => {
+            McpServerTransport::Stdio {
+                command,
+                args,
+                env: server_env,
+            } => {
                 let mut cli_args = vec!["mcp".to_owned(), "add".to_owned(), name.to_owned()];
 
                 // Env vars come before --
-                for (k, v) in env {
+                for (k, v) in server_env {
                     cli_args.push("--env".to_owned());
                     cli_args.push(format!("{k}={v}"));
                 }
@@ -63,11 +143,11 @@ impl McpAgentAdapter for CodexAdapter {
                 cli_args.extend(args.iter().cloned());
 
                 let arg_refs: Vec<&str> = cli_args.iter().map(|s| s.as_str()).collect();
-                run_cli_strict(CLI_NAME, &arg_refs, MUTATE_TIMEOUT).await?;
+                run_cli_strict_with_env(CLI_NAME, &arg_refs, &env, MUTATE_TIMEOUT).await?;
             }
             McpServerTransport::Http { url, .. } | McpServerTransport::Sse { url, .. } => {
                 // Codex only supports --url for HTTP, no headers via CLI
-                run_cli_strict(CLI_NAME, &["mcp", "add", name, "--url", url], MUTATE_TIMEOUT).await?;
+                run_cli_strict_with_env(CLI_NAME, &["mcp", "add", name, "--url", url], &env, MUTATE_TIMEOUT).await?;
             }
         }
 
@@ -79,8 +159,12 @@ impl McpAgentAdapter for CodexAdapter {
             return Err(McpError::AgentNotInstalled(CLI_NAME.into()));
         }
 
+        let env = self.isolated_env();
+        self.ensure_isolated_home();
+
         // Codex has no scope parameter; remove is simple.
-        let (stdout, _stderr) = super::cli_helpers::run_cli(CLI_NAME, &["mcp", "remove", name], MUTATE_TIMEOUT).await?;
+        let (stdout, _stderr) =
+            super::cli_helpers::run_cli_with_env(CLI_NAME, &["mcp", "remove", name], &env, MUTATE_TIMEOUT).await?;
 
         // Idempotent: treat "not found" as success.
         let lower = stdout.to_lowercase();
@@ -230,9 +314,90 @@ fn parse_codex_env(transport: &serde_json::Value) -> HashMap<String, String> {
 mod tests {
     use super::*;
 
+    // -- config isolation (regression guard) -----------------------------------
+
+    #[test]
+    fn adapter_targets_the_isolated_codex_mcp_home_not_an_ad_hoc_path() {
+        let data_dir = Path::new("/app-data");
+        let adapter = CodexAdapter::new(data_dir);
+        assert_eq!(adapter.config_dir, aionui_common::codex_mcp_isolated_home(data_dir));
+    }
+
+    #[test]
+    fn mutations_are_pinned_to_the_isolated_home() {
+        let adapter = CodexAdapter::new(Path::new("/app-data"));
+        let env = adapter.isolated_env();
+
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].0, aionui_common::CODEX_HOME_ENV_KEY);
+        assert!(
+            env[0].1.contains(aionui_common::CODEX_MCP_ISOLATED_HOME_DIR_NAME),
+            "expected isolated home in env value, got {}",
+            env[0].1
+        );
+    }
+
+    #[test]
+    fn isolated_env_value_is_never_empty() {
+        // An empty CODEX_HOME makes codex fall back to the real home, so
+        // isolation would fail *open* — silently reintroducing the bug.
+        let adapter = CodexAdapter::new(Path::new(""));
+        let env = adapter.isolated_env();
+        assert!(!env[0].1.is_empty());
+    }
+
+    #[test]
+    fn detect_existing_does_not_pin_the_config_dir() {
+        // detect_existing is the import source and must see the user's own
+        // Codex CLI config. INHERIT_ENV is the only value that leaves
+        // CODEX_HOME untouched.
+        assert!(
+            INHERIT_ENV.is_empty(),
+            "INHERIT_ENV must not set any variable, or detect_existing would stop reading the real config"
+        );
+    }
+
+    #[test]
+    fn isolated_home_is_distinct_from_claude_bridge_home() {
+        // These two CLIs must never share a directory — a name collision
+        // here would let Codex's writes clobber Claude's isolated config.
+        let data_dir = Path::new("/app-data");
+        assert_ne!(
+            CodexAdapter::new(data_dir).config_dir,
+            aionui_common::claude_bridge_home(data_dir)
+        );
+    }
+
+    #[test]
+    fn ensure_isolated_home_creates_a_missing_directory() {
+        // Unlike Claude Code, `codex` hard-fails if CODEX_HOME doesn't
+        // already exist (real-CLI error: "CODEX_HOME points to ..., but
+        // that path does not exist") — caught by the integration test in
+        // tests/codex_config_isolation.rs. This is the mitigation.
+        let tmp = std::env::temp_dir().join(format!("aionui-codex-adapter-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let adapter = CodexAdapter::new(&tmp);
+        assert!(
+            !adapter.config_dir.exists(),
+            "precondition: directory must not exist yet"
+        );
+
+        adapter.ensure_isolated_home();
+        assert!(adapter.config_dir.is_dir(), "expected isolated home to be created");
+
+        // Idempotent on an already-existing directory.
+        adapter.ensure_isolated_home();
+        assert!(adapter.config_dir.is_dir());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // -- source / parsing --------------------------------------------------
+
     #[test]
     fn source_is_codex() {
-        assert_eq!(CodexAdapter.source(), McpSource::Codex);
+        assert_eq!(CodexAdapter::new(Path::new("/app-data")).source(), McpSource::Codex);
     }
 
     #[test]
@@ -480,7 +645,7 @@ mod tests {
 
     #[test]
     fn trait_is_object_safe() {
-        let adapter: Box<dyn McpAgentAdapter> = Box::new(CodexAdapter);
+        let adapter: Box<dyn McpAgentAdapter> = Box::new(CodexAdapter::new(Path::new("/app-data")));
         assert_eq!(adapter.source(), McpSource::Codex);
     }
 }

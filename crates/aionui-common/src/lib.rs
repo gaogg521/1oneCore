@@ -17,7 +17,8 @@ mod tool_schema;
 mod types;
 
 pub use agent_bridge::{
-    CLAUDE_BRIDGE_HOME_DIR_NAME, CLAUDE_CONFIG_DIR_ENV_KEY, claude_bridge_home, ensure_claude_bridge_home,
+    CLAUDE_BRIDGE_HOME_DIR_NAME, CLAUDE_CONFIG_DIR_ENV_KEY, CODEX_HOME_ENV_KEY, CODEX_MCP_ISOLATED_HOME_DIR_NAME,
+    claude_bridge_home, codex_mcp_isolated_home, ensure_claude_bridge_home, ensure_codex_mcp_isolated_home,
 };
 pub use case_convert::{camel_to_snake, normalize_keys_to_snake_case};
 pub use crypto::{CryptoError, decrypt_string, encrypt_string};

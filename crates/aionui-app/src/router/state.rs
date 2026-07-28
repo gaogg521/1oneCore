@@ -454,7 +454,8 @@ pub fn build_mcp_state(services: &AppServices) -> McpRouterState {
         Arc::new(ClaudeAdapter::new(&services.data_dir)),
         Arc::new(GeminiAdapter),
         Arc::new(QwenAdapter),
-        Arc::new(CodexAdapter),
+        // Mutating writes only — never the operator's real ~/.codex/config.toml.
+        Arc::new(CodexAdapter::new(&services.data_dir)),
         Arc::new(CodeBuddyAdapter),
         Arc::new(OpencodeAdapter),
         Arc::new(AionrsAdapter),
