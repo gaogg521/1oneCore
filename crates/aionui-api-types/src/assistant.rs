@@ -22,6 +22,11 @@ pub enum AssistantSource {
     Builtin,
     Generated,
     User,
+    /// Imported from an external persona pack (e.g. Claude Code sub-agent
+    /// `.md` files). Behaves identically to `User` everywhere in the service
+    /// layer (mutable, deletable) — this variant only affects how it's
+    /// reported to callers, so it can be grouped separately in the UI.
+    Imported,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

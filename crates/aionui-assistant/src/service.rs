@@ -677,6 +677,7 @@ impl AssistantService {
             return match definition.source.as_str() {
                 "builtin" => AssistantSource::Builtin,
                 "generated" => AssistantSource::Generated,
+                "imported" => AssistantSource::Imported,
                 _ => AssistantSource::User,
             };
         }
@@ -1053,7 +1054,7 @@ impl AssistantService {
                     .await?;
                 return self.get(id).await;
             }
-            AssistantSource::User => {}
+            AssistantSource::User | AssistantSource::Imported => {}
         }
 
         let serialized = SerializedFields::from_update(&req)?;
@@ -1283,7 +1284,7 @@ impl AssistantService {
             AssistantSource::Generated => {
                 return Err(AssistantError::Forbidden("Cannot delete generated assistant".into()));
             }
-            AssistantSource::User => {}
+            AssistantSource::User | AssistantSource::Imported => {}
         }
 
         let removed = self.repo.delete(id).await?;
@@ -1320,7 +1321,7 @@ impl AssistantService {
     ) -> Result<AssistantResponse, AssistantError> {
         match self.classify_source(id).await {
             AssistantSource::Builtin | AssistantSource::Generated => {}
-            AssistantSource::User => {
+            AssistantSource::User | AssistantSource::Imported => {
                 // Confirm the user row exists (otherwise 404).
                 if self.repo.get(id).await?.is_none() {
                     return Err(AssistantError::NotFound(format!("assistant '{id}' not found")));
@@ -1732,7 +1733,7 @@ impl AssistantService {
     pub async fn read_rule(&self, id: &str, locale: Option<&str>) -> Result<String, AssistantError> {
         match self.classify_source(id).await {
             AssistantSource::Builtin => Ok(self.read_builtin_rule_with_fallback(id, locale)),
-            AssistantSource::Generated | AssistantSource::User => Ok(self.read_user_rule_with_fallback(id, locale)),
+            AssistantSource::Generated | AssistantSource::User | AssistantSource::Imported => Ok(self.read_user_rule_with_fallback(id, locale)),
         }
     }
 
@@ -1789,7 +1790,7 @@ impl AssistantService {
             AssistantSource::Builtin => Err(AssistantError::BadRequest(
                 "Cannot write rule for built-in assistant".into(),
             )),
-            AssistantSource::Generated | AssistantSource::User => {
+            AssistantSource::Generated | AssistantSource::User | AssistantSource::Imported => {
                 let path = self.user_rule_path(id, locale);
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)
@@ -1807,7 +1808,7 @@ impl AssistantService {
             AssistantSource::Builtin => Err(AssistantError::BadRequest(
                 "Cannot delete rule for built-in assistant".into(),
             )),
-            AssistantSource::Generated | AssistantSource::User => {
+            AssistantSource::Generated | AssistantSource::User | AssistantSource::Imported => {
                 Ok(remove_assistant_md_files(&self.user_rules_dir(), id))
             }
         }
@@ -1816,7 +1817,7 @@ impl AssistantService {
     pub async fn read_skill(&self, id: &str, locale: Option<&str>) -> Result<String, AssistantError> {
         match self.classify_source(id).await {
             AssistantSource::Builtin => Ok(String::new()),
-            AssistantSource::Generated | AssistantSource::User => {
+            AssistantSource::Generated | AssistantSource::User | AssistantSource::Imported => {
                 Ok(read_assistant_md_with_legacy(&self.user_skills_dir(), id, locale))
             }
         }
@@ -1827,7 +1828,7 @@ impl AssistantService {
             AssistantSource::Builtin => Err(AssistantError::BadRequest(
                 "Cannot write skill for built-in assistant".into(),
             )),
-            AssistantSource::Generated | AssistantSource::User => {
+            AssistantSource::Generated | AssistantSource::User | AssistantSource::Imported => {
                 let path = self.user_skill_path(id, locale);
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)
@@ -1844,7 +1845,7 @@ impl AssistantService {
             AssistantSource::Builtin => Err(AssistantError::BadRequest(
                 "Cannot delete skill for built-in assistant".into(),
             )),
-            AssistantSource::Generated | AssistantSource::User => {
+            AssistantSource::Generated | AssistantSource::User | AssistantSource::Imported => {
                 Ok(remove_assistant_md_files(&self.user_skills_dir(), id))
             }
         }
@@ -1868,7 +1869,7 @@ impl AssistantService {
     pub async fn avatar_asset(&self, id: &str) -> Option<AvatarAsset> {
         match self.classify_source(id).await {
             AssistantSource::Builtin => self.builtin.avatar_asset(id),
-            AssistantSource::Generated | AssistantSource::User => {
+            AssistantSource::Generated | AssistantSource::User | AssistantSource::Imported => {
                 if let Ok(Some(definition)) = self.definition_repo.get_by_assistant_id(id).await {
                     if definition.avatar_type != "user_asset" {
                         return None;
@@ -2280,6 +2281,7 @@ impl AssistantService {
         let source = match definition.source.as_str() {
             "builtin" => AssistantSource::Builtin,
             "generated" => AssistantSource::Generated,
+            "imported" => AssistantSource::Imported,
             _ => AssistantSource::User,
         };
         let models = match (
@@ -2359,6 +2361,7 @@ impl AssistantService {
             source: match definition.source.as_str() {
                 "builtin" => AssistantSource::Builtin,
                 "generated" => AssistantSource::Generated,
+                "imported" => AssistantSource::Imported,
                 _ => AssistantSource::User,
             },
             agent_status: projection.agent_status,
@@ -2528,6 +2531,7 @@ fn assistant_projection_for_definition(
     let source = match definition.source.as_str() {
         "builtin" => AssistantSource::Builtin,
         "generated" => AssistantSource::Generated,
+        "imported" => AssistantSource::Imported,
         _ => AssistantSource::User,
     };
     let effective_agent_id = effective_agent_id_for_definition(definition, state);
@@ -2611,7 +2615,7 @@ fn assistant_projection_for_definition(
                 ) && row.team_capable
             }),
         team_block_reason,
-        deletable: matches!(source, AssistantSource::User),
+        deletable: matches!(source, AssistantSource::User | AssistantSource::Imported),
     }
 }
 
@@ -5882,6 +5886,18 @@ mod tests {
 
         let rule = fx.service.read_rule("a-share-advisor", None).await.unwrap();
         assert_eq!(rule, "You are an A-share investment advisor.");
+
+        // The API-facing response must report the real source, not collapse
+        // it to "user" (regression: definition_to_response /
+        // assistant_projection_for_definition each had their own copy of the
+        // source string→enum mapping and both need the "imported" arm).
+        let response = fx.service.get("a-share-advisor").await.unwrap();
+        assert_eq!(response.source, AssistantSource::Imported);
+        assert!(response.deletable, "imported personas must remain deletable");
+
+        let listed = fx.service.list().await.unwrap();
+        let listed_item = listed.iter().find(|a| a.id == "a-share-advisor").unwrap();
+        assert_eq!(listed_item.source, AssistantSource::Imported);
     }
 
     #[tokio::test]
