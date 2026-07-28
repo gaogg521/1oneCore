@@ -76,6 +76,8 @@ struct AssistantConversationOverrides {
     disabled_builtin_skill_ids: Option<Vec<String>>,
     #[serde(default)]
     mcp_ids: Option<Vec<String>>,
+    #[serde(default)]
+    agent_id: Option<String>,
 }
 
 impl From<AssistantConversationOverridesRequest> for AssistantConversationOverrides {
@@ -87,6 +89,7 @@ impl From<AssistantConversationOverridesRequest> for AssistantConversationOverri
             skill_ids: value.skill_ids,
             disabled_builtin_skill_ids: value.disabled_builtin_skill_ids,
             mcp_ids: value.mcp_ids,
+            agent_id: value.agent_id,
         }
     }
 }
@@ -1402,9 +1405,14 @@ impl ConversationService {
             .and_then(serde_json::Value::as_str)
             .or_else(|| extra.get("preset_rules").and_then(serde_json::Value::as_str))
             .unwrap_or_default();
-        let effective_agent_id = state
-            .as_ref()
-            .and_then(|row| row.agent_id_override.clone())
+        // Priority: this conversation's explicit override (lets one
+        // assistant run under any installed backend) > the assistant's own
+        // persisted override (set once, sticks across conversations) > the
+        // assistant definition's own default.
+        let effective_agent_id = overrides
+            .agent_id
+            .clone()
+            .or_else(|| state.as_ref().and_then(|row| row.agent_id_override.clone()))
             .unwrap_or_else(|| definition.agent_id.clone());
         let agent_binding = self
             .resolve_assistant_agent_binding(&effective_agent_id)

@@ -283,6 +283,161 @@ async fn t1_3b_create_persists_available_locale_fallback_rule_in_assistant_snaps
     assert_eq!(updated_preference.last_mcp_ids, r#"["override-mcp"]"#);
 }
 
+// ── T1.3c-e: per-conversation agent_id override ─────────────────────────
+//
+// Lets one assistant (e.g. an imported persona) be started under any
+// installed backend instead of being pinned to the backend baked into its
+// own `assistant_definitions.agent_id`. Priority chain lives in
+// `resolve_assistant_snapshot`: `conversation_overrides.agent_id` >
+// `assistant_overlays.agent_id_override` > `assistant_definitions.agent_id`.
+
+#[tokio::test]
+async fn t1_3c_conversation_override_agent_id_takes_priority_over_assistant_default() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let assistant_id = "override-agent-u1";
+
+    // Assistant's own default backend is Claude Code ("2d23ff1c").
+    let create_assistant_req = json_with_token(
+        "POST",
+        "/api/assistants",
+        json!({
+            "id": assistant_id,
+            "name": "Override Agent Assistant",
+            "agent_id": "2d23ff1c"
+        }),
+        &token,
+        &csrf,
+    );
+    let create_assistant_resp = app.clone().oneshot(create_assistant_req).await.unwrap();
+    assert_eq!(create_assistant_resp.status(), StatusCode::CREATED);
+
+    // This conversation asks to run under Codex ("8e1acf31") instead.
+    let create_req = json_with_token(
+        "POST",
+        "/api/conversations",
+        json!({
+            "type": "acp",
+            "name": "Override Backend",
+            "assistant": {
+                "id": assistant_id,
+                "conversation_overrides": {
+                    "agent_id": "8e1acf31"
+                }
+            },
+            "extra": {}
+        }),
+        &token,
+        &csrf,
+    );
+    let resp = app.clone().oneshot(create_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let json = body_json(resp).await;
+    let data = &json["data"];
+    assert_eq!(
+        data["assistant"]["backend"], "codex",
+        "conversation_overrides.agent_id must win over the assistant's own default backend"
+    );
+
+    let conversation_repo = SqliteConversationRepository::new(services.database.pool().clone());
+    let snapshot = conversation_repo
+        .get_assistant_snapshot(data["id"].as_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.agent_id, "8e1acf31");
+}
+
+#[tokio::test]
+async fn t1_3d_conversation_without_agent_id_override_falls_back_to_assistant_default() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let assistant_id = "override-agent-u2";
+
+    let create_assistant_req = json_with_token(
+        "POST",
+        "/api/assistants",
+        json!({
+            "id": assistant_id,
+            "name": "No Override Assistant",
+            "agent_id": "2d23ff1c"
+        }),
+        &token,
+        &csrf,
+    );
+    let create_assistant_resp = app.clone().oneshot(create_assistant_req).await.unwrap();
+    assert_eq!(create_assistant_resp.status(), StatusCode::CREATED);
+
+    // No conversation_overrides at all — must fall back to the assistant's
+    // own agent_id, not silently drop to some other default.
+    let create_req = json_with_token(
+        "POST",
+        "/api/conversations",
+        json!({
+            "type": "acp",
+            "name": "No Override",
+            "assistant": { "id": assistant_id },
+            "extra": {}
+        }),
+        &token,
+        &csrf,
+    );
+    let resp = app.clone().oneshot(create_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let json = body_json(resp).await;
+    assert_eq!(json["data"]["assistant"]["backend"], "claude");
+}
+
+#[tokio::test]
+async fn t1_3e_conversation_override_agent_id_unregistered_returns_400() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let assistant_id = "override-agent-u3";
+
+    let create_assistant_req = json_with_token(
+        "POST",
+        "/api/assistants",
+        json!({
+            "id": assistant_id,
+            "name": "Invalid Override Assistant",
+            "agent_id": "2d23ff1c"
+        }),
+        &token,
+        &csrf,
+    );
+    let create_assistant_resp = app.clone().oneshot(create_assistant_req).await.unwrap();
+    assert_eq!(create_assistant_resp.status(), StatusCode::CREATED);
+
+    let create_req = json_with_token(
+        "POST",
+        "/api/conversations",
+        json!({
+            "type": "acp",
+            "name": "Bad Override",
+            "assistant": {
+                "id": assistant_id,
+                "conversation_overrides": {
+                    "agent_id": "does-not-exist"
+                }
+            },
+            "extra": {}
+        }),
+        &token,
+        &csrf,
+    );
+    let resp = app.clone().oneshot(create_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let json = body_json(resp).await;
+    let message = json["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("does-not-exist"),
+        "expected the error to name the offending agent_id, got: {message}"
+    );
+}
+
 #[tokio::test]
 async fn t1_4_create_missing_required_field() {
     let (mut app, services) = build_app().await;

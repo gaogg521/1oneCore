@@ -27,6 +27,7 @@ pub fn assistant_routes(state: AssistantRouterState) -> Router {
         .route("/api/assistants/{id}/state", patch(set_state))
         .route("/api/assistants/{id}/avatar", get(get_avatar))
         .route("/api/assistants/import", post(import))
+        .route("/api/assistants/import-personas", post(import_personas))
         .with_state(state)
 }
 
@@ -106,6 +107,18 @@ async fn import(
 ) -> Result<Json<ApiResponse<ImportAssistantsResult>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
     let result = state.service.import(req).await?;
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+/// Bulk upsert-by-`id` import of persona assistants (e.g. Claude Code
+/// sub-agent `.md` files). Unlike `import`, re-importing the same `id`
+/// overwrites the existing row instead of skipping it.
+async fn import_personas(
+    State(state): State<AssistantRouterState>,
+    body: Result<Json<ImportAssistantsRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<ImportAssistantsResult>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let result = state.service.import_personas(req).await?;
     Ok(Json(ApiResponse::ok(result)))
 }
 

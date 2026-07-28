@@ -314,6 +314,12 @@ pub struct CreateAssistantRequest {
     pub recommended_prompts_i18n: Option<HashMap<String, Vec<String>>>,
     #[serde(default)]
     pub defaults: Option<AssistantDefaultsRequest>,
+    /// System-prompt body for `POST /api/assistants/import-personas`. Ignored
+    /// by `POST /api/assistants` and the legacy `POST /api/assistants/import`
+    /// — those routes have no concept of inline rule content and manage the
+    /// assistant's rule file separately via `/api/skills/assistant-rule/*`.
+    #[serde(default)]
+    pub rule_content: Option<String>,
 }
 
 /// `PUT /api/assistants/{id}`. All fields optional; partial update semantics.

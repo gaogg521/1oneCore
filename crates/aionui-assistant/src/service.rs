@@ -278,7 +278,7 @@ impl AssistantService {
         {
             return Ok(());
         }
-        self.upsert_definition_from_legacy_user_row(row, None).await?;
+        self.upsert_definition_from_legacy_user_row(row, None, "user").await?;
         Ok(())
     }
 
@@ -571,6 +571,7 @@ impl AssistantService {
         &self,
         row: &AssistantRow,
         requested_agent_id: Option<&str>,
+        source: &str,
     ) -> Result<(), AssistantError> {
         // User-defined assistants do not expose locale-aware editing in the
         // current product. Keep the unified definition canonical fields as the
@@ -583,7 +584,7 @@ impl AssistantService {
         let custom_skill_names = normalize_json_array_string(row.custom_skill_names.as_deref(), "custom_skill_names")?;
         let default_disabled_builtin_skill_ids =
             normalize_json_array_string(row.disabled_builtin_skills.as_deref(), "disabled_builtin_skills")?;
-        let (definition_id, assistant_id) = self.resolve_definition_identity("user", Some(&row.id), &row.id).await?;
+        let (definition_id, assistant_id) = self.resolve_definition_identity(source, Some(&row.id), &row.id).await?;
         let (avatar_type, avatar_value) =
             self.normalize_legacy_user_avatar_input(&assistant_id, row.avatar.as_deref())?;
         let existing_definition = self.definition_repo.get_by_assistant_id(&assistant_id).await?;
@@ -600,7 +601,7 @@ impl AssistantService {
             .upsert(&UpsertAssistantDefinitionParams {
                 id: &definition_id,
                 assistant_id: &assistant_id,
-                source: "user",
+                source,
                 owner_type: "user",
                 source_ref: Some(&row.id),
                 name: &row.name,
@@ -907,7 +908,7 @@ impl AssistantService {
         };
 
         let row = self.repo.create(&params).await?;
-        self.upsert_definition_from_legacy_user_row(&row, Some(&resolved_agent_id))
+        self.upsert_definition_from_legacy_user_row(&row, Some(&resolved_agent_id), "user")
             .await?;
         self.apply_detail_overrides(&row.id, detail_overrides, false).await?;
         if let Some(definition) = self.definition_repo.get_by_assistant_id(&row.id).await? {
@@ -1097,7 +1098,7 @@ impl AssistantService {
             .update(id, &params)
             .await?
             .ok_or_else(|| AssistantError::NotFound(format!("assistant '{id}' not found")))?;
-        self.upsert_definition_from_legacy_user_row(&row, requested_agent_id.as_deref())
+        self.upsert_definition_from_legacy_user_row(&row, requested_agent_id.as_deref(), "user")
             .await?;
         self.apply_detail_overrides(id, detail_overrides, reset_model_and_permission)
             .await?;
@@ -1499,7 +1500,7 @@ impl AssistantService {
 
             match self.repo.create(&params).await {
                 Ok(row) => {
-                    self.upsert_definition_from_legacy_user_row(&row, Some(&resolved_agent_id))
+                    self.upsert_definition_from_legacy_user_row(&row, Some(&resolved_agent_id), "user")
                         .await?;
                     result.imported += 1;
                 }
@@ -1516,6 +1517,208 @@ impl AssistantService {
                     });
                 }
             }
+        }
+
+        Ok(result)
+    }
+
+    /// Bulk upsert-by-`id` import of persona assistants (e.g. Claude Code
+    /// sub-agent `.md` files migrated via the assistant-library import UI).
+    /// Unlike `import()` (insert-only, for the one-time legacy Electron
+    /// migration), re-importing the same `id` overwrites the existing row —
+    /// updating a previously-imported persona pack in place is idempotent.
+    /// Tags rows `source = "imported"` so they can be grouped separately from
+    /// hand-authored `user` assistants in the UI, while still classifying as
+    /// `AssistantSource::User` everywhere else in this service (read/update/
+    /// delete/rule dispatch all fall through the generic non-builtin,
+    /// non-generated branch — see `classify_source`).
+    pub async fn import_personas(&self, req: ImportAssistantsRequest) -> Result<ImportAssistantsResult, AssistantError> {
+        let mut result = ImportAssistantsResult::default();
+        let mut cached_default_agent_id: Option<String> = None;
+
+        for entry in req.assistants {
+            let id = match entry.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(s) => s.to_string(),
+                None => {
+                    result.failed += 1;
+                    result.errors.push(ImportError {
+                        id: String::new(),
+                        error: "id is required (used as the stable key for re-import upserts)".into(),
+                    });
+                    continue;
+                }
+            };
+
+            if self.builtin.has(&id) {
+                result.skipped += 1;
+                continue;
+            }
+
+            let name = entry.name.trim().to_string();
+            if name.is_empty() {
+                result.failed += 1;
+                result.errors.push(ImportError {
+                    id,
+                    error: "name is required".into(),
+                });
+                continue;
+            }
+
+            let serialized = match SerializedFields::from_create(&entry) {
+                Ok(s) => s,
+                Err(e) => {
+                    result.failed += 1;
+                    result.errors.push(ImportError { id, error: e.to_string() });
+                    continue;
+                }
+            };
+
+            let resolved_agent_id = match entry.agent_id.as_deref() {
+                Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+                Some(_) => {
+                    result.failed += 1;
+                    result.errors.push(ImportError {
+                        id,
+                        error: "agent_id is required".into(),
+                    });
+                    continue;
+                }
+                _ => match cached_default_agent_id.as_deref() {
+                    Some(v) => v.to_string(),
+                    None => match self.resolve_default_agent_id().await {
+                        Ok(v) => {
+                            cached_default_agent_id = Some(v.clone());
+                            v
+                        }
+                        Err(e) => {
+                            result.failed += 1;
+                            result.errors.push(ImportError { id, error: e.to_string() });
+                            continue;
+                        }
+                    },
+                },
+            };
+            if let Err(e) = self.resolve_runtime_backend_for_agent_id(&resolved_agent_id).await {
+                result.failed += 1;
+                result.errors.push(ImportError { id, error: e.to_string() });
+                continue;
+            }
+
+            let avatar = match self.normalize_user_avatar_input(&id, entry.avatar.as_deref()) {
+                Ok(value) => value,
+                Err(e) => {
+                    result.failed += 1;
+                    result.errors.push(ImportError { id, error: e.to_string() });
+                    continue;
+                }
+            };
+
+            let existing = match self.repo.get(&id).await {
+                Ok(v) => v,
+                Err(e) => {
+                    result.failed += 1;
+                    result.errors.push(ImportError { id, error: e.to_string() });
+                    continue;
+                }
+            };
+
+            let row = if existing.is_some() {
+                let params = UpdateAssistantParams {
+                    name: Some(&name),
+                    description: Some(entry.description.as_deref()),
+                    avatar: Some(avatar.as_deref()),
+                    enabled_skills: Some(serialized.enabled_skills.as_deref()),
+                    custom_skill_names: Some(serialized.custom_skill_names.as_deref()),
+                    disabled_builtin_skills: Some(serialized.disabled_builtin_skills.as_deref()),
+                    prompts: Some(serialized.prompts.as_deref()),
+                    models: Some(serialized.models.as_deref()),
+                    name_i18n: Some(serialized.name_i18n.as_deref()),
+                    description_i18n: Some(serialized.description_i18n.as_deref()),
+                    prompts_i18n: Some(serialized.prompts_i18n.as_deref()),
+                };
+                match self.repo.update(&id, &params).await {
+                    Ok(Some(row)) => row,
+                    Ok(None) => {
+                        // Raced with a delete between our get() and update().
+                        // Fall through to create() below by re-checking once.
+                        match self.repo.create(&CreateAssistantParams {
+                            id: &id,
+                            name: &name,
+                            description: entry.description.as_deref(),
+                            avatar: avatar.as_deref(),
+                            enabled_skills: serialized.enabled_skills.as_deref(),
+                            custom_skill_names: serialized.custom_skill_names.as_deref(),
+                            disabled_builtin_skills: serialized.disabled_builtin_skills.as_deref(),
+                            prompts: serialized.prompts.as_deref(),
+                            models: serialized.models.as_deref(),
+                            name_i18n: serialized.name_i18n.as_deref(),
+                            description_i18n: serialized.description_i18n.as_deref(),
+                            prompts_i18n: serialized.prompts_i18n.as_deref(),
+                        })
+                        .await
+                        {
+                            Ok(row) => row,
+                            Err(e) => {
+                                result.failed += 1;
+                                result.errors.push(ImportError { id, error: e.to_string() });
+                                continue;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        result.failed += 1;
+                        result.errors.push(ImportError { id, error: e.to_string() });
+                        continue;
+                    }
+                }
+            } else {
+                let params = CreateAssistantParams {
+                    id: &id,
+                    name: &name,
+                    description: entry.description.as_deref(),
+                    avatar: avatar.as_deref(),
+                    enabled_skills: serialized.enabled_skills.as_deref(),
+                    custom_skill_names: serialized.custom_skill_names.as_deref(),
+                    disabled_builtin_skills: serialized.disabled_builtin_skills.as_deref(),
+                    prompts: serialized.prompts.as_deref(),
+                    models: serialized.models.as_deref(),
+                    name_i18n: serialized.name_i18n.as_deref(),
+                    description_i18n: serialized.description_i18n.as_deref(),
+                    prompts_i18n: serialized.prompts_i18n.as_deref(),
+                };
+                match self.repo.create(&params).await {
+                    Ok(row) => row,
+                    Err(aionui_db::DbError::Conflict(_)) => {
+                        // Raced with a concurrent import of the same id.
+                        result.skipped += 1;
+                        continue;
+                    }
+                    Err(e) => {
+                        result.failed += 1;
+                        result.errors.push(ImportError { id, error: e.to_string() });
+                        continue;
+                    }
+                }
+            };
+
+            if let Err(e) = self
+                .upsert_definition_from_legacy_user_row(&row, Some(&resolved_agent_id), "imported")
+                .await
+            {
+                result.failed += 1;
+                result.errors.push(ImportError { id, error: e.to_string() });
+                continue;
+            }
+
+            if let Some(rule_content) = entry.rule_content.as_deref()
+                && let Err(e) = self.write_rule(&id, None, rule_content).await
+            {
+                result.failed += 1;
+                result.errors.push(ImportError { id, error: e.to_string() });
+                continue;
+            }
+
+            result.imported += 1;
         }
 
         Ok(result)
@@ -5651,6 +5854,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn import_personas_writes_rule_content_and_tags_source_imported() {
+        let fx = fixture().await;
+        let res = fx
+            .service
+            .import_personas(ImportAssistantsRequest {
+                assistants: vec![CreateAssistantRequest {
+                    id: Some("a-share-advisor".into()),
+                    name: "A Share Advisor".into(),
+                    rule_content: Some("You are an A-share investment advisor.".into()),
+                    ..req_default()
+                }],
+            })
+            .await
+            .unwrap();
+        assert_eq!(res.imported, 1);
+        assert_eq!(res.failed, 0);
+        assert_eq!(res.skipped, 0);
+
+        let definition = fx
+            .definition_repo
+            .get_by_assistant_id("a-share-advisor")
+            .await
+            .unwrap()
+            .expect("definition row should exist");
+        assert_eq!(definition.source, "imported");
+
+        let rule = fx.service.read_rule("a-share-advisor", None).await.unwrap();
+        assert_eq!(rule, "You are an A-share investment advisor.");
+    }
+
+    #[tokio::test]
+    async fn import_personas_reimport_overwrites_instead_of_skipping() {
+        let fx = fixture().await;
+        let first = fx
+            .service
+            .import_personas(ImportAssistantsRequest {
+                assistants: vec![CreateAssistantRequest {
+                    id: Some("a-share-advisor".into()),
+                    name: "A Share Advisor".into(),
+                    rule_content: Some("v1 prompt".into()),
+                    ..req_default()
+                }],
+            })
+            .await
+            .unwrap();
+        assert_eq!(first.imported, 1);
+
+        let second = fx
+            .service
+            .import_personas(ImportAssistantsRequest {
+                assistants: vec![CreateAssistantRequest {
+                    id: Some("a-share-advisor".into()),
+                    name: "A Share Advisor v2".into(),
+                    rule_content: Some("v2 prompt".into()),
+                    ..req_default()
+                }],
+            })
+            .await
+            .unwrap();
+        assert_eq!(second.imported, 1, "re-import must overwrite, not skip");
+        assert_eq!(second.skipped, 0);
+
+        let detail = fx.service.get("a-share-advisor").await.unwrap();
+        assert_eq!(detail.name, "A Share Advisor v2");
+        let rule = fx.service.read_rule("a-share-advisor", None).await.unwrap();
+        assert_eq!(rule, "v2 prompt");
+    }
+
+    #[tokio::test]
+    async fn import_personas_skips_builtin_collision() {
+        let fx = fixture_with_builtins(vec![mk_builtin("builtin-office", "Office")]).await;
+        let res = fx
+            .service
+            .import_personas(ImportAssistantsRequest {
+                assistants: vec![CreateAssistantRequest {
+                    id: Some("builtin-office".into()),
+                    name: "spoof".into(),
+                    ..req_default()
+                }],
+            })
+            .await
+            .unwrap();
+        assert_eq!(res.imported, 0);
+        assert_eq!(res.skipped, 1);
+    }
+
+    #[tokio::test]
+    async fn import_personas_fails_on_missing_id() {
+        let fx = fixture().await;
+        let res = fx
+            .service
+            .import_personas(ImportAssistantsRequest {
+                assistants: vec![CreateAssistantRequest {
+                    id: None,
+                    name: "A".into(),
+                    ..req_default()
+                }],
+            })
+            .await
+            .unwrap();
+        assert_eq!(res.imported, 0);
+        assert_eq!(res.failed, 1);
+        assert_eq!(res.errors.len(), 1);
+        assert!(res.errors[0].error.contains("id is required"));
+    }
+
+    #[tokio::test]
     async fn read_rule_user_returns_empty_when_missing() {
         let fx = fixture().await;
         fx.service
@@ -6147,6 +6457,7 @@ mod tests {
             recommended_prompts: None,
             recommended_prompts_i18n: None,
             defaults: None,
+            rule_content: None,
         }
     }
 }

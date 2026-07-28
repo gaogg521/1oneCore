@@ -41,6 +41,12 @@ pub struct AssistantConversationOverridesRequest {
     pub disabled_builtin_skill_ids: Option<Vec<String>>,
     #[serde(default)]
     pub mcp_ids: Option<Vec<String>>,
+    /// Run this conversation under a different `agent_metadata` row than the
+    /// assistant's own default. Lets one assistant (e.g. an imported persona)
+    /// be started under any installed backend — Claude Code, Codex, 1ONE CLI
+    /// — without duplicating the assistant definition per backend.
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -357,6 +363,7 @@ mod tests {
                     skill_ids: Some(vec!["skill-a".into()]),
                     disabled_builtin_skill_ids: Some(vec!["builtin-a".into()]),
                     mcp_ids: Some(vec!["mcp-a".into()]),
+                    agent_id: None,
                 }),
             })
         );
