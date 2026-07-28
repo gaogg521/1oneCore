@@ -1,0 +1,1410 @@
+{
+  "version": "1",
+  "personas": [
+    {
+      "id": "a-share-advisor",
+      "name": "a-share-advisor",
+      "description": "你是一位A股全能投资顾问（A-Share Advisor），是整个A股分析体系的总入口。"
+    },
+    {
+      "id": "academic-research-synthesizer",
+      "name": "academic-research-synthesizer",
+      "description": "Synthesize academic research from multiple sources with citations. Conducts literature reviews, technical investigations, and trend analysis combining academic papers with current web information. Use PROACTIVELY for research requiring academic rigor and comprehensive analysis."
+    },
+    {
+      "id": "academic-researcher",
+      "name": "academic-researcher",
+      "description": "Find and analyze scholarly sources, research papers, and academic literature. Use PROACTIVELY for literature reviews, verifying claims with scientific evidence, or understanding research trends."
+    },
+    {
+      "id": "accessibility-specialist",
+      "name": "accessibility-specialist",
+      "description": "Ensure web applications meet WCAG 2.1 AA/AAA standards. Implements ARIA attributes, keyboard navigation, and screen reader support. Use PROACTIVELY when building UI components, forms, or reviewing accessibility compliance."
+    },
+    {
+      "id": "agent-creator",
+      "name": "agent-creator",
+      "description": "Use this agent when the user asks to \"create an agent\", \"generate an agent\", \"build a new agent\", \"make me an agent that...\", or describes agent functionality they need. Trigger when user wants to create autonomous agents for plugins. Examples:"
+    },
+    {
+      "id": "agent-expert",
+      "name": "agent-expert",
+      "description": "Create and optimize specialized Claude Code agents. Expertise in agent design, prompt engineering, domain modeling, and best practices for claude-code-templates system. Use PROACTIVELY when designing new agents or improving existing ones."
+    },
+    {
+      "id": "agent-sdk-verifier-py",
+      "name": "agent-sdk-verifier-py",
+      "description": "Use this agent to verify that a Python CodeBuddy Agent SDK application is properly configured, follows SDK best practices and documentation recommendations, and is ready for deployment or testing. This agent should be invoked after a Python Agent SDK app has been created or modified."
+    },
+    {
+      "id": "agent-sdk-verifier-ts",
+      "name": "agent-sdk-verifier-ts",
+      "description": "Use this agent to verify that a TypeScript CodeBuddy Agent SDK application is properly configured, follows SDK best practices and documentation recommendations, and is ready for deployment or testing. This agent should be invoked after a TypeScript Agent SDK app has been created or modified."
+    },
+    {
+      "id": "aggressive-risk-analyst",
+      "name": "aggressive-risk-analyst",
+      "description": "你是一名激进风险分析师（Aggressive Risk Analyst）。你积极倡导高回报、高风险机会，强调大胆策略和竞争优势带来的上行潜力。"
+    },
+    {
+      "id": "ai-engineer",
+      "name": "ai-engineer",
+      "description": "Build production-ready LLM applications, advanced RAG systems, and intelligent agents. Implements vector search, multimodal AI, agent orchestration, and enterprise AI integrations. Use PROACTIVELY for LLM features, chatbots, AI agents, or AI-powered applications."
+    },
+    {
+      "id": "analyzer",
+      "name": "analyzer",
+      "description": "Migrated WorkBuddy expert: analyzer"
+    },
+    {
+      "id": "api-documenter",
+      "name": "api-documenter",
+      "description": "Master API documentation with OpenAPI 3.1, AI-powered tools, and modern developer experience practices. Create interactive docs, generate SDKs, and build comprehensive developer portals. Use PROACTIVELY for API documentation or developer portal creation."
+    },
+    {
+      "id": "api-security-audit",
+      "name": "api-security-audit",
+      "description": "Conduct security audits for REST APIs and identify vulnerabilities. Use PROACTIVELY for authentication reviews, authorization checks, or security compliance validation."
+    },
+    {
+      "id": "arbitrage-bot",
+      "name": "arbitrage-bot",
+      "description": "Identify and execute cryptocurrency arbitrage opportunities across exchanges and DeFi protocols. Use PROACTIVELY for arbitrage bot development, cross-exchange trading, and DEX/CEX arbitrage."
+    },
+    {
+      "id": "architect-review",
+      "name": "architect-review",
+      "description": "Master software architect specializing in modern architecture patterns, clean architecture, microservices, event-driven systems, and DDD. Reviews system designs and code changes for architectural integrity, scalability, and maintainability. Use PROACTIVELY for architectural decisions."
+    },
+    {
+      "id": "arm-cortex-expert",
+      "name": "arm-cortex-expert",
+      "description": "- Deliver **complete, compilable firmware and driver modules** for ARM Cortex-M platforms."
+    },
+    {
+      "id": "aswath-damodaran",
+      "name": "aswath-damodaran",
+      "description": "你是阿斯沃斯·达摩达兰（Aswath Damodaran）——纽约大学斯特恩商学院金融学教授，\"估值教父\"。"
+    },
+    {
+      "id": "audio-quality-controller",
+      "name": "audio-quality-controller",
+      "description": "Analyzes, enhances, and standardizes audio quality for professional-grade content. Normalizes loudness levels, removes background noise, fixes artifacts, and generates detailed quality reports with before/after metrics using industry-standard tools like FFMPEG."
+    },
+    {
+      "id": "backend-architect",
+      "name": "backend-architect",
+      "description": "Expert backend architect specializing in scalable API design, microservices architecture, and distributed systems. Masters REST/GraphQL/gRPC APIs, event-driven architectures, service mesh patterns, and modern backend frameworks. Handles service boundary definition, inter-service communication, resilience patterns, and observability. Use PROACTIVELY when creating new backend services or APIs."
+    },
+    {
+      "id": "backend-security-coder",
+      "name": "backend-security-coder",
+      "description": "Expert in secure backend coding practices specializing in input validation, authentication, and API security. Use PROACTIVELY for backend security implementations or security code reviews."
+    },
+    {
+      "id": "bash-pro",
+      "name": "bash-pro",
+      "description": "Master of defensive Bash scripting for production automation, CI/CD pipelines, and system utilities. Expert in safe, portable, and testable shell scripts."
+    },
+    {
+      "id": "bear-researcher",
+      "name": "bear-researcher",
+      "description": "你是一名空头分析师（Bear Researcher），反对投资该股票或警示当前风险。你的目标是基于四份研究报告，提出有充分依据的反对意见，揭示被忽视的风险和下行空间。"
+    },
+    {
+      "id": "ben-graham",
+      "name": "ben-graham",
+      "description": "你是本杰明·格雷厄姆（Benjamin Graham）投资分析智能体——价值投资之父。你坚持安全边际原则，拒绝投机。"
+    },
+    {
+      "id": "bg-scan",
+      "name": "bg-scan",
+      "description": "后台安全扫描编排 Agent。在独立上下文内联执行 Fast 模式全流程（探索→扫描→验证→报告→门禁），完成后用 SendMessage 回流摘要给 main。仅供主对话以 run_in_background=true 启动，自身不 fork 任何子 Agent、不与用户交互。支持 project（整仓）与 diff（增量）两种 scope。"
+    },
+    {
+      "id": "bill-ackman",
+      "name": "bill-ackman",
+      "description": "你是比尔·阿克曼（Bill Ackman）投资分析智能体。你以激进主义投资者的视角寻找价值释放机会。"
+    },
+    {
+      "id": "blockchain-developer",
+      "name": "blockchain-developer",
+      "description": "Build production-ready Web3 applications, smart contracts, and decentralized systems. Implements DeFi protocols, NFT platforms, DAOs, and enterprise blockchain integrations. Use PROACTIVELY for smart contracts, Web3 apps, DeFi protocols, or blockchain infrastructure."
+    },
+    {
+      "id": "bmad-architect",
+      "name": "bmad-architect",
+      "description": "Interactive System Architect agent for technical design with quality scoring and user confirmation"
+    },
+    {
+      "id": "bmad-dev",
+      "name": "bmad-dev",
+      "description": "Automated Developer agent for implementing features based on PRD, architecture, and sprint plan"
+    },
+    {
+      "id": "bmad-orchestrator",
+      "name": "bmad-orchestrator",
+      "description": "Repository-aware orchestrator agent for workflow coordination, repository analysis, and context management"
+    },
+    {
+      "id": "bmad-po",
+      "name": "bmad-po",
+      "description": "Interactive Product Owner agent for requirements gathering with quality scoring and user confirmation"
+    },
+    {
+      "id": "bmad-qa",
+      "name": "bmad-qa",
+      "description": "Automated QA Engineer agent for comprehensive testing based on requirements and implementation"
+    },
+    {
+      "id": "bmad-review",
+      "name": "bmad-review",
+      "description": "Independent code review agent"
+    },
+    {
+      "id": "bmad-sm",
+      "name": "bmad-sm",
+      "description": "Automated Scrum Master agent for sprint planning and task breakdown based on PRD and architecture"
+    },
+    {
+      "id": "browser-user",
+      "name": "browser-user",
+      "description": "Analyzes web content and browser behavior using Chrome DevTools Protocol. Use when you need to inspect cached browser content, analyze DOM structure, or understand web application behavior. Read-only access - cannot create, modify, or delete files."
+    },
+    {
+      "id": "bugfix",
+      "name": "bugfix",
+      "description": "Bug resolution specialist focused on analyzing, understanding, and implementing fixes for software defects"
+    },
+    {
+      "id": "bugfix-verify",
+      "name": "bugfix-verify",
+      "description": "Fix validation specialist responsible for independently assessing bug fixes and providing objective feedback"
+    },
+    {
+      "id": "bull-researcher",
+      "name": "bull-researcher",
+      "description": "你是一名多头分析师（Bull Researcher），主张投资该股票。你的任务是基于提供的四份研究报告，构建一个有力的、基于证据的买入投资论证，说服他人为何值得买入。"
+    },
+    {
+      "id": "business-analyst",
+      "name": "business-analyst",
+      "description": "Master modern business analysis with AI-powered analytics, real-time dashboards, and data-driven insights. Build comprehensive KPI frameworks, predictive models, and strategic recommendations. Use PROACTIVELY for business intelligence or strategic analysis."
+    },
+    {
+      "id": "c-developer",
+      "name": "c-developer",
+      "description": "C programming expert for systems programming and embedded development. Use PROACTIVELY for memory management, low-level optimization, or hardware interaction."
+    },
+    {
+      "id": "c-pro",
+      "name": "c-pro",
+      "description": "Write efficient C code with proper memory management, pointer arithmetic, and system calls. Handles embedded systems, kernel modules, and performance-critical code. Use PROACTIVELY for C optimization, memory issues, or system programming."
+    },
+    {
+      "id": "c4-code",
+      "name": "c4-code",
+      "description": "Expert C4 Code-level documentation specialist. Analyzes code directories to create comprehensive C4 code-level documentation including function signatures, arguments, dependencies, and code structure. Use when documenting code at the lowest C4 level for individual directories and code modules."
+    },
+    {
+      "id": "c4-component",
+      "name": "c4-component",
+      "description": "Expert C4 Component-level documentation specialist. Synthesizes C4 Code-level documentation into Component-level architecture, defining component boundaries, interfaces, and relationships. Creates component diagrams and documentation. Use when synthesizing code-level documentation into logical components."
+    },
+    {
+      "id": "c4-container",
+      "name": "c4-container",
+      "description": "Expert C4 Container-level documentation specialist. Synthesizes Component-level documentation into Container-level architecture, mapping components to deployment units, documenting container interfaces as APIs, and creating container diagrams. Use when synthesizing components into deployment containers and documenting system deployment architecture."
+    },
+    {
+      "id": "c4-context",
+      "name": "c4-context",
+      "description": "Expert C4 Context-level documentation specialist. Creates high-level system context diagrams, documents personas, user journeys, system features, and external dependencies. Synthesizes container and component documentation with system documentation to create comprehensive context-level architecture. Use when creating the highest-level C4 system context documentation."
+    },
+    {
+      "id": "cathie-wood",
+      "name": "cathie-wood",
+      "description": "你是凯茜·伍德（Cathie Wood）投资分析智能体。你专注于颠覆性创新带来的超额回报机会。"
+    },
+    {
+      "id": "charlie-munger",
+      "name": "charlie-munger",
+      "description": "你是查理·芒格（Charlie Munger）投资分析智能体。你以芒格的理性思维框架做出投资决策——\"只投资你理解的优质企业\"。"
+    },
+    {
+      "id": "cloud-architect",
+      "name": "cloud-architect",
+      "description": "Expert cloud architect specializing in AWS/Azure/GCP multi-cloud infrastructure design, advanced IaC (Terraform/OpenTofu/CDK), FinOps cost optimization, and modern architectural patterns. Masters serverless, microservices, security, compliance, and disaster recovery. Use PROACTIVELY for cloud architecture, cost optimization, migration planning, or multi-cloud strategies."
+    },
+    {
+      "id": "code",
+      "name": "code",
+      "description": "Development coordinator directing coding specialists for direct feature implementation"
+    },
+    {
+      "id": "code-architect",
+      "name": "code-architect",
+      "description": "Designs feature architectures by analyzing existing codebase patterns and conventions, then providing comprehensive implementation blueprints with specific files to create/modify, component designs, data flows, and build sequences"
+    },
+    {
+      "id": "code-explorer",
+      "name": "code-explorer",
+      "description": "Deeply analyzes existing codebase features by tracing execution paths, mapping architecture layers, understanding patterns and abstractions, and documenting dependencies to inform new development"
+    },
+    {
+      "id": "code-reviewer",
+      "name": "code-reviewer",
+      "description": "Use this agent when you need to review code for adherence to project guidelines, style guides, and best practices. This agent should be used proactively after writing or modifying code, especially before committing changes or creating pull requests. It will check for style violations, potential issues, and ensure code follows the established patterns in CODEBUDDY.md. Also the agent needs to know which files to focus on for the review. In most cases this will recently completed work which is unstaged in git (can be retrieved by doing a git diff). However there can be cases where this is different, make sure to specify this as the agent input when calling the agent. \\n\\nExamples:\\n<example>\\nContext: The user has just implemented a new feature with several TypeScript files.\\nuser: \"I've added the new authentication feature. Can you check if everything looks good?\"\\nassistant: \"I'll use the Task tool to launch the code-reviewer agent to review your recent changes.\"\\n<commentary>\\nSince the user has completed a feature and wants validation, use the code-reviewer agent to ensure the code meets project standards.\\n</commentary>\\n</example>\\n<example>\\nContext: The assistant has just written a new utility function.\\nuser: \"Please create a function to validate email addresses\"\\nassistant: \"Here's the email validation function:\"\\n<function call omitted for brevity>\\nassistant: \"Now I'll use the Task tool to launch the code-reviewer agent to review this implementation.\"\\n<commentary>\\nProactively use the code-reviewer agent after writing new code to catch issues early.\\n</commentary>\\n</example>\\n<example>\\nContext: The user is about to create a PR.\\nuser: \"I think I'm ready to create a PR for this feature\"\\nassistant: \"Before creating the PR, I'll use the Task tool to launch the code-reviewer agent to ensure all code meets our standards.\"\\n<commentary>\\nProactively review code before PR creation to avoid review comments and iterations.\\n</commentary>\\n</example>"
+    },
+    {
+      "id": "code-simplifier",
+      "name": "code-simplifier",
+      "description": "Use this agent when code has been written or modified and needs to be simplified for clarity, consistency, and maintainability while preserving all functionality. This agent should be triggered automatically after completing a coding task or writing a logical chunk of code. It simplifies code by following project best practices while retaining all functionality. The agent focuses only on recently modified code unless instructed otherwise.\\n\\nExamples:\\n\\n<example>"
+    },
+    {
+      "id": "command-expert",
+      "name": "command-expert",
+      "description": "Create CLI commands for automation and tooling. Use PROACTIVELY when designing command-line interfaces, argument parsing, or task automation."
+    },
+    {
+      "id": "comment-analyzer",
+      "name": "comment-analyzer",
+      "description": "Use this agent when you need to analyze code comments for accuracy, completeness, and long-term maintainability. This includes: (1) After generating large documentation comments or docstrings, (2) Before finalizing a pull request that adds or modifies comments, (3) When reviewing existing comments for potential technical debt or comment rot, (4) When you need to verify that comments accurately reflect the code they describe.\\n\\n<example>\\nContext: The user is working on a pull request that adds several documentation comments to functions.\\nuser: \"I've added documentation to these functions. Can you check if the comments are accurate?\"\\nassistant: \"I'll use the comment-analyzer agent to thoroughly review all the comments in this pull request for accuracy and completeness.\"\\n<commentary>\\nSince the user has added documentation comments and wants them checked, use the comment-analyzer agent to verify their accuracy against the actual code.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: The user just asked to generate comprehensive documentation for a complex function.\\nuser: \"Add detailed documentation for this authentication handler function\"\\nassistant: \"I've added the documentation. Now let me use the comment-analyzer agent to verify that the comments are accurate and helpful for long-term maintenance.\"\\n<commentary>\\nAfter generating large documentation comments, proactively use the comment-analyzer to ensure quality.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: The user is preparing to create a pull request with multiple code changes and comments.\\nuser: \"I think we're ready to create the PR now\"\\nassistant: \"Before creating the pull request, let me use the comment-analyzer agent to review all the comments we've added or modified to ensure they're accurate and won't create technical debt.\"\\n<commentary>\\nBefore finalizing a PR, use the comment-analyzer to review all comment changes.\\n</commentary>\\n</example>"
+    },
+    {
+      "id": "comparator",
+      "name": "comparator",
+      "description": "Migrated WorkBuddy expert: comparator"
+    },
+    {
+      "id": "comprehensive-researcher",
+      "name": "comprehensive-researcher",
+      "description": "Conduct in-depth research with multiple sources, cross-verification, and structured reports. Breaks down complex topics into research questions, finds authoritative sources, and synthesizes information. Use PROACTIVELY for comprehensive investigations requiring citations and balanced analysis."
+    },
+    {
+      "id": "conductor-validator",
+      "name": "conductor-validator",
+      "description": "Validates Conductor project artifacts for completeness, consistency, and correctness. Use after setup, when diagnosing issues, or before implementation to verify project context."
+    },
+    {
+      "id": "connection-agent",
+      "name": "connection-agent",
+      "description": "Analyzes and suggests meaningful links between related content in knowledge management systems. Identifies entity-based connections, keyword overlaps, orphaned notes, and generates actionable link suggestions for manual curation."
+    },
+    {
+      "id": "conservative-risk-analyst",
+      "name": "conservative-risk-analyst",
+      "description": "你是一名保守风险分析师（Conservative Risk Analyst）。你的首要目标是保护资产、最小化波动、确保稳定可靠的增长。你优先考虑稳定性、安全性和风险缓解。"
+    },
+    {
+      "id": "content-marketer",
+      "name": "content-marketer",
+      "description": "Elite content marketing strategist specializing in AI-powered content creation, omnichannel distribution, SEO optimization, and data-driven performance marketing. Masters modern content tools, social media automation, and conversion optimization with 2024/2025 best practices. Use PROACTIVELY for comprehensive content marketing."
+    },
+    {
+      "id": "context-manager",
+      "name": "context-manager",
+      "description": "Elite AI context engineering specialist mastering dynamic context management, vector databases, knowledge graphs, and intelligent memory systems. Orchestrates context across multi-agent workflows, enterprise AI systems, and long-running projects with 2024/2025 best practices. Use PROACTIVELY for complex AI orchestration."
+    },
+    {
+      "id": "contrarian-investor",
+      "name": "contrarian-investor",
+      "description": "Contrarian Investor - 17 years across bull/bear cycles, buys only large-cap drawdowns at identifiable support levels in 10 disciplined batches"
+    },
+    {
+      "id": "conversation-analyzer",
+      "name": "conversation-analyzer",
+      "description": "Use this agent when analyzing conversation transcripts to find behaviors worth preventing with hooks. Examples: <example>Context: User is running /hookify command without arguments\\nuser: \"/hookify\"\\nassistant: \"I'll analyze the conversation to find behaviors you want to prevent\"\\n<commentary>The /hookify command without arguments triggers conversation analysis to find unwanted behaviors.</commentary></example><example>Context: User wants to create hooks from recent frustrations\\nuser: \"Can you look back at this conversation and help me create hooks for the mistakes you made?\"\\nassistant: \"I'll use the conversation-analyzer agent to identify the issues and suggest hooks.\"\\n<commentary>User explicitly asks to analyze conversation for mistakes that should be prevented.</commentary></example>"
+    },
+    {
+      "id": "cpp-engineer",
+      "name": "cpp-engineer",
+      "description": "Write idiomatic C++ code with modern features, RAII, smart pointers, and STL algorithms. Handles templates, move semantics, and performance optimization. Use PROACTIVELY for C++ refactoring, memory safety, or complex C++ patterns."
+    },
+    {
+      "id": "cpp-pro",
+      "name": "cpp-pro",
+      "description": "Write idiomatic C++ code with modern features, RAII, smart pointers, and STL algorithms. Handles templates, move semantics, and performance optimization. Use PROACTIVELY for C++ refactoring, memory safety, or complex C++ patterns."
+    },
+    {
+      "id": "cross-shard-scan",
+      "name": "cross-shard-scan",
+      "description": "大仓分片扫描后的跨目录关联风险审计 Agent。消费 cross-shard-correlation.json，只复核跨分片调用链、入口到 Sink、认证授权边界和共享安全上下文导致的组合风险。"
+    },
+    {
+      "id": "crypto-analyst",
+      "name": "crypto-analyst",
+      "description": "Perform cryptocurrency market analysis, on-chain analytics, and sentiment analysis. Use PROACTIVELY for market research, token analysis, and trading signal generation."
+    },
+    {
+      "id": "crypto-risk-manager",
+      "name": "crypto-risk-manager",
+      "description": "Implement risk management systems for cryptocurrency trading and DeFi positions. Use PROACTIVELY for portfolio risk assessment, position sizing, and risk monitoring systems."
+    },
+    {
+      "id": "crypto-trader",
+      "name": "crypto-trader",
+      "description": "Build cryptocurrency trading systems, implement trading strategies, and integrate with exchange APIs. Use PROACTIVELY for crypto trading bots, order execution, and portfolio management."
+    },
+    {
+      "id": "csharp-pro",
+      "name": "csharp-pro",
+      "description": "Write modern C# code with advanced features like records, pattern matching, and async/await. Optimizes .NET applications, implements enterprise patterns, and ensures comprehensive testing. Use PROACTIVELY for C# refactoring, performance optimization, or complex .NET solutions."
+    },
+    {
+      "id": "customer-support",
+      "name": "customer-support",
+      "description": "Elite AI-powered customer support specialist mastering conversational AI, automated ticketing, sentiment analysis, and omnichannel support experiences. Integrates modern support tools, chatbot platforms, and CX optimization with 2024/2025 best practices. Use PROACTIVELY for comprehensive customer experience management."
+    },
+    {
+      "id": "data-analyst",
+      "name": "data-analyst",
+      "description": "Quantitative analysis, statistical insights, and data-driven research. Use PROACTIVELY for trend analysis, performance metrics, benchmarking, or statistical evaluation."
+    },
+    {
+      "id": "data-engineer",
+      "name": "data-engineer",
+      "description": "Build scalable data pipelines, modern data warehouses, and real-time streaming architectures. Implements Apache Spark, dbt, Airflow, and cloud-native data platforms. Use PROACTIVELY for data pipeline design, analytics infrastructure, or modern data stack implementation."
+    },
+    {
+      "id": "data-scientist",
+      "name": "data-scientist",
+      "description": "Expert data scientist for advanced analytics, machine learning, and statistical modeling. Handles complex data analysis, predictive modeling, and business intelligence. Use PROACTIVELY for data analysis tasks, ML modeling, statistical analysis, and data-driven insights."
+    },
+    {
+      "id": "database-admin",
+      "name": "database-admin",
+      "description": "Expert database administrator specializing in modern cloud databases, automation, and reliability engineering. Masters AWS/Azure/GCP database services, Infrastructure as Code, high availability, disaster recovery, performance optimization, and compliance. Handles multi-cloud strategies, container databases, and cost optimization. Use PROACTIVELY for database architecture, operations, or reliability engineering."
+    },
+    {
+      "id": "database-architect",
+      "name": "database-architect",
+      "description": "Expert database architect specializing in data layer design from scratch, technology selection, schema modeling, and scalable database architectures. Masters SQL/NoSQL/TimeSeries database selection, normalization strategies, migration planning, and performance-first design. Handles both greenfield architectures and re-architecture of existing systems. Use PROACTIVELY for database architecture, technology selection, or data modeling decisions."
+    },
+    {
+      "id": "database-optimization",
+      "name": "database-optimization",
+      "description": "Database performance specialist focusing on query optimization, indexing strategies, schema design, connection pooling, and database monitoring. Covers SQL optimization, NoSQL tuning, and architecture best practices."
+    },
+    {
+      "id": "database-optimizer",
+      "name": "database-optimizer",
+      "description": "Expert database optimizer specializing in modern performance tuning, query optimization, and scalable architectures. Masters advanced indexing, N+1 resolution, multi-tier caching, partitioning strategies, and cloud database optimization. Handles complex query analysis, migration strategies, and performance monitoring. Use PROACTIVELY for database optimization, performance issues, or scalability challenges."
+    },
+    {
+      "id": "debug",
+      "name": "debug",
+      "description": "UltraThink debug orchestrator coordinating systematic problem analysis and multi-agent debugging"
+    },
+    {
+      "id": "debugger",
+      "name": "debugger",
+      "description": "Debugging specialist for errors, test failures, and unexpected behavior. Use proactively when encountering any issues."
+    },
+    {
+      "id": "defi-strategist",
+      "name": "defi-strategist",
+      "description": "Design and implement DeFi yield strategies, liquidity provision, and protocol interactions. Use PROACTIVELY for yield farming, liquidity mining, and DeFi protocol integration."
+    },
+    {
+      "id": "deployment-engineer",
+      "name": "deployment-engineer",
+      "description": "Expert deployment engineer specializing in modern CI/CD pipelines, GitOps workflows, and advanced deployment automation. Masters GitHub Actions, ArgoCD/Flux, progressive delivery, container security, and platform engineering. Handles zero-downtime deployments, security scanning, and developer experience optimization. Use PROACTIVELY for CI/CD design, GitOps implementation, or deployment automation."
+    },
+    {
+      "id": "devops-troubleshooter",
+      "name": "devops-troubleshooter",
+      "description": "Expert DevOps troubleshooter specializing in rapid incident response, advanced debugging, and modern observability. Masters log analysis, distributed tracing, Kubernetes debugging, performance optimization, and root cause analysis. Handles production outages, system reliability, and preventive monitoring. Use PROACTIVELY for debugging, incident response, or system troubleshooting."
+    },
+    {
+      "id": "directus-developer",
+      "name": "directus-developer",
+      "description": "Build and customize Directus applications with extensions, hooks, and API integrations. Expert in Directus data models, permissions, workflows, and custom extensions. Use PROACTIVELY for Directus development, CMS configuration, or headless architecture."
+    },
+    {
+      "id": "django-pro",
+      "name": "django-pro",
+      "description": "Master Django 5.x with async views, DRF, Celery, and Django Channels. Build scalable web applications with proper architecture, testing, and deployment. Use PROACTIVELY for Django development, ORM optimization, or complex Django patterns."
+    },
+    {
+      "id": "docs-architect",
+      "name": "docs-architect",
+      "description": "Creates comprehensive technical documentation from existing codebases. Analyzes architecture, design patterns, and implementation details to produce long-form technical manuals and ebooks. Use PROACTIVELY for system documentation, architecture guides, or technical deep-dives."
+    },
+    {
+      "id": "document-writer",
+      "name": "document-writer",
+      "description": "A technical writer who crafts clear, comprehensive documentation - specializes in README files, API docs, architecture docs, and user guides"
+    },
+    {
+      "id": "docusaurus-expert",
+      "name": "docusaurus-expert",
+      "description": "Configure and troubleshoot Docusaurus documentation sites. Specializes in configuration, theming, content management, sidebar organization, and build issues. Use PROACTIVELY when working with Docusaurus v2/v3 sites, especially in docs_to_claude folder."
+    },
+    {
+      "id": "drupal-developer",
+      "name": "drupal-developer",
+      "description": "Build and customize Drupal applications with custom modules, themes, and integrations. Expert in Drupal architecture, content modeling, theming, and performance optimization. Use PROACTIVELY for Drupal development, module creation, or CMS architecture."
+    },
+    {
+      "id": "dx-optimizer",
+      "name": "dx-optimizer",
+      "description": "Developer Experience specialist. Improves tooling, setup, and workflows. Use PROACTIVELY when setting up new projects, after team feedback, or when development friction is noticed."
+    },
+    {
+      "id": "elixir-pro",
+      "name": "elixir-pro",
+      "description": "Write idiomatic Elixir code with OTP patterns, supervision trees, and Phoenix LiveView. Masters concurrency, fault tolerance, and distributed systems. Use PROACTIVELY for Elixir refactoring, OTP design, or complex BEAM optimizations."
+    },
+    {
+      "id": "episode-orchestrator",
+      "name": "episode-orchestrator",
+      "description": "Manages episode-based workflows by coordinating multiple specialized agents in sequence. Detects complete episode details and dispatches to predefined agent sequences or asks for clarification before routing."
+    },
+    {
+      "id": "equity-research-copy-expert",
+      "name": "equity-research-copy-expert",
+      "description": "Comprehensive equity research expert covering initiating coverage, earnings analysis, DCF/comps valuation, long-short pitches, investment memos, event-driven analysis, portfolio risk management, catalyst calendars, sector overviews, thesis tracking, and morning notes — producing professional sell-side/buy-side research deliverables. Triggers on stock research, valuation modeling, investment pitch, portfolio risk, earnings analysis, and coverage initiation."
+    },
+    {
+      "id": "equity-research-expert",
+      "name": "equity-research-expert",
+      "description": "Comprehensive equity research expert covering initiating coverage, earnings analysis, DCF/comps valuation, long-short pitches, investment memos, event-driven analysis, portfolio risk management, catalyst calendars, sector overviews, thesis tracking, and morning notes — producing professional sell-side/buy-side research deliverables. Triggers on stock research, valuation modeling, investment pitch, portfolio risk, earnings analysis, and coverage initiation."
+    },
+    {
+      "id": "error-detective",
+      "name": "error-detective",
+      "description": "Search logs and codebases for error patterns, stack traces, and anomalies. Correlates errors across systems and identifies root causes. Use PROACTIVELY when debugging issues, analyzing logs, or investigating production errors."
+    },
+    {
+      "id": "event-sourcing-architect",
+      "name": "event-sourcing-architect",
+      "description": "Migrated WorkBuddy expert: event-sourcing-architect"
+    },
+    {
+      "id": "explore",
+      "name": "explore",
+      "description": "Contextual grep for codebases - fast codebase search and pattern discovery"
+    },
+    {
+      "id": "explorer",
+      "name": "explorer",
+      "description": "Use this agent when the user wants to analyze or explore a codebase (remote repository or local repository) using Repomix. This includes scenarios like:\\n\\n- User asks to analyze a GitHub repository: \"Can you analyze this repository: https://github.com/user/repo\"\\n- User wants to understand a local codebase: \"Analyze the codebase in /path/to/project\"\\n- User requests insights about code structure: \"What's the structure of this project?\"\\n- User wants to find specific patterns: \"Find all React components in this repo\"\\n- User asks about code metrics: \"How many lines of code are in this project?\"\\n- User wants to explore specific files or directories: \"Show me the authentication logic\"\\n\\nExamples:\\n\\n<example>\\nuser: \"Can you analyze this repository: https://github.com/facebook/react\"\\nassistant: \"I'll use the repomix-explorer:explorer agent to analyze the React repository and provide insights about its structure and content.\"\\n<commentary>\\nThe user is requesting repository analysis, so use the Task tool to launch the repomix-explorer:explorer agent to process the remote repository.\\n</commentary>\\n</example>\\n\\n<example>\\nuser: \"I want to understand the structure of the project in ~/projects/my-app\"\\nassistant: \"Let me use the repomix-explorer:explorer agent to analyze the local repository and provide you with a comprehensive overview.\"\\n<commentary>\\nThe user wants to analyze a local repository structure, so use the repomix-explorer:explorer agent to process the local codebase.\\n</commentary>\\n</example>\\n\\n<example>\\nuser: \"Find all authentication-related files in the yamadashy/repomix repository\"\\nassistant: \"I'll use the repomix-explorer:explorer agent to search for authentication-related code in the Repomix repository.\"\\n<commentary>\\nThe user wants to find specific patterns in a remote repository, so use the repomix-explorer:explorer agent.\\n</commentary>\\n</example>"
+    },
+    {
+      "id": "fastapi-pro",
+      "name": "fastapi-pro",
+      "description": "Build high-performance async APIs with FastAPI, SQLAlchemy 2.0, and Pydantic V2. Master microservices, WebSockets, and modern Python async patterns. Use PROACTIVELY for FastAPI development, async optimization, or API architecture."
+    },
+    {
+      "id": "flutter-expert",
+      "name": "flutter-expert",
+      "description": "Master Flutter development with Dart 3, advanced widgets, and multi-platform deployment. Handles state management, animations, testing, and performance optimization for mobile, web, desktop, and embedded platforms. Use PROACTIVELY for Flutter architecture, UI implementation, or cross-platform features."
+    },
+    {
+      "id": "frontend-developer",
+      "name": "frontend-developer",
+      "description": "Build React components, implement responsive layouts, and handle client-side state management. Masters React 19, Next.js 15, and modern frontend architecture. Optimizes performance and ensures accessibility. Use PROACTIVELY when creating UI components or fixing frontend issues."
+    },
+    {
+      "id": "frontend-security-coder",
+      "name": "frontend-security-coder",
+      "description": "Expert in secure frontend coding practices specializing in XSS prevention, output sanitization, and client-side security patterns. Use PROACTIVELY for frontend security implementations or client-side security code reviews."
+    },
+    {
+      "id": "frontend-ui-ux-engineer",
+      "name": "frontend-ui-ux-engineer",
+      "description": "A designer-turned-developer who crafts stunning UI/UX even without design mockups"
+    },
+    {
+      "id": "fundamental-researcher",
+      "name": "fundamental-researcher",
+      "description": "Fundamental Researcher - industry-researcher-style investor who finds ideas from daily life, picks quality leaders, tracks quarterly earnings, never goes to cash"
+    },
+    {
+      "id": "fundamentals-analyst",
+      "name": "fundamentals-analyst",
+      "description": "你是一位基本面分析师（Fundamentals Analyst）。你的职责是分析公司财务报表、经营状况和关键财务指标，全面评估公司基本面质量。"
+    },
+    {
+      "id": "game-developer",
+      "name": "game-developer",
+      "description": "Build games with Unity, Unreal Engine, or web technologies. Implements game mechanics, physics, AI, and optimization. Use PROACTIVELY for game development, engine integration, or gameplay programming."
+    },
+    {
+      "id": "gaokao-advisor",
+      "name": "gaokao-advisor",
+      "description": "Evidence-grounded Gaokao helper for exam papers, essays, university and major information, score lines, score-to-rank lookup, admission planning references, and guided volunteer form filling."
+    },
+    {
+      "id": "gh-repo-research",
+      "name": "gh-repo-research",
+      "description": "Clone GitHub repository, analyze codebase, and generate comprehensive technical documentation including architecture, core modules, API reference, and product features"
+    },
+    {
+      "id": "global-stock-investor",
+      "name": "global-stock-investor",
+      "description": "Senior cross-border equity research strategist (CFA L3 + CPA) for global stock markets: macro policy, cross-market valuation, asset allocation, and risk control across A-shares/HK/US/EU/Japan-Korea/SEA."
+    },
+    {
+      "id": "golang-expert",
+      "name": "golang-expert",
+      "description": "Write idiomatic Go code with goroutines, channels, and interfaces. Optimizes concurrency, implements Go patterns, and ensures proper error handling. Use PROACTIVELY for Go refactoring, concurrency issues, or performance optimization."
+    },
+    {
+      "id": "golang-pro",
+      "name": "golang-pro",
+      "description": "Master Go 1.21+ with modern patterns, advanced concurrency, performance optimization, and production-ready microservices. Expert in the latest Go ecosystem including generics, workspaces, and cutting-edge frameworks. Use PROACTIVELY for Go development, architecture design, or performance optimization."
+    },
+    {
+      "id": "grader",
+      "name": "grader",
+      "description": "Migrated WorkBuddy expert: grader"
+    },
+    {
+      "id": "graphql-architect",
+      "name": "graphql-architect",
+      "description": "Master modern GraphQL with federation, performance optimization, and enterprise security. Build scalable schemas, implement advanced caching, and design real-time systems. Use PROACTIVELY for GraphQL architecture or performance optimization."
+    },
+    {
+      "id": "growth-analyst",
+      "name": "growth-analyst",
+      "description": "你是成长分析师（Growth Analyst）。你从多维度评估企业的成长质量。"
+    },
+    {
+      "id": "hackathon-ai-strategist",
+      "name": "hackathon-ai-strategist",
+      "description": "Expert guidance on hackathon strategy, AI solution ideation, and project evaluation. Provides judge-perspective feedback, brainstorms winning AI concepts, and assesses project feasibility for tight timeframes."
+    },
+    {
+      "id": "haskell-pro",
+      "name": "haskell-pro",
+      "description": "Expert Haskell engineer specializing in advanced type systems, pure functional design, and high-reliability software. Use PROACTIVELY for type-level programming, concurrency, and architecture guidance."
+    },
+    {
+      "id": "hr-pro",
+      "name": "hr-pro",
+      "description": "Professional, ethical HR partner for hiring, onboarding/offboarding, PTO and leave, performance, compliant policies, and employee relations. Ask for jurisdiction and company context before advising; produce structured, bias-mitigated, lawful templates."
+    },
+    {
+      "id": "hybrid-cloud-architect",
+      "name": "hybrid-cloud-architect",
+      "description": "Expert hybrid cloud architect specializing in complex multi-cloud solutions across AWS/Azure/GCP and private clouds (OpenStack/VMware). Masters hybrid connectivity, workload placement optimization, edge computing, and cross-cloud automation. Handles compliance, cost optimization, disaster recovery, and migration strategies. Use PROACTIVELY for hybrid architecture, multi-cloud strategy, or complex infrastructure integration."
+    },
+    {
+      "id": "hyperledger-fabric-developer",
+      "name": "hyperledger-fabric-developer",
+      "description": "Develop enterprise blockchain solutions with Hyperledger Fabric v2.5 LTS and v3.x. Expertise in chaincode development, network architecture, BFT consensus, and permissioned blockchain design. Use PROACTIVELY for enterprise blockchain, supply chain solutions, or private network implementations."
+    },
+    {
+      "id": "incident-responder",
+      "name": "incident-responder",
+      "description": "Expert SRE incident responder specializing in rapid problem resolution, modern observability, and comprehensive incident management. Masters incident command, blameless post-mortems, error budget management, and system reliability patterns. Handles critical outages, communication strategies, and continuous improvement. Use IMMEDIATELY for production incidents or SRE practices."
+    },
+    {
+      "id": "indexer",
+      "name": "indexer",
+      "description": "项目语义索引构建 Agent。文件枚举、技术栈识别、攻击面映射、Sink 定位、调用图构建和防御映射，产出 project-index.db（SQLite）。"
+    },
+    {
+      "id": "industry-strategist",
+      "name": "industry-strategist",
+      "description": "Industry Strategist - ex-fund manager with 15 years experience, combines industry trend analysis with valuation constraints to find undervalued beneficiaries"
+    },
+    {
+      "id": "ios-developer",
+      "name": "ios-developer",
+      "description": "Develop native iOS applications with Swift/SwiftUI. Masters iOS 18, SwiftUI, UIKit integration, Core Data, networking, and App Store optimization. Use PROACTIVELY for iOS-specific features, App Store optimization, or native iOS development."
+    },
+    {
+      "id": "java-developer",
+      "name": "java-developer",
+      "description": "Master modern Java with streams, concurrency, and JVM optimization. Handles Spring Boot, reactive programming, and enterprise patterns. Use PROACTIVELY for Java performance tuning, concurrent programming, or complex enterprise solutions."
+    },
+    {
+      "id": "java-pro",
+      "name": "java-pro",
+      "description": "Master Java 21+ with modern features like virtual threads, pattern matching, and Spring Boot 3.x. Expert in the latest Java ecosystem including GraalVM, Project Loom, and cloud-native patterns. Use PROACTIVELY for Java development, microservices architecture, or performance optimization."
+    },
+    {
+      "id": "javascript-developer",
+      "name": "javascript-developer",
+      "description": "JavaScript expert for modern ES6+, async patterns, and Node.js. Use PROACTIVELY for React, TypeScript, performance optimization, or complex async flows."
+    },
+    {
+      "id": "javascript-pro",
+      "name": "javascript-pro",
+      "description": "Master modern JavaScript with ES6+, async patterns, and Node.js APIs. Handles promises, event loops, and browser/Node compatibility. Use PROACTIVELY for JavaScript optimization, async debugging, or complex JS patterns."
+    },
+    {
+      "id": "julia-pro",
+      "name": "julia-pro",
+      "description": "Master Julia 1.10+ with modern features, performance optimization, multiple dispatch, and production-ready practices. Expert in the Julia ecosystem including package management, scientific computing, and high-performance numerical code. Use PROACTIVELY for Julia development, optimization, or advanced Julia patterns."
+    },
+    {
+      "id": "kubernetes-architect",
+      "name": "kubernetes-architect",
+      "description": "Expert Kubernetes architect specializing in cloud-native infrastructure, advanced GitOps workflows (ArgoCD/Flux), and enterprise container orchestration. Masters EKS/AKS/GKE, service mesh (Istio/Linkerd), progressive delivery, multi-tenancy, and platform engineering. Handles security, observability, cost optimization, and developer experience. Use PROACTIVELY for K8s architecture, GitOps implementation, or cloud-native platform design."
+    },
+    {
+      "id": "laravel-vue-developer",
+      "name": "laravel-vue-developer",
+      "description": "Build full-stack Laravel applications with Vue3 frontend. Expert in Laravel APIs, Vue3 composition API, Pinia state management, and modern full-stack patterns. Use PROACTIVELY for Laravel backend development, Vue3 frontend components, API integration, or full-stack architecture."
+    },
+    {
+      "id": "legacy-modernizer",
+      "name": "legacy-modernizer",
+      "description": "Refactor legacy codebases, migrate outdated frameworks, and implement gradual modernization. Handles technical debt, dependency updates, and backward compatibility. Use PROACTIVELY for legacy system updates, framework migrations, or technical debt reduction."
+    },
+    {
+      "id": "legal-advisor",
+      "name": "legal-advisor",
+      "description": "Draft privacy policies, terms of service, disclaimers, and legal notices. Creates GDPR-compliant texts, cookie policies, and data processing agreements. Use PROACTIVELY for legal documentation, compliance texts, or regulatory requirements."
+    },
+    {
+      "id": "librarian",
+      "name": "librarian",
+      "description": "Specialized codebase understanding agent for multi-repository analysis, official documentation retrieval, and finding implementation examples using GitHub CLI and Context7"
+    },
+    {
+      "id": "llms-maintainer",
+      "name": "llms-maintainer",
+      "description": "Generates and maintains llms.txt roadmap files for AI crawler navigation. Updates when build processes complete, content changes, or site structure modifications occur."
+    },
+    {
+      "id": "logic-scan",
+      "name": "logic-scan",
+      "description": "认证授权（C3）+ 业务逻辑（C7）审计 Agent。端点权限遍历、CRUD 一致性、IDOR、竞态条件、支付逻辑、状态机缺陷。"
+    },
+    {
+      "id": "markdown-syntax-formatter",
+      "name": "markdown-syntax-formatter",
+      "description": "Converts text with visual formatting into proper markdown syntax, fixes markdown formatting issues, and ensures consistent document structure. Handles lists, headings, code blocks, and emphasis markers."
+    },
+    {
+      "id": "market-analyst",
+      "name": "market-analyst",
+      "description": "你是一位市场技术分析师（Market Analyst）。你的职责是分析指定标的的价格走势和技术指标，识别趋势、支撑/阻力位和动量信号。"
+    },
+    {
+      "id": "market-research-analyst",
+      "name": "market-research-analyst",
+      "description": "Conducts comprehensive market research and competitive analysis for business strategy and investment decisions. Analyzes industry trends, identifies key players, gathers pricing intelligence, and evaluates market opportunities with collaborative research workflows."
+    },
+    {
+      "id": "mcp-deployment-orchestrator",
+      "name": "mcp-deployment-orchestrator",
+      "description": "Deploys MCP servers to production with containerization, Kubernetes deployments, autoscaling, monitoring, and high-availability operations. Handles Docker images, Helm charts, service mesh setup, security hardening, and performance optimization."
+    },
+    {
+      "id": "mcp-expert",
+      "name": "mcp-expert",
+      "description": "Create Model Context Protocol integrations and server configurations. Use PROACTIVELY when building MCP servers, configuring integrations, or designing protocol implementations."
+    },
+    {
+      "id": "mcp-registry-navigator",
+      "name": "mcp-registry-navigator",
+      "description": "You are an MCP Registry Navigator specializing in discovering, evaluating, and integrating MCP servers from various registries. Use when searching for servers with specific capabilities, assessing trustworthiness, generating configurations, or publishing to registries."
+    },
+    {
+      "id": "mcp-security-auditor",
+      "name": "mcp-security-auditor",
+      "description": "You are an MCP Security Auditor specializing in reviewing MCP server implementations for vulnerabilities, designing authentication systems, and ensuring compliance. Use when implementing OAuth 2.1, designing RBAC, conducting security reviews, or auditing MCP servers."
+    },
+    {
+      "id": "mcp-server-architect",
+      "name": "mcp-server-architect",
+      "description": "Designs and implements MCP servers with transport layers, tool/resource/prompt definitions, completion support, session management, and protocol compliance. Creates servers from scratch or enhances existing ones following MCP specification best practices."
+    },
+    {
+      "id": "mcp-testing-engineer",
+      "name": "mcp-testing-engineer",
+      "description": "Tests, debugs, and ensures quality for MCP servers including JSON schema validation, protocol compliance, security vulnerability assessment, load testing, and comprehensive debugging. Provides automated testing strategies and detailed quality reports."
+    },
+    {
+      "id": "mermaid-expert",
+      "name": "mermaid-expert",
+      "description": "Create Mermaid diagrams for flowcharts, sequences, ERDs, and architectures. Masters syntax for all diagram types and styling. Use PROACTIVELY for visual documentation, system diagrams, or process flows."
+    },
+    {
+      "id": "metadata-agent",
+      "name": "metadata-agent",
+      "description": "Handles frontmatter standardization and metadata addition across vault files. Ensures consistent metadata structure, generates tags, and maintains creation/modification dates."
+    },
+    {
+      "id": "michael-burry",
+      "name": "michael-burry",
+      "description": "你是迈克尔·伯里（Michael Burry）投资分析智能体——\"大空头\"，一个纯粹的数据驱动深度价值投资者。"
+    },
+    {
+      "id": "minecraft-bukkit-pro",
+      "name": "minecraft-bukkit-pro",
+      "description": "Master Minecraft server plugin development with Bukkit, Spigot, and Paper APIs. Specializes in event-driven architecture, command systems, world manipulation, player management, and performance optimization. Use PROACTIVELY for plugin architecture, gameplay mechanics, server-side features, or cross-version compatibility."
+    },
+    {
+      "id": "ml-engineer",
+      "name": "ml-engineer",
+      "description": "Build production ML systems with PyTorch 2.x, TensorFlow, and modern ML frameworks. Implements model serving, feature engineering, A/B testing, and monitoring. Use PROACTIVELY for ML model deployment, inference optimization, or production ML infrastructure."
+    },
+    {
+      "id": "mlops-engineer",
+      "name": "mlops-engineer",
+      "description": "Build comprehensive ML pipelines, experiment tracking, and model registries with MLflow, Kubeflow, and modern MLOps tools. Implements automated training, deployment, and monitoring across cloud platforms. Use PROACTIVELY for ML infrastructure, experiment management, or pipeline automation."
+    },
+    {
+      "id": "mobile-developer",
+      "name": "mobile-developer",
+      "description": "Develop React Native, Flutter, or native mobile apps with modern architecture patterns. Masters cross-platform development, native integrations, offline sync, and app store optimization. Use PROACTIVELY for mobile features, cross-platform code, or app optimization."
+    },
+    {
+      "id": "mobile-security-coder",
+      "name": "mobile-security-coder",
+      "description": "Expert in secure mobile coding practices specializing in input validation, WebView security, and mobile-specific security patterns. Use PROACTIVELY for mobile security implementations or mobile security code reviews."
+    },
+    {
+      "id": "moc-agent",
+      "name": "moc-agent",
+      "description": "Identifies and generates missing Maps of Content (MOCs) and organizes orphaned assets. Creates navigation hubs for vault content and maintains MOC networks with proper linking structure."
+    },
+    {
+      "id": "mohnish-pabrai",
+      "name": "mohnish-pabrai",
+      "description": "你是莫尼什·帕布莱（Mohnish Pabrai）投资分析智能体。你践行 Dhandho 哲学——\"正面我赢，反面我输不多\"。"
+    },
+    {
+      "id": "monorepo-architect",
+      "name": "monorepo-architect",
+      "description": "Migrated WorkBuddy expert: monorepo-architect"
+    },
+    {
+      "id": "morning-briefing",
+      "name": "morning-briefing",
+      "description": "你是一位A股晨间策略分析师，负责每日开盘前为交易者生成一份高质量决策简报。"
+    },
+    {
+      "id": "multimodal-looker",
+      "name": "multimodal-looker",
+      "description": "Analyze media files (PDFs, images, diagrams) that require interpretation beyond raw text"
+    },
+    {
+      "id": "nassim-taleb",
+      "name": "nassim-taleb",
+      "description": "你是纳西姆·塔勒布（Nassim Taleb）投资分析智能体。你以反脆弱哲学评估投资标的。"
+    },
+    {
+      "id": "network-engineer",
+      "name": "network-engineer",
+      "description": "Expert network engineer specializing in modern cloud networking, security architectures, and performance optimization. Masters multi-cloud connectivity, service mesh, zero-trust networking, SSL/TLS, global load balancing, and advanced troubleshooting. Handles CDN optimization, network automation, and compliance. Use PROACTIVELY for network design, connectivity issues, or performance optimization."
+    },
+    {
+      "id": "neutral-risk-analyst",
+      "name": "neutral-risk-analyst",
+      "description": "你是一名中性风险分析师（Neutral Risk Analyst）。你的职责是提供平衡视角，权衡收益和风险，倡导温和可持续的策略。你必须同时挑战激进和保守两方的极端立场。"
+    },
+    {
+      "id": "news-analyst",
+      "name": "news-analyst",
+      "description": "你是一位新闻分析师（News Analyst）。你的职责是分析近期公司新闻、行业趋势和宏观经济变化，评估其对标的和整体市场的影响。"
+    },
+    {
+      "id": "news-sentiment-analyst",
+      "name": "news-sentiment-analyst",
+      "description": "你是新闻情绪分析师（News Sentiment Analyst）。你分析近期新闻对标的的影响。"
+    },
+    {
+      "id": "nextjs-app-router-developer",
+      "name": "nextjs-app-router-developer",
+      "description": "Build modern Next.js applications using App Router with Server Components, Server Actions, PPR, and advanced caching strategies. Expert in Next.js 14+ features including streaming, suspense boundaries, and parallel routes. Use PROACTIVELY for Next.js App Router development, performance optimization, or migrating from Pages Router."
+    },
+    {
+      "id": "observability-engineer",
+      "name": "observability-engineer",
+      "description": "Build production-ready monitoring, logging, and tracing systems. Implements comprehensive observability strategies, SLI/SLO management, and incident response workflows. Use PROACTIVELY for monitoring infrastructure, performance optimization, or production reliability."
+    },
+    {
+      "id": "ocr-grammar-fixer",
+      "name": "ocr-grammar-fixer",
+      "description": "You are an OCR Grammar Fixer specializing in cleaning up text processed through OCR that contains recognition errors, spacing issues, or grammatical problems. Use when correcting OCR-processed marketing copy, business documents, or scanned text with typical recognition artifacts."
+    },
+    {
+      "id": "ocr-quality-assurance",
+      "name": "ocr-quality-assurance",
+      "description": "You are an OCR Quality Assurance specialist performing final review and validation of OCR-corrected text against original image sources. Use as the final step in OCR pipelines after visual analysis, text comparison, grammar fixes, and markdown formatting."
+    },
+    {
+      "id": "optimize",
+      "name": "optimize",
+      "description": "Performance optimization coordinator leading optimization experts for systematic performance improvement"
+    },
+    {
+      "id": "oracle",
+      "name": "oracle",
+      "description": "Expert technical advisor with deep reasoning for architecture decisions, code analysis, and engineering guidance"
+    },
+    {
+      "id": "payment-integration",
+      "name": "payment-integration",
+      "description": "Integrate Stripe, PayPal, and payment processors. Handles checkout flows, subscriptions, webhooks, and PCI compliance. Use PROACTIVELY when implementing payments, billing, or subscription features."
+    },
+    {
+      "id": "performance-engineer",
+      "name": "performance-engineer",
+      "description": "Expert performance engineer specializing in modern observability, application optimization, and scalable system performance. Masters OpenTelemetry, distributed tracing, load testing, multi-tier caching, Core Web Vitals, and performance monitoring. Handles end-to-end optimization, real user monitoring, and scalability patterns. Use PROACTIVELY for performance optimization, observability, or scalability challenges."
+    },
+    {
+      "id": "peter-lynch",
+      "name": "peter-lynch",
+      "description": "你是彼得·林奇（Peter Lynch）投资分析智能体。你寻找\"你所了解的领域中被低估的成长股\"。"
+    },
+    {
+      "id": "phil-fisher",
+      "name": "phil-fisher",
+      "description": "你是菲利普·费雪（Phil Fisher）投资分析智能体。你以\"闲聊调研\"(Scuttlebutt)方法论评估企业的长期成长品质。"
+    },
+    {
+      "id": "php-developer",
+      "name": "php-developer",
+      "description": "Write idiomatic PHP code with design patterns, SOLID principles, and modern best practices. Implements PSR standards, dependency injection, and comprehensive testing. Use PROACTIVELY for PHP architecture, refactoring, or implementing design patterns."
+    },
+    {
+      "id": "php-pro",
+      "name": "php-pro",
+      "description": "Write idiomatic PHP code with generators, iterators, SPL data structures, and modern OOP features. Use PROACTIVELY for high-performance PHP applications."
+    },
+    {
+      "id": "plugin-recommender",
+      "name": "plugin-recommender",
+      "description": "Use this agent when the user expresses a need for functionality but doesn't mention plugins, or when they might benefit from a plugin. Examples:"
+    },
+    {
+      "id": "plugin-validator",
+      "name": "plugin-validator",
+      "description": "Use this agent when the user asks to \"validate my plugin\", \"check plugin structure\", \"verify plugin is correct\", \"validate plugin.json\", \"check plugin files\", or mentions plugin validation. Also trigger proactively after user creates or modifies plugin components. Examples:"
+    },
+    {
+      "id": "podcast-content-analyzer",
+      "name": "podcast-content-analyzer",
+      "description": "Analyze podcast transcripts to identify engaging segments and viral moments. Use PROACTIVELY for content optimization, chapter creation, or social media clip selection."
+    },
+    {
+      "id": "podcast-metadata-specialist",
+      "name": "podcast-metadata-specialist",
+      "description": "You are a Podcast Metadata Specialist generating comprehensive metadata, show notes, chapter markers, and platform-specific descriptions for podcast episodes. Use when creating SEO-optimized titles, timestamps, social media posts, and formatted descriptions for podcast platforms."
+    },
+    {
+      "id": "podcast-transcriber",
+      "name": "podcast-transcriber",
+      "description": "You are a Podcast Transcriber specializing in extracting accurate transcripts from audio/video files with timestamp precision. Use when converting media files for transcription, generating timestamped segments, identifying speakers, and producing structured transcript data."
+    },
+    {
+      "id": "podcast-trend-scout",
+      "name": "podcast-trend-scout",
+      "description": "You are a Podcast Trend Scout identifying emerging tech topics and news for podcast episodes. Use when planning content for tech podcasts, researching current trends, finding breaking developments, or suggesting timely topics aligned with tech focus areas."
+    },
+    {
+      "id": "portfolio-diagnosis",
+      "name": "portfolio-diagnosis",
+      "description": "你是一位A股投资组合风险诊断专家，负责对用户持仓进行全面健康检查并给出调仓建议。"
+    },
+    {
+      "id": "portfolio-manager",
+      "name": "portfolio-manager",
+      "description": "你是投资组合经理（Portfolio Manager）。你是最终的决策者——综合所有分析师的信号和风险管理师的约束，做出明确的投资决策。"
+    },
+    {
+      "id": "posix-shell-pro",
+      "name": "posix-shell-pro",
+      "description": "Expert in strict POSIX sh scripting for maximum portability across Unix-like systems. Specializes in shell scripts that run on any POSIX-compliant shell (dash, ash, sh, bash --posix)."
+    },
+    {
+      "id": "ppt-designer",
+      "name": "ppt-designer",
+      "description": "专业PPT设计顾问，擅长演示文稿内容策划、视觉设计和演讲辅导"
+    },
+    {
+      "id": "pr-test-analyzer",
+      "name": "pr-test-analyzer",
+      "description": "Use this agent when you need to review a pull request for test coverage quality and completeness. This agent should be invoked after a PR is created or updated to ensure tests adequately cover new functionality and edge cases. Examples:\\n\\n<example>\\nContext: Daisy has just created a pull request with new functionality.\\nuser: \"I've created the PR. Can you check if the tests are thorough?\"\\nassistant: \"I'll use the pr-test-analyzer agent to review the test coverage and identify any critical gaps.\"\\n<commentary>\\nSince Daisy is asking about test thoroughness in a PR, use the Task tool to launch the pr-test-analyzer agent.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: A pull request has been updated with new code changes.\\nuser: \"The PR is ready for review - I added the new validation logic we discussed\"\\nassistant: \"Let me analyze the PR to ensure the tests adequately cover the new validation logic and edge cases.\"\\n<commentary>\\nThe PR has new functionality that needs test coverage analysis, so use the pr-test-analyzer agent.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: Reviewing PR feedback before marking as ready.\\nuser: \"Before I mark this PR as ready, can you double-check the test coverage?\"\\nassistant: \"I'll use the pr-test-analyzer agent to thoroughly review the test coverage and identify any critical gaps before you mark it ready.\"\\n<commentary>\\nDaisy wants a final test coverage check before marking PR ready, use the pr-test-analyzer agent.\\n</commentary>\\n</example>"
+    },
+    {
+      "id": "project-supervisor-orchestrator",
+      "name": "project-supervisor-orchestrator",
+      "description": "You are a Project Supervisor Orchestrator managing complex multi-step workflows that coordinate multiple specialized agents in sequence. Use when orchestrating agent pipelines, detecting incomplete information, or managing sophisticated multi-agent processes."
+    },
+    {
+      "id": "prompt-engineer",
+      "name": "prompt-engineer",
+      "description": "Expert prompt engineer specializing in advanced prompting techniques, LLM optimization, and AI system design. Masters chain-of-thought, constitutional AI, and production prompt strategies. Use when building AI features, improving agent performance, or crafting system prompts."
+    },
+    {
+      "id": "python-expert",
+      "name": "python-expert",
+      "description": "Write idiomatic Python code with advanced features like decorators, generators, and async/await. Optimizes performance, implements design patterns, and ensures comprehensive testing. Use PROACTIVELY for Python refactoring, optimization, or complex Python features."
+    },
+    {
+      "id": "python-pro",
+      "name": "python-pro",
+      "description": "Master Python 3.12+ with modern features, async programming, performance optimization, and production-ready practices. Expert in the latest Python ecosystem including uv, ruff, pydantic, and FastAPI. Use PROACTIVELY for Python development, optimization, or advanced Python patterns."
+    },
+    {
+      "id": "quant-analyst",
+      "name": "quant-analyst",
+      "description": "Build financial models, backtest trading strategies, and analyze market data. Implements risk metrics, portfolio optimization, and statistical arbitrage. Use PROACTIVELY for quantitative finance, trading algorithms, or risk analysis."
+    },
+    {
+      "id": "query-clarifier",
+      "name": "query-clarifier",
+      "description": "Analyze research queries for clarity and determine if clarification is needed. Use PROACTIVELY at the beginning of research workflows to ensure queries are specific and actionable."
+    },
+    {
+      "id": "rails-expert",
+      "name": "rails-expert",
+      "description": "Build scalable Rails applications with modern patterns and best practices. Implements service objects, background jobs, and API design. Use PROACTIVELY for Rails development, performance optimization, or architectural decisions."
+    },
+    {
+      "id": "rakesh-jhunjhunwala",
+      "name": "rakesh-jhunjhunwala",
+      "description": "你是拉凯什·金君瓦拉（Rakesh Jhunjhunwala）投资分析智能体——被称为\"印度的沃伦·巴菲特\"。"
+    },
+    {
+      "id": "react-performance-optimization",
+      "name": "react-performance-optimization",
+      "description": "You are a React Performance Optimization specialist focusing on identifying, analyzing, and resolving performance bottlenecks in React applications. Your expertise covers rendering optimization, bundle analysis, memory management, and Core Web Vitals improvements."
+    },
+    {
+      "id": "red-team",
+      "name": "red-team",
+      "description": "红队攻击面深度审计 Agent。聚焦 vuln-scan/logic-scan 思维盲区：自造轮子（Q1）、异常路径安全（Q2）、跨边界信任穿越（Q3）。"
+    },
+    {
+      "id": "reference-builder",
+      "name": "reference-builder",
+      "description": "Creates exhaustive technical references and API documentation. Generates comprehensive parameter listings, configuration guides, and searchable reference materials. Use PROACTIVELY for API docs, configuration references, or complete technical specifications."
+    },
+    {
+      "id": "remotion-video-expert",
+      "name": "remotion-video-expert",
+      "description": "Video generation expert creating programmatic videos with Remotion framework — scene planning, React-based video components, BGM integration, and production-ready rendering. Triggers on video generation, animation creation, programmatic video, and Remotion-based video production requests."
+    },
+    {
+      "id": "report-generator",
+      "name": "report-generator",
+      "description": "You are the Report Generator, a specialized expert in transforming synthesized research findings into comprehensive, well-structured final reports. Your expertise lies in creating clear narratives from complex data while maintaining academic rigor and proper citation standards."
+    },
+    {
+      "id": "requirements-code",
+      "name": "requirements-code",
+      "description": "Direct implementation agent that converts technical specifications into working code with minimal architectural overhead"
+    },
+    {
+      "id": "requirements-generate",
+      "name": "requirements-generate",
+      "description": "Transform user requirements into code-friendly technical specifications optimized for automatic code generation"
+    },
+    {
+      "id": "requirements-review",
+      "name": "requirements-review",
+      "description": "Pragmatic code review agent focused on functionality, integration quality, and maintainability rather than architectural perfection"
+    },
+    {
+      "id": "requirements-testing",
+      "name": "requirements-testing",
+      "description": "Practical testing agent focused on functional validation and integration testing rather than exhaustive test coverage"
+    },
+    {
+      "id": "research-brief-generator",
+      "name": "research-brief-generator",
+      "description": "Transforms user research queries into structured, actionable research briefs with specific questions, keywords, source preferences, and success criteria. Creates comprehensive research plans that guide subsequent research activities."
+    },
+    {
+      "id": "research-coordinator",
+      "name": "research-coordinator",
+      "description": "Strategically plan and coordinate complex research tasks across multiple specialists. Use PROACTIVELY for multi-faceted research projects requiring diverse expertise."
+    },
+    {
+      "id": "research-manager",
+      "name": "research-manager",
+      "description": "你是投资组合经理（Research Manager），同时担任多空辩论的裁判。你的职责是批判性评估辩论结果，做出明确的投资决策，并制定可执行的投资计划。"
+    },
+    {
+      "id": "research-orchestrator",
+      "name": "research-orchestrator",
+      "description": "You are the Research Orchestrator, an elite coordinator responsible for managing comprehensive research projects using the Open Deep Research methodology. You excel at breaking down complex research queries into manageable phases and coordinating specialized agents to deliver thorough, high-quality research outputs."
+    },
+    {
+      "id": "research-subagent",
+      "name": "research-subagent",
+      "description": "Responsible for researching and executing tasks assigned by the lead research agent."
+    },
+    {
+      "id": "research-synthesizer",
+      "name": "research-synthesizer",
+      "description": "Consolidate and synthesize findings from multiple research sources into unified analysis. Use when merging diverse perspectives, identifying patterns, and creating structured insights from complex research."
+    },
+    {
+      "id": "review-agent",
+      "name": "review-agent",
+      "description": "You are a specialized quality assurance agent for knowledge management systems. Your primary responsibility is to review and validate work performed by other enhancement agents, ensuring consistency and quality across the vault through systematic validation and cross-checking."
+    },
+    {
+      "id": "risk-manager",
+      "name": "risk-manager",
+      "description": "Monitor portfolio risk, R-multiples, and position limits. Creates hedging strategies, calculates expectancy, and implements stop-losses. Use PROACTIVELY for risk assessment, trade tracking, or portfolio protection."
+    },
+    {
+      "id": "ruby-expert",
+      "name": "ruby-expert",
+      "description": "Write idiomatic Ruby code following best practices and design patterns. Implements SOLID principles, service objects, and comprehensive testing. Use PROACTIVELY for Ruby refactoring, performance optimization, or complex Ruby features."
+    },
+    {
+      "id": "ruby-pro",
+      "name": "ruby-pro",
+      "description": "Write idiomatic Ruby code with metaprogramming, Rails patterns, and performance optimization. Specializes in Ruby on Rails, gem development, and testing frameworks. Use PROACTIVELY for Ruby refactoring, optimization, or complex Ruby features."
+    },
+    {
+      "id": "rust-expert",
+      "name": "rust-expert",
+      "description": "Write idiomatic Rust code with ownership, lifetimes, and type safety. Implements concurrent systems, async programming, and memory-safe abstractions. Use PROACTIVELY for Rust development, systems programming, or performance-critical code."
+    },
+    {
+      "id": "rust-pro",
+      "name": "rust-pro",
+      "description": "Master Rust 1.75+ with modern async patterns, advanced type system features, and production-ready systems programming. Expert in the latest Rust ecosystem including Tokio, axum, and cutting-edge crates. Use PROACTIVELY for Rust development, performance optimization, or systems programming."
+    },
+    {
+      "id": "sales-automator",
+      "name": "sales-automator",
+      "description": "Draft cold emails, follow-ups, and proposal templates. Creates pricing pages, case studies, and sales scripts. Use PROACTIVELY for sales outreach or lead nurturing."
+    },
+    {
+      "id": "scala-pro",
+      "name": "scala-pro",
+      "description": "Master enterprise-grade Scala development with functional programming, distributed systems, and big data processing. Expert in Apache Pekko, Akka, Spark, ZIO/Cats Effect, and reactive architectures. Use PROACTIVELY for Scala system design, performance optimization, or enterprise integration."
+    },
+    {
+      "id": "search-specialist",
+      "name": "search-specialist",
+      "description": "Expert web researcher using advanced search techniques and synthesis. Masters search operators, result filtering, and multi-source verification. Handles competitive analysis and fact-checking. Use PROACTIVELY for deep research, information gathering, or trend analysis."
+    },
+    {
+      "id": "sector-screening",
+      "name": "sector-screening",
+      "description": "你是一位A股行业比较与配置策略研究员，负责从众多板块中筛选出当前最值得关注的投资方向。"
+    },
+    {
+      "id": "security-auditor",
+      "name": "security-auditor",
+      "description": "Expert security auditor specializing in DevSecOps, comprehensive cybersecurity, and compliance frameworks. Masters vulnerability assessment, threat modeling, secure authentication (OAuth2/OIDC), OWASP standards, cloud security, and security automation. Handles DevSecOps integration, compliance (GDPR/HIPAA/SOC2), and incident response. Use PROACTIVELY for security audits, DevSecOps, or compliance implementation."
+    },
+    {
+      "id": "sentiment-analyst",
+      "name": "sentiment-analyst",
+      "description": "你是一位市场情绪分析师（Sentiment Analyst）。你的职责是分析市场对指定标的的整体情绪、机构态度、资金动向和投资者关注热点。"
+    },
+    {
+      "id": "seo-authority-builder",
+      "name": "seo-authority-builder",
+      "description": "Analyzes content for E-E-A-T signals and suggests improvements to build authority and trust. Identifies missing credibility elements. Use PROACTIVELY for YMYL topics."
+    },
+    {
+      "id": "seo-cannibalization-detector",
+      "name": "seo-cannibalization-detector",
+      "description": "Analyzes multiple provided pages to identify keyword overlap and potential cannibalization issues. Suggests differentiation strategies. Use PROACTIVELY when reviewing similar content."
+    },
+    {
+      "id": "seo-content-auditor",
+      "name": "seo-content-auditor",
+      "description": "Analyzes provided content for quality, E-E-A-T signals, and SEO best practices. Scores content and provides improvement recommendations based on established guidelines. Use PROACTIVELY for content review."
+    },
+    {
+      "id": "seo-content-planner",
+      "name": "seo-content-planner",
+      "description": "Creates comprehensive content outlines and topic clusters for SEO. Plans content calendars and identifies topic gaps. Use PROACTIVELY for content strategy and planning."
+    },
+    {
+      "id": "seo-content-refresher",
+      "name": "seo-content-refresher",
+      "description": "Identifies outdated elements in provided content and suggests updates to maintain freshness. Finds statistics, dates, and examples that need updating. Use PROACTIVELY for older content."
+    },
+    {
+      "id": "seo-content-writer",
+      "name": "seo-content-writer",
+      "description": "Writes SEO-optimized content based on provided keywords and topic briefs. Creates engaging, comprehensive content following best practices. Use PROACTIVELY for content creation tasks."
+    },
+    {
+      "id": "seo-keyword-strategist",
+      "name": "seo-keyword-strategist",
+      "description": "Analyzes keyword usage in provided content, calculates density, suggests semantic variations and LSI keywords based on the topic. Prevents over-optimization. Use PROACTIVELY for content optimization."
+    },
+    {
+      "id": "seo-meta-optimizer",
+      "name": "seo-meta-optimizer",
+      "description": "Creates optimized meta titles, descriptions, and URL suggestions based on character limits and best practices. Generates compelling, keyword-rich metadata. Use PROACTIVELY for new content."
+    },
+    {
+      "id": "seo-podcast-optimizer",
+      "name": "seo-podcast-optimizer",
+      "description": "You are an SEO consultant specializing in tech podcasts. Your expertise lies in crafting search-optimized content that balances keyword effectiveness with engaging, click-worthy copy that accurately represents podcast content for maximum search visibility."
+    },
+    {
+      "id": "seo-snippet-hunter",
+      "name": "seo-snippet-hunter",
+      "description": "Formats content to be eligible for featured snippets and SERP features. Creates snippet-optimized content blocks based on best practices. Use PROACTIVELY for question-based content."
+    },
+    {
+      "id": "seo-structure-architect",
+      "name": "seo-structure-architect",
+      "description": "Analyzes and optimizes content structure including header hierarchy, suggests schema markup, and internal linking opportunities. Creates search-friendly content organization. Use PROACTIVELY for content structuring."
+    },
+    {
+      "id": "service-mesh-expert",
+      "name": "service-mesh-expert",
+      "description": "Migrated WorkBuddy expert: service-mesh-expert"
+    },
+    {
+      "id": "sheet-agent",
+      "name": "sheet-agent",
+      "description": "表格子代理，调用时文件路径必须传入完整 local_path 或 file_id/sheet_id。"
+    },
+    {
+      "id": "shortterm-surfer",
+      "name": "shortterm-surfer",
+      "description": "Short-term Surfer - A-share + US dual-market short-term trader (~60% win rate), catches weekly themes, confirms via opening auction, exits on moving-average breaks"
+    },
+    {
+      "id": "signal-chief",
+      "name": "signal-chief",
+      "description": "Signal Chief - 20-year veteran using 4-layer signal system (policy, industry, news, capital) for timing decisions across short and long horizons"
+    },
+    {
+      "id": "silent-failure-hunter",
+      "name": "silent-failure-hunter",
+      "description": "Use this agent when reviewing code changes in a pull request to identify silent failures, inadequate error handling, and inappropriate fallback behavior. This agent should be invoked proactively after completing a logical chunk of work that involves error handling, catch blocks, fallback logic, or any code that could potentially suppress errors. Examples:\\n\\n<example>\\nContext: Daisy has just finished implementing a new feature that fetches data from an API with fallback behavior.\\nDaisy: \"I've added error handling to the API client. Can you review it?\"\\nAssistant: \"Let me use the silent-failure-hunter agent to thoroughly examine the error handling in your changes.\"\\n<Task tool invocation to launch silent-failure-hunter agent>\\n</example>\\n\\n<example>\\nContext: Daisy has created a PR with changes that include try-catch blocks.\\nDaisy: \"Please review PR #1234\"\\nAssistant: \"I'll use the silent-failure-hunter agent to check for any silent failures or inadequate error handling in this PR.\"\\n<Task tool invocation to launch silent-failure-hunter agent>\\n</example>\\n\\n<example>\\nContext: Daisy has just refactored error handling code.\\nDaisy: \"I've updated the error handling in the authentication module\"\\nAssistant: \"Let me proactively use the silent-failure-hunter agent to ensure the error handling changes don't introduce silent failures.\"\\n<Task tool invocation to launch silent-failure-hunter agent>\\n</example>"
+    },
+    {
+      "id": "skill-reviewer",
+      "name": "skill-reviewer",
+      "description": "Use this agent when the user has created or modified a skill and needs quality review, asks to \"review my skill\", \"check skill quality\", \"improve skill description\", or wants to ensure skill follows best practices. Trigger proactively after skill creation. Examples:"
+    },
+    {
+      "id": "smart-money-tracker",
+      "name": "smart-money-tracker",
+      "description": "你是一位A股资金行为研究专家，擅长追踪各路\"聪明钱\"的动向，识别资金共识方向。"
+    },
+    {
+      "id": "social-media-clip-creator",
+      "name": "social-media-clip-creator",
+      "description": "Creates optimized video clips for social media platforms from longer content. Handles platform-specific aspect ratios, durations, encoding settings for TikTok, Instagram, YouTube Shorts, Twitter, and LinkedIn using FFMPEG processing and optimization."
+    },
+    {
+      "id": "social-media-copywriter",
+      "name": "social-media-copywriter",
+      "description": "You are an expert social media copywriter specializing in podcast promotion. Your role is to transform episode information into compelling social media content that drives engagement and listenership across Twitter/X, LinkedIn, and Instagram platforms."
+    },
+    {
+      "id": "soe",
+      "name": "soe",
+      "description": "腾讯云安全运营专家。当用户提及安全事件分析、漏洞管理、告警研判、入侵排查、日志分析、DDoS 攻击分析、勒索病毒分析、资产纳管、SOC 告警处理、WAF/御界/天幕日志分析等安全运营场景时使用。"
+    },
+    {
+      "id": "sql-expert",
+      "name": "sql-expert",
+      "description": "Write complex SQL queries and optimize database performance. Use PROACTIVELY for query optimization, schema design, or complex data transformations."
+    },
+    {
+      "id": "sql-pro",
+      "name": "sql-pro",
+      "description": "Master modern SQL with cloud-native databases, OLTP/OLAP optimization, and advanced query techniques. Expert in performance tuning, data modeling, and hybrid analytical systems. Use PROACTIVELY for database optimization or complex analysis."
+    },
+    {
+      "id": "stanley-druckenmiller",
+      "name": "stanley-druckenmiller",
+      "description": "你是斯坦利·德鲁肯米勒（Stanley Druckenmiller）投资分析智能体。你追求非对称的风险收益机会。"
+    },
+    {
+      "id": "startup-analyst",
+      "name": "startup-analyst",
+      "description": "Expert startup business analyst specializing in market sizing, financial modeling, competitive analysis, and strategic planning for early-stage companies. Use PROACTIVELY when the user asks about market opportunity, TAM/SAM/SOM, financial projections, unit economics, competitive landscape, team planning, startup metrics, or business strategy for pre-seed through Series A startups."
+    },
+    {
+      "id": "stock-partner-lead",
+      "name": "stock-partner-lead",
+      "description": "Stock analysis roundtable orchestrator. When users ask about stocks, markets, portfolios, or investment decisions, create a team to orchestrate the 6 expert sub-agents for a roundtable discussion — do not answer alone."
+    },
+    {
+      "id": "stock-research",
+      "name": "stock-research",
+      "description": "你是一位A股资深股票研究员，负责对单只股票生成一份全方位深度研究报告。"
+    },
+    {
+      "id": "tag-agent",
+      "name": "tag-agent",
+      "description": "Normalizes and hierarchically organizes tag taxonomy for knowledge management systems. Maintains clean, consistent tag structures and consolidates duplicates."
+    },
+    {
+      "id": "task-checker",
+      "name": "task-checker",
+      "description": "Use this agent to verify that tasks marked as 'review' have been properly implemented according to their specifications. This agent performs quality assurance by checking implementations against requirements, running tests, and ensuring best practices are followed. <example>Context: A task has been marked as 'review' after implementation. user: 'Check if task 118 was properly implemented' assistant: 'I'll use the task-checker agent to verify the implementation meets all requirements.' <commentary>Tasks in 'review' status need verification before being marked as 'done'.</commentary></example> <example>Context: Multiple tasks are in review status. user: 'Verify all tasks that are ready for review' assistant: 'I'll deploy the task-checker to verify all tasks in review status.' <commentary>The checker ensures quality before tasks are marked complete.</commentary></example>"
+    },
+    {
+      "id": "task-decomposition-expert",
+      "name": "task-decomposition-expert",
+      "description": "Break down complex user goals into actionable tasks and identify optimal combinations of tools, agents, and workflows for system integration."
+    },
+    {
+      "id": "task-executor",
+      "name": "task-executor",
+      "description": "Use this agent when you need to implement, complete, or work on a specific task that has been identified by the task-orchestrator or when explicitly asked to execute a particular task. This agent focuses on the actual implementation and completion of individual tasks rather than planning or orchestration. Examples: <example>Context: The task-orchestrator has identified that task 2.3 'Implement user authentication' needs to be worked on next. user: 'Let's work on the authentication task' assistant: 'I'll use the task-executor agent to implement the user authentication task that was identified.' <commentary>Since we need to actually implement a specific task rather than plan or identify tasks, use the task-executor agent.</commentary></example> <example>Context: User wants to complete a specific subtask. user: 'Please implement the JWT token validation for task 2.3.1' assistant: 'I'll launch the task-executor agent to implement the JWT token validation subtask.' <commentary>The user is asking for specific implementation work on a known task, so the task-executor is appropriate.</commentary></example> <example>Context: After reviewing the task list, implementation is needed. user: 'Now let's actually build the API endpoint for user registration' assistant: 'I'll use the task-executor agent to implement the user registration API endpoint.' <commentary>Moving from planning to execution phase requires the task-executor agent.</commentary></example>"
+    },
+    {
+      "id": "task-orchestrator",
+      "name": "task-orchestrator",
+      "description": "Use this agent when you need to coordinate and manage the execution of Task Master tasks, especially when dealing with complex task dependencies and parallel execution opportunities. This agent should be invoked at the beginning of a work session to analyze the task queue, identify parallelizable work, and orchestrate the deployment of task-executor agents. It should also be used when tasks complete to reassess the dependency graph and deploy new executors as needed.\\n\\n<example>\\nContext: User wants to start working on their project tasks using Task Master\\nuser: \"Let's work on the next available tasks in the project\"\\nassistant: \"I'll use the task-orchestrator agent to analyze the task queue and coordinate execution\"\\n<commentary>\\nThe user wants to work on tasks, so the task-orchestrator should be deployed to analyze dependencies and coordinate execution.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: Multiple independent tasks are available in the queue\\nuser: \"Can we work on multiple tasks at once?\"\\nassistant: \"Let me deploy the task-orchestrator to analyze task dependencies and parallelize the work\"\\n<commentary>\\nWhen parallelization is mentioned or multiple tasks could be worked on, the orchestrator should coordinate the effort.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: A complex feature with many subtasks needs implementation\\nuser: \"Implement the authentication system tasks\"\\nassistant: \"I'll use the task-orchestrator to break down the authentication tasks and coordinate their execution\"\\n<commentary>\\nFor complex multi-task features, the orchestrator manages the overall execution strategy.\\n</commentary>\\n</example>"
+    },
+    {
+      "id": "tdd-orchestrator",
+      "name": "tdd-orchestrator",
+      "description": "Master TDD orchestrator specializing in red-green-refactor discipline, multi-agent workflow coordination, and comprehensive test-driven development practices. Enforces TDD best practices across teams with AI-assisted testing and modern frameworks. Use PROACTIVELY for TDD implementation and governance."
+    },
+    {
+      "id": "technical-researcher",
+      "name": "technical-researcher",
+      "description": "Analyze code repositories, technical documentation, and implementation details. Use PROACTIVELY for evaluating technical solutions, reviewing APIs, or assessing code quality."
+    },
+    {
+      "id": "technicals-analyst",
+      "name": "technicals-analyst",
+      "description": "你是技术面分析师（Technical Analyst）。你通过价格和成交量数据判断市场趋势和交易时机。"
+    },
+    {
+      "id": "temporal-python-pro",
+      "name": "temporal-python-pro",
+      "description": "Master Temporal workflow orchestration with Python SDK. Implements durable workflows, saga patterns, and distributed transactions. Covers async/await, testing strategies, and production deployment. Use PROACTIVELY for workflow design, microservice orchestration, or long-running processes."
+    },
+    {
+      "id": "terraform-specialist",
+      "name": "terraform-specialist",
+      "description": "Expert Terraform/OpenTofu specialist mastering advanced IaC automation, state management, and enterprise infrastructure patterns. Handles complex module design, multi-cloud deployments, GitOps workflows, policy as code, and CI/CD integration. Covers migration strategies, security best practices, and modern IaC ecosystems. Use PROACTIVELY for advanced IaC, state management, or infrastructure automation."
+    },
+    {
+      "id": "test-automator",
+      "name": "test-automator",
+      "description": "Master AI-powered test automation with modern frameworks, self-healing tests, and comprehensive quality engineering. Build scalable testing strategies with advanced CI/CD integration. Use PROACTIVELY for testing automation or quality assurance."
+    },
+    {
+      "id": "text-comparison-validator",
+      "name": "text-comparison-validator",
+      "description": "Compare extracted text from images with existing markdown files to ensure accuracy and consistency. Detects discrepancies, errors, and formatting inconsistencies."
+    },
+    {
+      "id": "thematic-hunter",
+      "name": "thematic-hunter",
+      "description": "你是一位A股主题投资策略研究员，擅长从市场主线出发，沿产业链挖掘投资机会，构建高质量标的池。"
+    },
+    {
+      "id": "timestamp-precision-specialist",
+      "name": "timestamp-precision-specialist",
+      "description": "Extract frame-accurate timestamps from audio/video files for podcast editing. Identifies precise cut points, detects speech boundaries, and ensures clean transitions."
+    },
+    {
+      "id": "trader",
+      "name": "trader",
+      "description": "你是一名交易员（Trader）。你的职责是综合所有分析报告和研究主管的投资计划，做出最终的具体交易建议。"
+    },
+    {
+      "id": "tutorial-engineer",
+      "name": "tutorial-engineer",
+      "description": "Creates step-by-step tutorials and educational content from code. Transforms complex concepts into progressive learning experiences with hands-on examples. Use PROACTIVELY for onboarding guides, feature tutorials, or concept explanations."
+    },
+    {
+      "id": "twitter-ai-influencer-manager",
+      "name": "twitter-ai-influencer-manager",
+      "description": "Interact with Twitter around AI thought leaders and influencers. Post tweets, search content, analyze influencer tweets, schedule posts, and engage with AI community."
+    },
+    {
+      "id": "type-design-analyzer",
+      "name": "type-design-analyzer",
+      "description": "Use this agent when you need expert analysis of type design in your codebase. Specifically use it: (1) when introducing a new type to ensure it follows best practices for encapsulation and invariant expression, (2) during pull request creation to review all types being added, (3) when refactoring existing types to improve their design quality. The agent will provide both qualitative feedback and quantitative ratings on encapsulation, invariant expression, usefulness, and enforcement.\\n\\n<example>\\nContext: Daisy is writing code that introduces a new UserAccount type and wants to ensure it has well-designed invariants.\\nuser: \"I've just created a new UserAccount type that handles user authentication and permissions\"\\nassistant: \"I'll use the type-design-analyzer agent to review the UserAccount type design\"\\n<commentary>\\nSince a new type is being introduced, use the type-design-analyzer to ensure it has strong invariants and proper encapsulation.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: Daisy is creating a pull request and wants to review all newly added types.\\nuser: \"I'm about to create a PR with several new data model types\"\\nassistant: \"Let me use the type-design-analyzer agent to review all the types being added in this PR\"\\n<commentary>\\nDuring PR creation with new types, use the type-design-analyzer to review their design quality.\\n</commentary>\\n</example>"
+    },
+    {
+      "id": "typescript-expert",
+      "name": "typescript-expert",
+      "description": "Write type-safe TypeScript with advanced type system features, generics, and utility types. Implements complex type inference, discriminated unions, and conditional types. Use PROACTIVELY for TypeScript development, type system design, or migrating JavaScript to TypeScript."
+    },
+    {
+      "id": "typescript-pro",
+      "name": "typescript-pro",
+      "description": "Master TypeScript with advanced types, generics, and strict type safety. Handles complex type systems, decorators, and enterprise-grade patterns. Use PROACTIVELY for TypeScript architecture, type inference optimization, or advanced typing patterns."
+    },
+    {
+      "id": "ui-ux-designer",
+      "name": "ui-ux-designer",
+      "description": "Create interface designs, wireframes, and design systems. Masters user research, accessibility standards, and modern design tools. Specializes in design tokens, component libraries, and inclusive design. Use PROACTIVELY for design systems, user flows, or interface optimization."
+    },
+    {
+      "id": "ui-visual-validator",
+      "name": "ui-visual-validator",
+      "description": "Rigorous visual validation expert specializing in UI testing, design system compliance, and accessibility verification. Masters screenshot analysis, visual regression testing, and component validation. Use PROACTIVELY to verify UI modifications have achieved their intended goals through comprehensive visual analysis."
+    },
+    {
+      "id": "unity-developer",
+      "name": "unity-developer",
+      "description": "Build Unity games with optimized C# scripts, efficient rendering, and proper asset management. Masters Unity 6 LTS, URP/HDRP pipelines, and cross-platform deployment. Handles gameplay systems, UI implementation, and platform optimization. Use PROACTIVELY for Unity performance issues, game mechanics, or cross-platform builds."
+    },
+    {
+      "id": "url-context-validator",
+      "name": "url-context-validator",
+      "description": "Validate URLs for both technical functionality and contextual appropriateness. Goes beyond link checking to analyze content relevance and alignment."
+    },
+    {
+      "id": "url-link-extractor",
+      "name": "url-link-extractor",
+      "description": "Find, extract, and catalog all URLs and links within website codebases. Includes internal links, external links, API endpoints, and asset references."
+    },
+    {
+      "id": "valuation-analyst",
+      "name": "valuation-analyst",
+      "description": "Valuation Analyst - ex-sell-side strategist with 12 years experience, prices stocks via PE Bands/PEG/EPS analysis anchored in macro asset allocation"
+    },
+    {
+      "id": "vector-database-engineer",
+      "name": "vector-database-engineer",
+      "description": "Migrated WorkBuddy expert: vector-database-engineer"
+    },
+    {
+      "id": "verifier",
+      "name": "verifier",
+      "description": "对抗验证 Agent。对扫描发现执行攻击链验证和对抗审查，支持按 sourceAgent 并行分片（verifier-vuln / verifier-logic / verifier-redteam）。"
+    },
+    {
+      "id": "visual-analysis-ocr",
+      "name": "visual-analysis-ocr",
+      "description": "Extract and analyze text content from PNG images while preserving original formatting and structure. Converts visual hierarchy into markdown format."
+    },
+    {
+      "id": "vuln-scan",
+      "name": "vuln-scan",
+      "description": "Source→Sink 数据流追踪漏洞审计 Agent。基于语义索引执行注入类（C1）漏洞的数据流追踪分析。"
+    },
+    {
+      "id": "warren-buffett",
+      "name": "warren-buffett",
+      "description": "你是沃伦·巴菲特（Warren Buffett）投资分析智能体。你以巴菲特的价值投资原则做出投资决策。"
+    },
+    {
+      "id": "weixin-minigame-helper",
+      "name": "weixin-minigame-helper",
+      "description": "你是微信小游戏预览和调试的专用 Agent。你的职责是帮助用户运行、调试、测试和发布微信小游戏。"
+    },
+    {
+      "id": "wordpress-developer",
+      "name": "wordpress-developer",
+      "description": "Build professional WordPress solutions with custom themes, plugins, and advanced functionality. Expert in WordPress architecture, custom post types, block development, performance optimization, and security. Use PROACTIVELY for WordPress development, custom plugin creation, or WP architecture."
+    },
+    {
+      "id": "xiaohongshu-operations-expert",
+      "name": "xiaohongshu-operations-expert",
+      "description": "Expert Xiaohongshu marketing specialist focused on lifestyle content, trend-driven strategies, and authentic community engagement. Masters micro-content creation and drives viral growth through aesthetic storytelling."
+    }
+  ]
+}

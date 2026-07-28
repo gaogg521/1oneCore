@@ -1,6 +1,7 @@
 pub mod acp_session;
 pub mod agent_metadata;
 pub mod assistant;
+pub mod assistant_marketplace;
 pub mod channel;
 pub mod claude_bridge_config;
 mod client_preference;
@@ -18,6 +19,7 @@ pub mod skill;
 mod sqlite_acp_session;
 mod sqlite_agent_metadata;
 mod sqlite_assistant;
+mod sqlite_assistant_marketplace;
 mod sqlite_channel;
 mod sqlite_claude_bridge_config;
 mod sqlite_client_preference;
@@ -42,6 +44,7 @@ pub use assistant::{
     IAssistantDefinitionRepository, IAssistantOverlayRepository, IAssistantOverrideRepository,
     IAssistantPreferenceRepository, IAssistantRepository,
 };
+pub use assistant_marketplace::IAssistantMarketplaceRepository;
 pub use channel::IChannelRepository;
 pub use claude_bridge_config::IClaudeBridgeConfigRepository;
 pub use client_preference::IClientPreferenceRepository;
@@ -64,6 +67,7 @@ pub use sqlite_assistant::{
     SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository, SqliteAssistantOverrideRepository,
     SqliteAssistantPreferenceRepository, SqliteAssistantRepository,
 };
+pub use sqlite_assistant_marketplace::SqliteAssistantMarketplaceRepository;
 pub use sqlite_channel::SqliteChannelRepository;
 pub use sqlite_claude_bridge_config::SqliteClaudeBridgeConfigRepository;
 pub use sqlite_client_preference::SqliteClientPreferenceRepository;

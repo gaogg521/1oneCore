@@ -9,6 +9,7 @@ use std::time::Instant;
 use aionui_ai_agent::{AgentRouterState, AgentService, RemoteAgentRouterState, RemoteAgentService};
 use aionui_assistant::{
     AssistantAgentCatalogPort, AssistantError, AssistantRouterState, AssistantService, BuiltinAssistantRegistry,
+    materialize_marketplace_personas,
 };
 use aionui_auth::extract_token_from_ws_headers;
 use aionui_channel::ChannelRouterState;
@@ -17,14 +18,14 @@ use aionui_codex_bridge::{CodexBridgeRouterState, CodexBridgeService};
 use aionui_conversation::{ConversationRouterState, ConversationService};
 use aionui_cron::{CronEventEmitter, CronRouterState, service::CronServiceDeps};
 use aionui_db::{
-    IAcpSessionRepository, IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository,
-    IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository, IConversationRepository,
-    IProviderRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
-    SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository, SqliteAssistantOverrideRepository,
-    SqliteAssistantPreferenceRepository, SqliteAssistantRepository, SqliteClaudeBridgeConfigRepository,
-    SqliteClientPreferenceRepository, SqliteCodexBridgeConfigRepository, SqliteConversationRepository,
-    SqliteFeedbackDiagnosticsRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
-    SqliteSettingsRepository,
+    IAcpSessionRepository, IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantMarketplaceRepository,
+    IAssistantOverlayRepository, IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository,
+    IConversationRepository, IProviderRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
+    SqliteAssistantDefinitionRepository, SqliteAssistantMarketplaceRepository, SqliteAssistantOverlayRepository,
+    SqliteAssistantOverrideRepository, SqliteAssistantPreferenceRepository, SqliteAssistantRepository,
+    SqliteClaudeBridgeConfigRepository, SqliteClientPreferenceRepository, SqliteCodexBridgeConfigRepository,
+    SqliteConversationRepository, SqliteFeedbackDiagnosticsRepository, SqliteProviderRepository,
+    SqliteRemoteAgentRepository, SqliteSettingsRepository,
 };
 use aionui_extension::{
     AssistantRuleDispatcher, ExtensionRegistry, ExtensionRouterState, ExtensionStateStore, ExternalPathsManager,
@@ -203,6 +204,12 @@ pub async fn build_module_states(
     assistant.service.bootstrap_assistant_storage().await.map_err(|error| {
         RouterBuildError::new("router.assistant.bootstrap", "failed to bootstrap assistant storage").with_source(error)
     })?;
+    materialize_marketplace_personas(assistant.marketplace_repo.as_ref())
+        .await
+        .map_err(|error| {
+            RouterBuildError::new("router.assistant.marketplace.bootstrap", "failed to materialize marketplace catalog")
+                .with_source(error)
+        })?;
     let cron = build_cron_state(services);
     // Cron builds its own ConversationService (not a clone of the shared one),
     // so wire the assistant rule dispatcher here — otherwise scheduled runs
@@ -339,7 +346,7 @@ pub fn build_assistant_state(services: &AppServices) -> AssistantRouterState {
     // where dev wrote rules to the release `~/.aionui/` while the db lived
     // under `~/.aionui-dev/`).
     let service = Arc::new(AssistantService::new(
-        pool,
+        pool.clone(),
         aionui_assistant::service::AssistantServiceDeps {
             definition_repo,
             state_repo,
@@ -354,7 +361,9 @@ pub fn build_assistant_state(services: &AppServices) -> AssistantRouterState {
         },
         services.data_dir.clone(),
     ));
-    AssistantRouterState { service }
+    let marketplace_repo: Arc<dyn IAssistantMarketplaceRepository> =
+        Arc::new(SqliteAssistantMarketplaceRepository::new(pool));
+    AssistantRouterState { service, marketplace_repo }
 }
 
 /// Build the default `SystemRouterState` from application services.

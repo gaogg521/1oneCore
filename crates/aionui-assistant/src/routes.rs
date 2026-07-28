@@ -12,7 +12,7 @@ use axum::routing::{get, patch, post};
 
 use aionui_api_types::{
     ApiResponse, AssistantDetailResponse, AssistantResponse, CreateAssistantRequest, ImportAssistantsRequest,
-    ImportAssistantsResult, SetAssistantStateRequest, UpdateAssistantRequest,
+    ImportAssistantsResult, MarketplacePersonaResponse, SetAssistantStateRequest, UpdateAssistantRequest,
 };
 use aionui_common::ApiError;
 
@@ -28,6 +28,8 @@ pub fn assistant_routes(state: AssistantRouterState) -> Router {
         .route("/api/assistants/{id}/avatar", get(get_avatar))
         .route("/api/assistants/import", post(import))
         .route("/api/assistants/import-personas", post(import_personas))
+        .route("/api/assistants/marketplace", get(marketplace_list))
+        .route("/api/assistants/marketplace/{id}/install", post(marketplace_install))
         .with_state(state)
 }
 
@@ -120,6 +122,73 @@ async fn import_personas(
     let Json(req) = body.map_err(ApiError::from)?;
     let result = state.service.import_personas(req).await?;
     Ok(Json(ApiResponse::ok(result)))
+}
+
+/// Browse the expert marketplace catalog. Read-only — never touches the
+/// caller's own assistant list.
+async fn marketplace_list(
+    State(state): State<AssistantRouterState>,
+) -> Result<Json<ApiResponse<Vec<MarketplacePersonaResponse>>>, ApiError> {
+    let entries = state
+        .marketplace_repo
+        .list()
+        .await
+        .map_err(|e| ApiError::Internal(format!("list marketplace personas: {e}")))?;
+
+    let mut result = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let installed = state.service.exists(&entry.id).await?;
+        result.push(MarketplacePersonaResponse {
+            id: entry.id,
+            name: entry.name,
+            description: entry.description,
+            installed,
+        });
+    }
+    Ok(Json(ApiResponse::ok(result)))
+}
+
+/// Materialize one marketplace catalog entry into a real, owned assistant.
+/// Reuses the same upsert-by-id semantics as `import_personas` — installing
+/// twice just re-syncs the row, it never duplicates.
+async fn marketplace_install(
+    State(state): State<AssistantRouterState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<AssistantResponse>>, ApiError> {
+    let entry = state
+        .marketplace_repo
+        .get(&id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("get marketplace persona: {e}")))?
+        .ok_or_else(|| ApiError::NotFound(format!("marketplace persona '{id}' not found")))?;
+
+    state
+        .service
+        .import_personas(ImportAssistantsRequest {
+            assistants: vec![CreateAssistantRequest {
+                id: Some(entry.id.clone()),
+                name: entry.name,
+                description: entry.description,
+                avatar: None,
+                agent_id: None,
+                enabled_skills: None,
+                custom_skill_names: None,
+                disabled_builtin_skills: None,
+                prompts: None,
+                models: None,
+                name_i18n: None,
+                description_i18n: None,
+                prompts_i18n: None,
+                recommended_prompts: None,
+                recommended_prompts_i18n: None,
+                defaults: None,
+                rule_content: Some(entry.rule_content),
+            }],
+        })
+        .await?;
+
+    let installed = state.service.get(&entry.id).await?;
+    Ok(Json(ApiResponse::ok(installed)))
 }
 
 /// Serve the raw avatar bytes for an assistant. Content-Type inferred from the

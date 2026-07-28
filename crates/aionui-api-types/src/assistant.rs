@@ -397,6 +397,18 @@ pub struct ImportError {
     pub error: String,
 }
 
+/// `GET /api/assistants/marketplace` — a browsable catalog entry. Never a
+/// real owned assistant; `installed` reflects whether the caller has already
+/// installed this id via `POST /api/assistants/marketplace/{id}/install`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplacePersonaResponse {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub installed: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

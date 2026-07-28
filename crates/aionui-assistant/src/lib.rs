@@ -9,6 +9,7 @@
 pub mod agent_catalog;
 pub mod builtin;
 pub mod error;
+pub mod marketplace;
 pub mod routes;
 pub mod service;
 pub mod state;
@@ -16,5 +17,6 @@ pub mod state;
 pub use agent_catalog::AssistantAgentCatalogPort;
 pub use builtin::{AvatarAsset, BuiltinAssistant, BuiltinAssistantRegistry};
 pub use error::AssistantError;
+pub use marketplace::{MarketplacePersona, load_marketplace_manifest, materialize_marketplace_personas};
 pub use routes::{AssistantRouterState, assistant_routes};
 pub use service::AssistantService;

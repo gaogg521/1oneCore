@@ -307,6 +307,8 @@ async fn fixture() -> Fixture {
         .await
         .expect("seed provider");
     let builtin = Arc::new(BuiltinAssistantRegistry::load_from_dir(builtin_assets_dir.clone()));
+    let marketplace_repo: Arc<dyn aionui_db::IAssistantMarketplaceRepository> =
+        Arc::new(aionui_db::SqliteAssistantMarketplaceRepository::new(pool.clone()));
     let service = Arc::new(AssistantService::new(
         pool,
         aionui_assistant::service::AssistantServiceDeps {
@@ -330,6 +332,7 @@ async fn fixture() -> Fixture {
     service.bootstrap_assistant_storage().await.unwrap();
     states.assistant = AssistantRouterState {
         service: service.clone(),
+        marketplace_repo,
     };
     // Rewire the skill-router dispatcher so assistant-rule / assistant-skill
     // endpoints route through the test-configured service.
@@ -1585,6 +1588,158 @@ async fn delete_skill_extension_registry_id_behaves_like_user_id() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ===========================================================================
+// Expert marketplace — /api/assistants/marketplace
+// ===========================================================================
+
+async fn seed_marketplace_persona(fx: &Fixture, id: &str, name: &str, rule_content: &str) {
+    let repo = aionui_db::SqliteAssistantMarketplaceRepository::new(fx.services.database.pool().clone());
+    aionui_db::IAssistantMarketplaceRepository::upsert_many(
+        &repo,
+        &[aionui_db::UpsertMarketplacePersonaParams {
+            id,
+            source: "workbuddy",
+            name,
+            description: Some("a marketplace test persona"),
+            rule_content,
+        }],
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn marketplace_list_returns_seeded_catalog_with_installed_flag_false() {
+    let fx = fixture().await;
+    seed_marketplace_persona(&fx, "mkt-a", "Marketplace A", "You are marketplace persona A.").await;
+    seed_marketplace_persona(&fx, "mkt-b", "Marketplace B", "You are marketplace persona B.").await;
+
+    let resp = fx
+        .app
+        .clone()
+        .oneshot(get_with_token("/api/assistants/marketplace", &fx.token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    // The real app bootstrap (`build_app()` -> `build_module_states()`) has
+    // already materialized the shipped embedded catalog (~281 real
+    // WorkBuddy entries) into this same in-memory pool before this test's
+    // `fixture()` swaps in its own `assistant_definitions`-scoped repos —
+    // only the marketplace table is shared, so assert our two seeded rows
+    // are present rather than asserting an exact total count.
+    let a = find_id(&json["data"], "mkt-a").expect("mkt-a should be listed");
+    assert_eq!(a["name"], "Marketplace A");
+    assert_eq!(a["installed"], false);
+    let b = find_id(&json["data"], "mkt-b").expect("mkt-b should be listed");
+    assert_eq!(b["name"], "Marketplace B");
+    assert_eq!(b["installed"], false);
+
+    // Browsing the marketplace must never create an assistant_definitions row.
+    let assistants_resp = fx
+        .app
+        .clone()
+        .oneshot(get_with_token("/api/assistants", &fx.token))
+        .await
+        .unwrap();
+    let assistants_json = body_json(assistants_resp).await;
+    assert!(
+        find_id(&assistants_json["data"], "mkt-a").is_none(),
+        "marketplace browsing must not materialize a real assistant"
+    );
+}
+
+#[tokio::test]
+async fn marketplace_install_materializes_assistant_and_flips_installed_flag() {
+    let fx = fixture().await;
+    seed_marketplace_persona(&fx, "mkt-a", "Marketplace A", "You are marketplace persona A.").await;
+
+    let resp = fx
+        .app
+        .clone()
+        .oneshot(json_with_token(
+            "POST",
+            "/api/assistants/marketplace/mkt-a/install",
+            json!({}),
+            &fx.token,
+            &fx.csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["data"]["id"], "mkt-a");
+    assert_eq!(json["data"]["name"], "Marketplace A");
+
+    // Now a real row in the normal assistant list.
+    let assistants_resp = fx
+        .app
+        .clone()
+        .oneshot(get_with_token("/api/assistants", &fx.token))
+        .await
+        .unwrap();
+    let assistants_json = body_json(assistants_resp).await;
+    assert!(find_id(&assistants_json["data"], "mkt-a").is_some());
+
+    // installed flag flips on the marketplace listing.
+    let market_resp = fx
+        .app
+        .clone()
+        .oneshot(get_with_token("/api/assistants/marketplace", &fx.token))
+        .await
+        .unwrap();
+    let market_json = body_json(market_resp).await;
+    let a = find_id(&market_json["data"], "mkt-a").unwrap();
+    assert_eq!(a["installed"], true);
+
+    // Installing twice re-syncs, never duplicates.
+    let resp2 = fx
+        .app
+        .clone()
+        .oneshot(json_with_token(
+            "POST",
+            "/api/assistants/marketplace/mkt-a/install",
+            json!({}),
+            &fx.token,
+            &fx.csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let assistants_resp2 = fx
+        .app
+        .clone()
+        .oneshot(get_with_token("/api/assistants", &fx.token))
+        .await
+        .unwrap();
+    let assistants_json2 = body_json(assistants_resp2).await;
+    let count = assistants_json2["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["id"] == "mkt-a")
+        .count();
+    assert_eq!(count, 1, "re-installing must not duplicate the assistant row");
+}
+
+#[tokio::test]
+async fn marketplace_install_unknown_id_returns_404() {
+    let fx = fixture().await;
+    let resp = fx
+        .app
+        .clone()
+        .oneshot(json_with_token(
+            "POST",
+            "/api/assistants/marketplace/does-not-exist/install",
+            json!({}),
+            &fx.token,
+            &fx.csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 // ===========================================================================

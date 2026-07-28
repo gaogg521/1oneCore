@@ -1,6 +1,7 @@
 mod acp_session;
 mod agent_metadata;
 mod assistant;
+mod assistant_marketplace;
 mod channel;
 mod claude_bridge_config;
 mod client_preference;
@@ -27,6 +28,7 @@ pub use assistant::{
     CreateAssistantParams, UpdateAssistantParams, UpsertAssistantDefinitionParams, UpsertAssistantOverlayParams,
     UpsertAssistantPreferenceParams, UpsertOverrideParams,
 };
+pub use assistant_marketplace::{MarketplacePersonaRow, UpsertMarketplacePersonaParams};
 pub use channel::{AssistantSessionRow, AssistantUserRow, ChannelPluginRow, PairingCodeRow};
 pub use claude_bridge_config::ClaudeBridgeConfig;
 pub use client_preference::ClientPreference;

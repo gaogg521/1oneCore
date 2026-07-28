@@ -737,6 +737,14 @@ impl AssistantService {
         Ok(result)
     }
 
+    /// True if `id` already has a materialized `assistant_definitions` row.
+    /// Used by the marketplace catalog's "already installed" indicator —
+    /// deliberately not `get()`, which does avatar/projection resolution
+    /// this check doesn't need.
+    pub async fn exists(&self, id: &str) -> Result<bool, AssistantError> {
+        Ok(self.definition_repo.get_by_assistant_id(id).await?.is_some())
+    }
+
     pub async fn get(&self, id: &str) -> Result<AssistantResponse, AssistantError> {
         let projections = self.reconcile_generated_assistants().await?;
         if let Some(definition) = self.definition_repo.get_by_assistant_id(id).await? {
