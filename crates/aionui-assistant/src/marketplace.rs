@@ -35,6 +35,14 @@ struct MarketplaceManifestEntry {
     name: String,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    role_name: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    avatar: bool,
 }
 
 /// A single catalog entry with its rule content resolved from the embedded
@@ -45,6 +53,10 @@ pub struct MarketplacePersona {
     pub name: String,
     pub description: Option<String>,
     pub rule_content: String,
+    pub display_name: Option<String>,
+    pub role_name: Option<String>,
+    pub category: Option<String>,
+    pub has_avatar: bool,
 }
 
 /// Load and parse the embedded marketplace manifest. Entries whose rule file
@@ -78,9 +90,21 @@ pub fn load_marketplace_manifest() -> Vec<MarketplacePersona> {
                 name: entry.name,
                 description: entry.description,
                 rule_content,
+                display_name: entry.display_name,
+                role_name: entry.role_name,
+                category: entry.category,
+                has_avatar: entry.avatar,
             })
         })
         .collect()
+}
+
+/// Read the raw avatar bytes for a marketplace persona from the embedded
+/// bundle (`avatars/{id}.webp`). Returns `None` when the manifest doesn't
+/// declare an avatar for this id or the file is missing.
+pub fn marketplace_avatar_bytes(id: &str) -> Option<Vec<u8>> {
+    let path = format!("avatars/{id}.webp");
+    MARKETPLACE_ASSETS.get_file(&path).map(|f| f.contents().to_vec())
 }
 
 /// Upsert the full embedded catalog into `assistant_marketplace_personas`.
@@ -102,10 +126,22 @@ pub async fn materialize_marketplace_personas(
             name: &p.name,
             description: p.description.as_deref(),
             rule_content: &p.rule_content,
+            display_name: p.display_name.as_deref(),
+            role_name: p.role_name.as_deref(),
+            category: p.category.as_deref(),
+            has_avatar: p.has_avatar,
         })
         .collect();
 
     repo.upsert_many(&params).await?;
+
+    // upsert_many never deletes — without this, swapping the manifest (as
+    // happened once already, from a generic template catalog to this
+    // WorkBuddy export) leaves the previous generation's ids as permanent
+    // orphaned rows.
+    let keep_ids: Vec<&str> = personas.iter().map(|p| p.id.as_str()).collect();
+    repo.delete_missing(&keep_ids).await?;
+
     Ok(())
 }
 
@@ -118,14 +154,23 @@ mod tests {
         let personas = load_marketplace_manifest();
         assert!(
             personas.len() > 200,
-            "expected the shipped WorkBuddy catalog (~281 entries), got {}",
+            "expected the shipped WorkBuddy catalog (~252 entries), got {}",
             personas.len()
         );
         let sample = personas
             .iter()
-            .find(|p| p.id == "a-share-advisor")
+            .find(|p| p.id == "AShareAnalysis")
             .expect("known persona id should be present");
         assert!(!sample.rule_content.trim().is_empty());
         assert!(sample.name.trim() != "");
+        assert_eq!(sample.display_name.as_deref(), Some("A股研究团队"));
+        assert_eq!(sample.category.as_deref(), Some("金融投资"));
+        assert!(sample.has_avatar);
+    }
+
+    #[test]
+    fn marketplace_avatar_bytes_returns_data_for_known_id_and_none_for_unknown() {
+        assert!(marketplace_avatar_bytes("AShareAnalysis").is_some());
+        assert!(marketplace_avatar_bytes("does-not-exist").is_none());
     }
 }

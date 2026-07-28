@@ -30,6 +30,7 @@ pub fn assistant_routes(state: AssistantRouterState) -> Router {
         .route("/api/assistants/import-personas", post(import_personas))
         .route("/api/assistants/marketplace", get(marketplace_list))
         .route("/api/assistants/marketplace/{id}/install", post(marketplace_install))
+        .route("/api/assistants/marketplace/{id}/avatar", get(marketplace_avatar))
         .with_state(state)
 }
 
@@ -138,11 +139,18 @@ async fn marketplace_list(
     let mut result = Vec::with_capacity(entries.len());
     for entry in entries {
         let installed = state.service.exists(&entry.id).await?;
+        let avatar = entry
+            .has_avatar
+            .then(|| format!("/api/assistants/marketplace/{}/avatar", entry.id));
         result.push(MarketplacePersonaResponse {
             id: entry.id,
             name: entry.name,
             description: entry.description,
             installed,
+            display_name: entry.display_name,
+            role_name: entry.role_name,
+            category: entry.category,
+            avatar,
         });
     }
     Ok(Json(ApiResponse::ok(result)))
@@ -162,12 +170,19 @@ async fn marketplace_install(
         .map_err(|e| ApiError::Internal(format!("get marketplace persona: {e}")))?
         .ok_or_else(|| ApiError::NotFound(format!("marketplace persona '{id}' not found")))?;
 
+    // Prefer the catalog's Chinese display name for the installed assistant's
+    // actual `name` — other surfaces (quick-select chips, conversation
+    // header) render `name` directly, not the marketplace card's display
+    // override, so without this the assistant reverts to the raw
+    // PascalCase id once installed.
+    let installed_name = entry.display_name.clone().unwrap_or_else(|| entry.name.clone());
+
     state
         .service
         .import_personas(ImportAssistantsRequest {
             assistants: vec![CreateAssistantRequest {
                 id: Some(entry.id.clone()),
-                name: entry.name,
+                name: installed_name,
                 description: entry.description,
                 avatar: None,
                 agent_id: None,
@@ -187,8 +202,31 @@ async fn marketplace_install(
         })
         .await?;
 
+    // `import_personas` intentionally never sets an avatar (see above) — the
+    // catalog's own avatar bytes are wired in as a separate step so the
+    // marketplace module stays the sole owner of its embedded assets.
+    if entry.has_avatar {
+        if let Some(bytes) = crate::marketplace::marketplace_avatar_bytes(&entry.id) {
+            state.service.set_avatar_from_bytes(&entry.id, &bytes, "webp").await?;
+        }
+    }
+
     let installed = state.service.get(&entry.id).await?;
     Ok(Json(ApiResponse::ok(installed)))
+}
+
+/// Serve the raw avatar bytes for a marketplace catalog entry (not yet an
+/// owned assistant — see [`marketplace_install`] for the "install" path).
+async fn marketplace_avatar(Path(id): Path<String>) -> Result<Response, ApiError> {
+    let bytes = crate::marketplace::marketplace_avatar_bytes(&id)
+        .ok_or_else(|| ApiError::NotFound(format!("marketplace avatar '{id}' not found")))?;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type_for_extension(Some("webp")))
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(bytes))
+        .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
 /// Serve the raw avatar bytes for an assistant. Content-Type inferred from the

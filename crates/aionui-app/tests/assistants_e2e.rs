@@ -1604,6 +1604,10 @@ async fn seed_marketplace_persona(fx: &Fixture, id: &str, name: &str, rule_conte
             name,
             description: Some("a marketplace test persona"),
             rule_content,
+            display_name: None,
+            role_name: None,
+            category: None,
+            has_avatar: false,
         }],
     )
     .await

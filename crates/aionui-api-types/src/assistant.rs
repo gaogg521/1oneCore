@@ -407,6 +407,16 @@ pub struct MarketplacePersonaResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub installed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Relative avatar byte route (`/api/assistants/marketplace/{id}/avatar`),
+    /// present only when the catalog entry actually ships an avatar image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
 }
 
 #[cfg(test)]

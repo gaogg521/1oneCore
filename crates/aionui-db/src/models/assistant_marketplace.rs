@@ -13,6 +13,10 @@ pub struct MarketplacePersonaRow {
     pub name: String,
     pub description: Option<String>,
     pub rule_content: String,
+    pub display_name: Option<String>,
+    pub role_name: Option<String>,
+    pub category: Option<String>,
+    pub has_avatar: bool,
     pub created_at: TimestampMs,
     pub updated_at: TimestampMs,
 }
@@ -25,4 +29,8 @@ pub struct UpsertMarketplacePersonaParams<'a> {
     pub name: &'a str,
     pub description: Option<&'a str>,
     pub rule_content: &'a str,
+    pub display_name: Option<&'a str>,
+    pub role_name: Option<&'a str>,
+    pub category: Option<&'a str>,
+    pub has_avatar: bool,
 }

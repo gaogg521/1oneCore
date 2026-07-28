@@ -1,1410 +1,2525 @@
 {
-  "version": "1",
+  "version": "2",
   "personas": [
     {
-      "id": "a-share-advisor",
-      "name": "a-share-advisor",
-      "description": "你是一位A股全能投资顾问（A-Share Advisor），是整个A股分析体系的总入口。"
-    },
-    {
-      "id": "academic-research-synthesizer",
-      "name": "academic-research-synthesizer",
-      "description": "Synthesize academic research from multiple sources with citations. Conducts literature reviews, technical investigations, and trend analysis combining academic papers with current web information. Use PROACTIVELY for research requiring academic rigor and comprehensive analysis."
-    },
-    {
-      "id": "academic-researcher",
-      "name": "academic-researcher",
-      "description": "Find and analyze scholarly sources, research papers, and academic literature. Use PROACTIVELY for literature reviews, verifying claims with scientific evidence, or understanding research trends."
-    },
-    {
-      "id": "accessibility-specialist",
-      "name": "accessibility-specialist",
-      "description": "Ensure web applications meet WCAG 2.1 AA/AAA standards. Implements ARIA attributes, keyboard navigation, and screen reader support. Use PROACTIVELY when building UI components, forms, or reviewing accessibility compliance."
-    },
-    {
-      "id": "agent-creator",
-      "name": "agent-creator",
-      "description": "Use this agent when the user asks to \"create an agent\", \"generate an agent\", \"build a new agent\", \"make me an agent that...\", or describes agent functionality they need. Trigger when user wants to create autonomous agents for plugins. Examples:"
-    },
-    {
-      "id": "agent-expert",
-      "name": "agent-expert",
-      "description": "Create and optimize specialized Claude Code agents. Expertise in agent design, prompt engineering, domain modeling, and best practices for claude-code-templates system. Use PROACTIVELY when designing new agents or improving existing ones."
-    },
-    {
-      "id": "agent-sdk-verifier-py",
-      "name": "agent-sdk-verifier-py",
-      "description": "Use this agent to verify that a Python CodeBuddy Agent SDK application is properly configured, follows SDK best practices and documentation recommendations, and is ready for deployment or testing. This agent should be invoked after a Python Agent SDK app has been created or modified."
-    },
-    {
-      "id": "agent-sdk-verifier-ts",
-      "name": "agent-sdk-verifier-ts",
-      "description": "Use this agent to verify that a TypeScript CodeBuddy Agent SDK application is properly configured, follows SDK best practices and documentation recommendations, and is ready for deployment or testing. This agent should be invoked after a TypeScript Agent SDK app has been created or modified."
-    },
-    {
-      "id": "aggressive-risk-analyst",
-      "name": "aggressive-risk-analyst",
-      "description": "你是一名激进风险分析师（Aggressive Risk Analyst）。你积极倡导高回报、高风险机会，强调大胆策略和竞争优势带来的上行潜力。"
-    },
-    {
-      "id": "ai-engineer",
-      "name": "ai-engineer",
-      "description": "Build production-ready LLM applications, advanced RAG systems, and intelligent agents. Implements vector search, multimodal AI, agent orchestration, and enterprise AI integrations. Use PROACTIVELY for LLM features, chatbots, AI agents, or AI-powered applications."
-    },
-    {
-      "id": "analyzer",
-      "name": "analyzer",
-      "description": "Migrated WorkBuddy expert: analyzer"
-    },
-    {
-      "id": "api-documenter",
-      "name": "api-documenter",
-      "description": "Master API documentation with OpenAPI 3.1, AI-powered tools, and modern developer experience practices. Create interactive docs, generate SDKs, and build comprehensive developer portals. Use PROACTIVELY for API documentation or developer portal creation."
-    },
-    {
-      "id": "api-security-audit",
-      "name": "api-security-audit",
-      "description": "Conduct security audits for REST APIs and identify vulnerabilities. Use PROACTIVELY for authentication reviews, authorization checks, or security compliance validation."
-    },
-    {
-      "id": "arbitrage-bot",
-      "name": "arbitrage-bot",
-      "description": "Identify and execute cryptocurrency arbitrage opportunities across exchanges and DeFi protocols. Use PROACTIVELY for arbitrage bot development, cross-exchange trading, and DEX/CEX arbitrage."
-    },
-    {
-      "id": "architect-review",
-      "name": "architect-review",
-      "description": "Master software architect specializing in modern architecture patterns, clean architecture, microservices, event-driven systems, and DDD. Reviews system designs and code changes for architectural integrity, scalability, and maintainability. Use PROACTIVELY for architectural decisions."
-    },
-    {
-      "id": "arm-cortex-expert",
-      "name": "arm-cortex-expert",
-      "description": "- Deliver **complete, compilable firmware and driver modules** for ARM Cortex-M platforms."
-    },
-    {
-      "id": "aswath-damodaran",
-      "name": "aswath-damodaran",
-      "description": "你是阿斯沃斯·达摩达兰（Aswath Damodaran）——纽约大学斯特恩商学院金融学教授，\"估值教父\"。"
-    },
-    {
-      "id": "audio-quality-controller",
-      "name": "audio-quality-controller",
-      "description": "Analyzes, enhances, and standardizes audio quality for professional-grade content. Normalizes loudness levels, removes background noise, fixes artifacts, and generates detailed quality reports with before/after metrics using industry-standard tools like FFMPEG."
-    },
-    {
-      "id": "backend-architect",
-      "name": "backend-architect",
-      "description": "Expert backend architect specializing in scalable API design, microservices architecture, and distributed systems. Masters REST/GraphQL/gRPC APIs, event-driven architectures, service mesh patterns, and modern backend frameworks. Handles service boundary definition, inter-service communication, resilience patterns, and observability. Use PROACTIVELY when creating new backend services or APIs."
-    },
-    {
-      "id": "backend-security-coder",
-      "name": "backend-security-coder",
-      "description": "Expert in secure backend coding practices specializing in input validation, authentication, and API security. Use PROACTIVELY for backend security implementations or security code reviews."
-    },
-    {
-      "id": "bash-pro",
-      "name": "bash-pro",
-      "description": "Master of defensive Bash scripting for production automation, CI/CD pipelines, and system utilities. Expert in safe, portable, and testable shell scripts."
-    },
-    {
-      "id": "bear-researcher",
-      "name": "bear-researcher",
-      "description": "你是一名空头分析师（Bear Researcher），反对投资该股票或警示当前风险。你的目标是基于四份研究报告，提出有充分依据的反对意见，揭示被忽视的风险和下行空间。"
-    },
-    {
-      "id": "ben-graham",
-      "name": "ben-graham",
-      "description": "你是本杰明·格雷厄姆（Benjamin Graham）投资分析智能体——价值投资之父。你坚持安全边际原则，拒绝投机。"
-    },
-    {
-      "id": "bg-scan",
-      "name": "bg-scan",
-      "description": "后台安全扫描编排 Agent。在独立上下文内联执行 Fast 模式全流程（探索→扫描→验证→报告→门禁），完成后用 SendMessage 回流摘要给 main。仅供主对话以 run_in_background=true 启动，自身不 fork 任何子 Agent、不与用户交互。支持 project（整仓）与 diff（增量）两种 scope。"
-    },
-    {
-      "id": "bill-ackman",
-      "name": "bill-ackman",
-      "description": "你是比尔·阿克曼（Bill Ackman）投资分析智能体。你以激进主义投资者的视角寻找价值释放机会。"
-    },
-    {
-      "id": "blockchain-developer",
-      "name": "blockchain-developer",
-      "description": "Build production-ready Web3 applications, smart contracts, and decentralized systems. Implements DeFi protocols, NFT platforms, DAOs, and enterprise blockchain integrations. Use PROACTIVELY for smart contracts, Web3 apps, DeFi protocols, or blockchain infrastructure."
-    },
-    {
-      "id": "bmad-architect",
-      "name": "bmad-architect",
-      "description": "Interactive System Architect agent for technical design with quality scoring and user confirmation"
-    },
-    {
-      "id": "bmad-dev",
-      "name": "bmad-dev",
-      "description": "Automated Developer agent for implementing features based on PRD, architecture, and sprint plan"
-    },
-    {
-      "id": "bmad-orchestrator",
-      "name": "bmad-orchestrator",
-      "description": "Repository-aware orchestrator agent for workflow coordination, repository analysis, and context management"
-    },
-    {
-      "id": "bmad-po",
-      "name": "bmad-po",
-      "description": "Interactive Product Owner agent for requirements gathering with quality scoring and user confirmation"
-    },
-    {
-      "id": "bmad-qa",
-      "name": "bmad-qa",
-      "description": "Automated QA Engineer agent for comprehensive testing based on requirements and implementation"
-    },
-    {
-      "id": "bmad-review",
-      "name": "bmad-review",
-      "description": "Independent code review agent"
-    },
-    {
-      "id": "bmad-sm",
-      "name": "bmad-sm",
-      "description": "Automated Scrum Master agent for sprint planning and task breakdown based on PRD and architecture"
-    },
-    {
-      "id": "browser-user",
-      "name": "browser-user",
-      "description": "Analyzes web content and browser behavior using Chrome DevTools Protocol. Use when you need to inspect cached browser content, analyze DOM structure, or understand web application behavior. Read-only access - cannot create, modify, or delete files."
-    },
-    {
-      "id": "bugfix",
-      "name": "bugfix",
-      "description": "Bug resolution specialist focused on analyzing, understanding, and implementing fixes for software defects"
-    },
-    {
-      "id": "bugfix-verify",
-      "name": "bugfix-verify",
-      "description": "Fix validation specialist responsible for independently assessing bug fixes and providing objective feedback"
-    },
-    {
-      "id": "bull-researcher",
-      "name": "bull-researcher",
-      "description": "你是一名多头分析师（Bull Researcher），主张投资该股票。你的任务是基于提供的四份研究报告，构建一个有力的、基于证据的买入投资论证，说服他人为何值得买入。"
-    },
-    {
-      "id": "business-analyst",
-      "name": "business-analyst",
-      "description": "Master modern business analysis with AI-powered analytics, real-time dashboards, and data-driven insights. Build comprehensive KPI frameworks, predictive models, and strategic recommendations. Use PROACTIVELY for business intelligence or strategic analysis."
-    },
-    {
-      "id": "c-developer",
-      "name": "c-developer",
-      "description": "C programming expert for systems programming and embedded development. Use PROACTIVELY for memory management, low-level optimization, or hardware interaction."
-    },
-    {
-      "id": "c-pro",
-      "name": "c-pro",
-      "description": "Write efficient C code with proper memory management, pointer arithmetic, and system calls. Handles embedded systems, kernel modules, and performance-critical code. Use PROACTIVELY for C optimization, memory issues, or system programming."
-    },
-    {
-      "id": "c4-code",
-      "name": "c4-code",
-      "description": "Expert C4 Code-level documentation specialist. Analyzes code directories to create comprehensive C4 code-level documentation including function signatures, arguments, dependencies, and code structure. Use when documenting code at the lowest C4 level for individual directories and code modules."
-    },
-    {
-      "id": "c4-component",
-      "name": "c4-component",
-      "description": "Expert C4 Component-level documentation specialist. Synthesizes C4 Code-level documentation into Component-level architecture, defining component boundaries, interfaces, and relationships. Creates component diagrams and documentation. Use when synthesizing code-level documentation into logical components."
-    },
-    {
-      "id": "c4-container",
-      "name": "c4-container",
-      "description": "Expert C4 Container-level documentation specialist. Synthesizes Component-level documentation into Container-level architecture, mapping components to deployment units, documenting container interfaces as APIs, and creating container diagrams. Use when synthesizing components into deployment containers and documenting system deployment architecture."
-    },
-    {
-      "id": "c4-context",
-      "name": "c4-context",
-      "description": "Expert C4 Context-level documentation specialist. Creates high-level system context diagrams, documents personas, user journeys, system features, and external dependencies. Synthesizes container and component documentation with system documentation to create comprehensive context-level architecture. Use when creating the highest-level C4 system context documentation."
-    },
-    {
-      "id": "cathie-wood",
-      "name": "cathie-wood",
-      "description": "你是凯茜·伍德（Cathie Wood）投资分析智能体。你专注于颠覆性创新带来的超额回报机会。"
-    },
-    {
-      "id": "charlie-munger",
-      "name": "charlie-munger",
-      "description": "你是查理·芒格（Charlie Munger）投资分析智能体。你以芒格的理性思维框架做出投资决策——\"只投资你理解的优质企业\"。"
-    },
-    {
-      "id": "cloud-architect",
-      "name": "cloud-architect",
-      "description": "Expert cloud architect specializing in AWS/Azure/GCP multi-cloud infrastructure design, advanced IaC (Terraform/OpenTofu/CDK), FinOps cost optimization, and modern architectural patterns. Masters serverless, microservices, security, compliance, and disaster recovery. Use PROACTIVELY for cloud architecture, cost optimization, migration planning, or multi-cloud strategies."
-    },
-    {
-      "id": "code",
-      "name": "code",
-      "description": "Development coordinator directing coding specialists for direct feature implementation"
-    },
-    {
-      "id": "code-architect",
-      "name": "code-architect",
-      "description": "Designs feature architectures by analyzing existing codebase patterns and conventions, then providing comprehensive implementation blueprints with specific files to create/modify, component designs, data flows, and build sequences"
-    },
-    {
-      "id": "code-explorer",
-      "name": "code-explorer",
-      "description": "Deeply analyzes existing codebase features by tracing execution paths, mapping architecture layers, understanding patterns and abstractions, and documenting dependencies to inform new development"
-    },
-    {
-      "id": "code-reviewer",
-      "name": "code-reviewer",
-      "description": "Use this agent when you need to review code for adherence to project guidelines, style guides, and best practices. This agent should be used proactively after writing or modifying code, especially before committing changes or creating pull requests. It will check for style violations, potential issues, and ensure code follows the established patterns in CODEBUDDY.md. Also the agent needs to know which files to focus on for the review. In most cases this will recently completed work which is unstaged in git (can be retrieved by doing a git diff). However there can be cases where this is different, make sure to specify this as the agent input when calling the agent. \\n\\nExamples:\\n<example>\\nContext: The user has just implemented a new feature with several TypeScript files.\\nuser: \"I've added the new authentication feature. Can you check if everything looks good?\"\\nassistant: \"I'll use the Task tool to launch the code-reviewer agent to review your recent changes.\"\\n<commentary>\\nSince the user has completed a feature and wants validation, use the code-reviewer agent to ensure the code meets project standards.\\n</commentary>\\n</example>\\n<example>\\nContext: The assistant has just written a new utility function.\\nuser: \"Please create a function to validate email addresses\"\\nassistant: \"Here's the email validation function:\"\\n<function call omitted for brevity>\\nassistant: \"Now I'll use the Task tool to launch the code-reviewer agent to review this implementation.\"\\n<commentary>\\nProactively use the code-reviewer agent after writing new code to catch issues early.\\n</commentary>\\n</example>\\n<example>\\nContext: The user is about to create a PR.\\nuser: \"I think I'm ready to create a PR for this feature\"\\nassistant: \"Before creating the PR, I'll use the Task tool to launch the code-reviewer agent to ensure all code meets our standards.\"\\n<commentary>\\nProactively review code before PR creation to avoid review comments and iterations.\\n</commentary>\\n</example>"
-    },
-    {
-      "id": "code-simplifier",
-      "name": "code-simplifier",
-      "description": "Use this agent when code has been written or modified and needs to be simplified for clarity, consistency, and maintainability while preserving all functionality. This agent should be triggered automatically after completing a coding task or writing a logical chunk of code. It simplifies code by following project best practices while retaining all functionality. The agent focuses only on recently modified code unless instructed otherwise.\\n\\nExamples:\\n\\n<example>"
-    },
-    {
-      "id": "command-expert",
-      "name": "command-expert",
-      "description": "Create CLI commands for automation and tooling. Use PROACTIVELY when designing command-line interfaces, argument parsing, or task automation."
-    },
-    {
-      "id": "comment-analyzer",
-      "name": "comment-analyzer",
-      "description": "Use this agent when you need to analyze code comments for accuracy, completeness, and long-term maintainability. This includes: (1) After generating large documentation comments or docstrings, (2) Before finalizing a pull request that adds or modifies comments, (3) When reviewing existing comments for potential technical debt or comment rot, (4) When you need to verify that comments accurately reflect the code they describe.\\n\\n<example>\\nContext: The user is working on a pull request that adds several documentation comments to functions.\\nuser: \"I've added documentation to these functions. Can you check if the comments are accurate?\"\\nassistant: \"I'll use the comment-analyzer agent to thoroughly review all the comments in this pull request for accuracy and completeness.\"\\n<commentary>\\nSince the user has added documentation comments and wants them checked, use the comment-analyzer agent to verify their accuracy against the actual code.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: The user just asked to generate comprehensive documentation for a complex function.\\nuser: \"Add detailed documentation for this authentication handler function\"\\nassistant: \"I've added the documentation. Now let me use the comment-analyzer agent to verify that the comments are accurate and helpful for long-term maintenance.\"\\n<commentary>\\nAfter generating large documentation comments, proactively use the comment-analyzer to ensure quality.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: The user is preparing to create a pull request with multiple code changes and comments.\\nuser: \"I think we're ready to create the PR now\"\\nassistant: \"Before creating the pull request, let me use the comment-analyzer agent to review all the comments we've added or modified to ensure they're accurate and won't create technical debt.\"\\n<commentary>\\nBefore finalizing a PR, use the comment-analyzer to review all comment changes.\\n</commentary>\\n</example>"
-    },
-    {
-      "id": "comparator",
-      "name": "comparator",
-      "description": "Migrated WorkBuddy expert: comparator"
-    },
-    {
-      "id": "comprehensive-researcher",
-      "name": "comprehensive-researcher",
-      "description": "Conduct in-depth research with multiple sources, cross-verification, and structured reports. Breaks down complex topics into research questions, finds authoritative sources, and synthesizes information. Use PROACTIVELY for comprehensive investigations requiring citations and balanced analysis."
-    },
-    {
-      "id": "conductor-validator",
-      "name": "conductor-validator",
-      "description": "Validates Conductor project artifacts for completeness, consistency, and correctness. Use after setup, when diagnosing issues, or before implementation to verify project context."
-    },
-    {
-      "id": "connection-agent",
-      "name": "connection-agent",
-      "description": "Analyzes and suggests meaningful links between related content in knowledge management systems. Identifies entity-based connections, keyword overlaps, orphaned notes, and generates actionable link suggestions for manual curation."
-    },
-    {
-      "id": "conservative-risk-analyst",
-      "name": "conservative-risk-analyst",
-      "description": "你是一名保守风险分析师（Conservative Risk Analyst）。你的首要目标是保护资产、最小化波动、确保稳定可靠的增长。你优先考虑稳定性、安全性和风险缓解。"
-    },
-    {
-      "id": "content-marketer",
-      "name": "content-marketer",
-      "description": "Elite content marketing strategist specializing in AI-powered content creation, omnichannel distribution, SEO optimization, and data-driven performance marketing. Masters modern content tools, social media automation, and conversion optimization with 2024/2025 best practices. Use PROACTIVELY for comprehensive content marketing."
-    },
-    {
-      "id": "context-manager",
-      "name": "context-manager",
-      "description": "Elite AI context engineering specialist mastering dynamic context management, vector databases, knowledge graphs, and intelligent memory systems. Orchestrates context across multi-agent workflows, enterprise AI systems, and long-running projects with 2024/2025 best practices. Use PROACTIVELY for complex AI orchestration."
-    },
-    {
-      "id": "contrarian-investor",
-      "name": "contrarian-investor",
-      "description": "Contrarian Investor - 17 years across bull/bear cycles, buys only large-cap drawdowns at identifiable support levels in 10 disciplined batches"
-    },
-    {
-      "id": "conversation-analyzer",
-      "name": "conversation-analyzer",
-      "description": "Use this agent when analyzing conversation transcripts to find behaviors worth preventing with hooks. Examples: <example>Context: User is running /hookify command without arguments\\nuser: \"/hookify\"\\nassistant: \"I'll analyze the conversation to find behaviors you want to prevent\"\\n<commentary>The /hookify command without arguments triggers conversation analysis to find unwanted behaviors.</commentary></example><example>Context: User wants to create hooks from recent frustrations\\nuser: \"Can you look back at this conversation and help me create hooks for the mistakes you made?\"\\nassistant: \"I'll use the conversation-analyzer agent to identify the issues and suggest hooks.\"\\n<commentary>User explicitly asks to analyze conversation for mistakes that should be prevented.</commentary></example>"
-    },
-    {
-      "id": "cpp-engineer",
-      "name": "cpp-engineer",
-      "description": "Write idiomatic C++ code with modern features, RAII, smart pointers, and STL algorithms. Handles templates, move semantics, and performance optimization. Use PROACTIVELY for C++ refactoring, memory safety, or complex C++ patterns."
-    },
-    {
-      "id": "cpp-pro",
-      "name": "cpp-pro",
-      "description": "Write idiomatic C++ code with modern features, RAII, smart pointers, and STL algorithms. Handles templates, move semantics, and performance optimization. Use PROACTIVELY for C++ refactoring, memory safety, or complex C++ patterns."
-    },
-    {
-      "id": "cross-shard-scan",
-      "name": "cross-shard-scan",
-      "description": "大仓分片扫描后的跨目录关联风险审计 Agent。消费 cross-shard-correlation.json，只复核跨分片调用链、入口到 Sink、认证授权边界和共享安全上下文导致的组合风险。"
-    },
-    {
-      "id": "crypto-analyst",
-      "name": "crypto-analyst",
-      "description": "Perform cryptocurrency market analysis, on-chain analytics, and sentiment analysis. Use PROACTIVELY for market research, token analysis, and trading signal generation."
-    },
-    {
-      "id": "crypto-risk-manager",
-      "name": "crypto-risk-manager",
-      "description": "Implement risk management systems for cryptocurrency trading and DeFi positions. Use PROACTIVELY for portfolio risk assessment, position sizing, and risk monitoring systems."
-    },
-    {
-      "id": "crypto-trader",
-      "name": "crypto-trader",
-      "description": "Build cryptocurrency trading systems, implement trading strategies, and integrate with exchange APIs. Use PROACTIVELY for crypto trading bots, order execution, and portfolio management."
-    },
-    {
-      "id": "csharp-pro",
-      "name": "csharp-pro",
-      "description": "Write modern C# code with advanced features like records, pattern matching, and async/await. Optimizes .NET applications, implements enterprise patterns, and ensures comprehensive testing. Use PROACTIVELY for C# refactoring, performance optimization, or complex .NET solutions."
-    },
-    {
-      "id": "customer-support",
-      "name": "customer-support",
-      "description": "Elite AI-powered customer support specialist mastering conversational AI, automated ticketing, sentiment analysis, and omnichannel support experiences. Integrates modern support tools, chatbot platforms, and CX optimization with 2024/2025 best practices. Use PROACTIVELY for comprehensive customer experience management."
-    },
-    {
-      "id": "data-analyst",
-      "name": "data-analyst",
-      "description": "Quantitative analysis, statistical insights, and data-driven research. Use PROACTIVELY for trend analysis, performance metrics, benchmarking, or statistical evaluation."
-    },
-    {
-      "id": "data-engineer",
-      "name": "data-engineer",
-      "description": "Build scalable data pipelines, modern data warehouses, and real-time streaming architectures. Implements Apache Spark, dbt, Airflow, and cloud-native data platforms. Use PROACTIVELY for data pipeline design, analytics infrastructure, or modern data stack implementation."
-    },
-    {
-      "id": "data-scientist",
-      "name": "data-scientist",
-      "description": "Expert data scientist for advanced analytics, machine learning, and statistical modeling. Handles complex data analysis, predictive modeling, and business intelligence. Use PROACTIVELY for data analysis tasks, ML modeling, statistical analysis, and data-driven insights."
-    },
-    {
-      "id": "database-admin",
-      "name": "database-admin",
-      "description": "Expert database administrator specializing in modern cloud databases, automation, and reliability engineering. Masters AWS/Azure/GCP database services, Infrastructure as Code, high availability, disaster recovery, performance optimization, and compliance. Handles multi-cloud strategies, container databases, and cost optimization. Use PROACTIVELY for database architecture, operations, or reliability engineering."
-    },
-    {
-      "id": "database-architect",
-      "name": "database-architect",
-      "description": "Expert database architect specializing in data layer design from scratch, technology selection, schema modeling, and scalable database architectures. Masters SQL/NoSQL/TimeSeries database selection, normalization strategies, migration planning, and performance-first design. Handles both greenfield architectures and re-architecture of existing systems. Use PROACTIVELY for database architecture, technology selection, or data modeling decisions."
-    },
-    {
-      "id": "database-optimization",
-      "name": "database-optimization",
-      "description": "Database performance specialist focusing on query optimization, indexing strategies, schema design, connection pooling, and database monitoring. Covers SQL optimization, NoSQL tuning, and architecture best practices."
-    },
-    {
-      "id": "database-optimizer",
-      "name": "database-optimizer",
-      "description": "Expert database optimizer specializing in modern performance tuning, query optimization, and scalable architectures. Masters advanced indexing, N+1 resolution, multi-tier caching, partitioning strategies, and cloud database optimization. Handles complex query analysis, migration strategies, and performance monitoring. Use PROACTIVELY for database optimization, performance issues, or scalability challenges."
-    },
-    {
-      "id": "debug",
-      "name": "debug",
-      "description": "UltraThink debug orchestrator coordinating systematic problem analysis and multi-agent debugging"
-    },
-    {
-      "id": "debugger",
-      "name": "debugger",
-      "description": "Debugging specialist for errors, test failures, and unexpected behavior. Use proactively when encountering any issues."
-    },
-    {
-      "id": "defi-strategist",
-      "name": "defi-strategist",
-      "description": "Design and implement DeFi yield strategies, liquidity provision, and protocol interactions. Use PROACTIVELY for yield farming, liquidity mining, and DeFi protocol integration."
-    },
-    {
-      "id": "deployment-engineer",
-      "name": "deployment-engineer",
-      "description": "Expert deployment engineer specializing in modern CI/CD pipelines, GitOps workflows, and advanced deployment automation. Masters GitHub Actions, ArgoCD/Flux, progressive delivery, container security, and platform engineering. Handles zero-downtime deployments, security scanning, and developer experience optimization. Use PROACTIVELY for CI/CD design, GitOps implementation, or deployment automation."
-    },
-    {
-      "id": "devops-troubleshooter",
-      "name": "devops-troubleshooter",
-      "description": "Expert DevOps troubleshooter specializing in rapid incident response, advanced debugging, and modern observability. Masters log analysis, distributed tracing, Kubernetes debugging, performance optimization, and root cause analysis. Handles production outages, system reliability, and preventive monitoring. Use PROACTIVELY for debugging, incident response, or system troubleshooting."
-    },
-    {
-      "id": "directus-developer",
-      "name": "directus-developer",
-      "description": "Build and customize Directus applications with extensions, hooks, and API integrations. Expert in Directus data models, permissions, workflows, and custom extensions. Use PROACTIVELY for Directus development, CMS configuration, or headless architecture."
-    },
-    {
-      "id": "django-pro",
-      "name": "django-pro",
-      "description": "Master Django 5.x with async views, DRF, Celery, and Django Channels. Build scalable web applications with proper architecture, testing, and deployment. Use PROACTIVELY for Django development, ORM optimization, or complex Django patterns."
-    },
-    {
-      "id": "docs-architect",
-      "name": "docs-architect",
-      "description": "Creates comprehensive technical documentation from existing codebases. Analyzes architecture, design patterns, and implementation details to produce long-form technical manuals and ebooks. Use PROACTIVELY for system documentation, architecture guides, or technical deep-dives."
-    },
-    {
-      "id": "document-writer",
-      "name": "document-writer",
-      "description": "A technical writer who crafts clear, comprehensive documentation - specializes in README files, API docs, architecture docs, and user guides"
-    },
-    {
-      "id": "docusaurus-expert",
-      "name": "docusaurus-expert",
-      "description": "Configure and troubleshoot Docusaurus documentation sites. Specializes in configuration, theming, content management, sidebar organization, and build issues. Use PROACTIVELY when working with Docusaurus v2/v3 sites, especially in docs_to_claude folder."
-    },
-    {
-      "id": "drupal-developer",
-      "name": "drupal-developer",
-      "description": "Build and customize Drupal applications with custom modules, themes, and integrations. Expert in Drupal architecture, content modeling, theming, and performance optimization. Use PROACTIVELY for Drupal development, module creation, or CMS architecture."
-    },
-    {
-      "id": "dx-optimizer",
-      "name": "dx-optimizer",
-      "description": "Developer Experience specialist. Improves tooling, setup, and workflows. Use PROACTIVELY when setting up new projects, after team feedback, or when development friction is noticed."
-    },
-    {
-      "id": "elixir-pro",
-      "name": "elixir-pro",
-      "description": "Write idiomatic Elixir code with OTP patterns, supervision trees, and Phoenix LiveView. Masters concurrency, fault tolerance, and distributed systems. Use PROACTIVELY for Elixir refactoring, OTP design, or complex BEAM optimizations."
-    },
-    {
-      "id": "episode-orchestrator",
-      "name": "episode-orchestrator",
-      "description": "Manages episode-based workflows by coordinating multiple specialized agents in sequence. Detects complete episode details and dispatches to predefined agent sequences or asks for clarification before routing."
-    },
-    {
-      "id": "equity-research-copy-expert",
-      "name": "equity-research-copy-expert",
-      "description": "Comprehensive equity research expert covering initiating coverage, earnings analysis, DCF/comps valuation, long-short pitches, investment memos, event-driven analysis, portfolio risk management, catalyst calendars, sector overviews, thesis tracking, and morning notes — producing professional sell-side/buy-side research deliverables. Triggers on stock research, valuation modeling, investment pitch, portfolio risk, earnings analysis, and coverage initiation."
-    },
-    {
-      "id": "equity-research-expert",
-      "name": "equity-research-expert",
-      "description": "Comprehensive equity research expert covering initiating coverage, earnings analysis, DCF/comps valuation, long-short pitches, investment memos, event-driven analysis, portfolio risk management, catalyst calendars, sector overviews, thesis tracking, and morning notes — producing professional sell-side/buy-side research deliverables. Triggers on stock research, valuation modeling, investment pitch, portfolio risk, earnings analysis, and coverage initiation."
-    },
-    {
-      "id": "error-detective",
-      "name": "error-detective",
-      "description": "Search logs and codebases for error patterns, stack traces, and anomalies. Correlates errors across systems and identifies root causes. Use PROACTIVELY when debugging issues, analyzing logs, or investigating production errors."
-    },
-    {
-      "id": "event-sourcing-architect",
-      "name": "event-sourcing-architect",
-      "description": "Migrated WorkBuddy expert: event-sourcing-architect"
-    },
-    {
-      "id": "explore",
-      "name": "explore",
-      "description": "Contextual grep for codebases - fast codebase search and pattern discovery"
-    },
-    {
-      "id": "explorer",
-      "name": "explorer",
-      "description": "Use this agent when the user wants to analyze or explore a codebase (remote repository or local repository) using Repomix. This includes scenarios like:\\n\\n- User asks to analyze a GitHub repository: \"Can you analyze this repository: https://github.com/user/repo\"\\n- User wants to understand a local codebase: \"Analyze the codebase in /path/to/project\"\\n- User requests insights about code structure: \"What's the structure of this project?\"\\n- User wants to find specific patterns: \"Find all React components in this repo\"\\n- User asks about code metrics: \"How many lines of code are in this project?\"\\n- User wants to explore specific files or directories: \"Show me the authentication logic\"\\n\\nExamples:\\n\\n<example>\\nuser: \"Can you analyze this repository: https://github.com/facebook/react\"\\nassistant: \"I'll use the repomix-explorer:explorer agent to analyze the React repository and provide insights about its structure and content.\"\\n<commentary>\\nThe user is requesting repository analysis, so use the Task tool to launch the repomix-explorer:explorer agent to process the remote repository.\\n</commentary>\\n</example>\\n\\n<example>\\nuser: \"I want to understand the structure of the project in ~/projects/my-app\"\\nassistant: \"Let me use the repomix-explorer:explorer agent to analyze the local repository and provide you with a comprehensive overview.\"\\n<commentary>\\nThe user wants to analyze a local repository structure, so use the repomix-explorer:explorer agent to process the local codebase.\\n</commentary>\\n</example>\\n\\n<example>\\nuser: \"Find all authentication-related files in the yamadashy/repomix repository\"\\nassistant: \"I'll use the repomix-explorer:explorer agent to search for authentication-related code in the Repomix repository.\"\\n<commentary>\\nThe user wants to find specific patterns in a remote repository, so use the repomix-explorer:explorer agent.\\n</commentary>\\n</example>"
-    },
-    {
-      "id": "fastapi-pro",
-      "name": "fastapi-pro",
-      "description": "Build high-performance async APIs with FastAPI, SQLAlchemy 2.0, and Pydantic V2. Master microservices, WebSockets, and modern Python async patterns. Use PROACTIVELY for FastAPI development, async optimization, or API architecture."
-    },
-    {
-      "id": "flutter-expert",
-      "name": "flutter-expert",
-      "description": "Master Flutter development with Dart 3, advanced widgets, and multi-platform deployment. Handles state management, animations, testing, and performance optimization for mobile, web, desktop, and embedded platforms. Use PROACTIVELY for Flutter architecture, UI implementation, or cross-platform features."
-    },
-    {
-      "id": "frontend-developer",
-      "name": "frontend-developer",
-      "description": "Build React components, implement responsive layouts, and handle client-side state management. Masters React 19, Next.js 15, and modern frontend architecture. Optimizes performance and ensures accessibility. Use PROACTIVELY when creating UI components or fixing frontend issues."
-    },
-    {
-      "id": "frontend-security-coder",
-      "name": "frontend-security-coder",
-      "description": "Expert in secure frontend coding practices specializing in XSS prevention, output sanitization, and client-side security patterns. Use PROACTIVELY for frontend security implementations or client-side security code reviews."
-    },
-    {
-      "id": "frontend-ui-ux-engineer",
-      "name": "frontend-ui-ux-engineer",
-      "description": "A designer-turned-developer who crafts stunning UI/UX even without design mockups"
-    },
-    {
-      "id": "fundamental-researcher",
-      "name": "fundamental-researcher",
-      "description": "Fundamental Researcher - industry-researcher-style investor who finds ideas from daily life, picks quality leaders, tracks quarterly earnings, never goes to cash"
-    },
-    {
-      "id": "fundamentals-analyst",
-      "name": "fundamentals-analyst",
-      "description": "你是一位基本面分析师（Fundamentals Analyst）。你的职责是分析公司财务报表、经营状况和关键财务指标，全面评估公司基本面质量。"
-    },
-    {
-      "id": "game-developer",
-      "name": "game-developer",
-      "description": "Build games with Unity, Unreal Engine, or web technologies. Implements game mechanics, physics, AI, and optimization. Use PROACTIVELY for game development, engine integration, or gameplay programming."
-    },
-    {
-      "id": "gaokao-advisor",
-      "name": "gaokao-advisor",
-      "description": "Evidence-grounded Gaokao helper for exam papers, essays, university and major information, score lines, score-to-rank lookup, admission planning references, and guided volunteer form filling."
-    },
-    {
-      "id": "gh-repo-research",
-      "name": "gh-repo-research",
-      "description": "Clone GitHub repository, analyze codebase, and generate comprehensive technical documentation including architecture, core modules, API reference, and product features"
-    },
-    {
-      "id": "global-stock-investor",
-      "name": "global-stock-investor",
-      "description": "Senior cross-border equity research strategist (CFA L3 + CPA) for global stock markets: macro policy, cross-market valuation, asset allocation, and risk control across A-shares/HK/US/EU/Japan-Korea/SEA."
-    },
-    {
-      "id": "golang-expert",
-      "name": "golang-expert",
-      "description": "Write idiomatic Go code with goroutines, channels, and interfaces. Optimizes concurrency, implements Go patterns, and ensures proper error handling. Use PROACTIVELY for Go refactoring, concurrency issues, or performance optimization."
-    },
-    {
-      "id": "golang-pro",
-      "name": "golang-pro",
-      "description": "Master Go 1.21+ with modern patterns, advanced concurrency, performance optimization, and production-ready microservices. Expert in the latest Go ecosystem including generics, workspaces, and cutting-edge frameworks. Use PROACTIVELY for Go development, architecture design, or performance optimization."
-    },
-    {
-      "id": "grader",
-      "name": "grader",
-      "description": "Migrated WorkBuddy expert: grader"
-    },
-    {
-      "id": "graphql-architect",
-      "name": "graphql-architect",
-      "description": "Master modern GraphQL with federation, performance optimization, and enterprise security. Build scalable schemas, implement advanced caching, and design real-time systems. Use PROACTIVELY for GraphQL architecture or performance optimization."
-    },
-    {
-      "id": "growth-analyst",
-      "name": "growth-analyst",
-      "description": "你是成长分析师（Growth Analyst）。你从多维度评估企业的成长质量。"
-    },
-    {
-      "id": "hackathon-ai-strategist",
-      "name": "hackathon-ai-strategist",
-      "description": "Expert guidance on hackathon strategy, AI solution ideation, and project evaluation. Provides judge-perspective feedback, brainstorms winning AI concepts, and assesses project feasibility for tight timeframes."
-    },
-    {
-      "id": "haskell-pro",
-      "name": "haskell-pro",
-      "description": "Expert Haskell engineer specializing in advanced type systems, pure functional design, and high-reliability software. Use PROACTIVELY for type-level programming, concurrency, and architecture guidance."
-    },
-    {
-      "id": "hr-pro",
-      "name": "hr-pro",
-      "description": "Professional, ethical HR partner for hiring, onboarding/offboarding, PTO and leave, performance, compliant policies, and employee relations. Ask for jurisdiction and company context before advising; produce structured, bias-mitigated, lawful templates."
-    },
-    {
-      "id": "hybrid-cloud-architect",
-      "name": "hybrid-cloud-architect",
-      "description": "Expert hybrid cloud architect specializing in complex multi-cloud solutions across AWS/Azure/GCP and private clouds (OpenStack/VMware). Masters hybrid connectivity, workload placement optimization, edge computing, and cross-cloud automation. Handles compliance, cost optimization, disaster recovery, and migration strategies. Use PROACTIVELY for hybrid architecture, multi-cloud strategy, or complex infrastructure integration."
-    },
-    {
-      "id": "hyperledger-fabric-developer",
-      "name": "hyperledger-fabric-developer",
-      "description": "Develop enterprise blockchain solutions with Hyperledger Fabric v2.5 LTS and v3.x. Expertise in chaincode development, network architecture, BFT consensus, and permissioned blockchain design. Use PROACTIVELY for enterprise blockchain, supply chain solutions, or private network implementations."
-    },
-    {
-      "id": "incident-responder",
-      "name": "incident-responder",
-      "description": "Expert SRE incident responder specializing in rapid problem resolution, modern observability, and comprehensive incident management. Masters incident command, blameless post-mortems, error budget management, and system reliability patterns. Handles critical outages, communication strategies, and continuous improvement. Use IMMEDIATELY for production incidents or SRE practices."
-    },
-    {
-      "id": "indexer",
-      "name": "indexer",
-      "description": "项目语义索引构建 Agent。文件枚举、技术栈识别、攻击面映射、Sink 定位、调用图构建和防御映射，产出 project-index.db（SQLite）。"
-    },
-    {
-      "id": "industry-strategist",
-      "name": "industry-strategist",
-      "description": "Industry Strategist - ex-fund manager with 15 years experience, combines industry trend analysis with valuation constraints to find undervalued beneficiaries"
-    },
-    {
-      "id": "ios-developer",
-      "name": "ios-developer",
-      "description": "Develop native iOS applications with Swift/SwiftUI. Masters iOS 18, SwiftUI, UIKit integration, Core Data, networking, and App Store optimization. Use PROACTIVELY for iOS-specific features, App Store optimization, or native iOS development."
-    },
-    {
-      "id": "java-developer",
-      "name": "java-developer",
-      "description": "Master modern Java with streams, concurrency, and JVM optimization. Handles Spring Boot, reactive programming, and enterprise patterns. Use PROACTIVELY for Java performance tuning, concurrent programming, or complex enterprise solutions."
-    },
-    {
-      "id": "java-pro",
-      "name": "java-pro",
-      "description": "Master Java 21+ with modern features like virtual threads, pattern matching, and Spring Boot 3.x. Expert in the latest Java ecosystem including GraalVM, Project Loom, and cloud-native patterns. Use PROACTIVELY for Java development, microservices architecture, or performance optimization."
-    },
-    {
-      "id": "javascript-developer",
-      "name": "javascript-developer",
-      "description": "JavaScript expert for modern ES6+, async patterns, and Node.js. Use PROACTIVELY for React, TypeScript, performance optimization, or complex async flows."
-    },
-    {
-      "id": "javascript-pro",
-      "name": "javascript-pro",
-      "description": "Master modern JavaScript with ES6+, async patterns, and Node.js APIs. Handles promises, event loops, and browser/Node compatibility. Use PROACTIVELY for JavaScript optimization, async debugging, or complex JS patterns."
-    },
-    {
-      "id": "julia-pro",
-      "name": "julia-pro",
-      "description": "Master Julia 1.10+ with modern features, performance optimization, multiple dispatch, and production-ready practices. Expert in the Julia ecosystem including package management, scientific computing, and high-performance numerical code. Use PROACTIVELY for Julia development, optimization, or advanced Julia patterns."
-    },
-    {
-      "id": "kubernetes-architect",
-      "name": "kubernetes-architect",
-      "description": "Expert Kubernetes architect specializing in cloud-native infrastructure, advanced GitOps workflows (ArgoCD/Flux), and enterprise container orchestration. Masters EKS/AKS/GKE, service mesh (Istio/Linkerd), progressive delivery, multi-tenancy, and platform engineering. Handles security, observability, cost optimization, and developer experience. Use PROACTIVELY for K8s architecture, GitOps implementation, or cloud-native platform design."
-    },
-    {
-      "id": "laravel-vue-developer",
-      "name": "laravel-vue-developer",
-      "description": "Build full-stack Laravel applications with Vue3 frontend. Expert in Laravel APIs, Vue3 composition API, Pinia state management, and modern full-stack patterns. Use PROACTIVELY for Laravel backend development, Vue3 frontend components, API integration, or full-stack architecture."
-    },
-    {
-      "id": "legacy-modernizer",
-      "name": "legacy-modernizer",
-      "description": "Refactor legacy codebases, migrate outdated frameworks, and implement gradual modernization. Handles technical debt, dependency updates, and backward compatibility. Use PROACTIVELY for legacy system updates, framework migrations, or technical debt reduction."
-    },
-    {
-      "id": "legal-advisor",
-      "name": "legal-advisor",
-      "description": "Draft privacy policies, terms of service, disclaimers, and legal notices. Creates GDPR-compliant texts, cookie policies, and data processing agreements. Use PROACTIVELY for legal documentation, compliance texts, or regulatory requirements."
-    },
-    {
-      "id": "librarian",
-      "name": "librarian",
-      "description": "Specialized codebase understanding agent for multi-repository analysis, official documentation retrieval, and finding implementation examples using GitHub CLI and Context7"
-    },
-    {
-      "id": "llms-maintainer",
-      "name": "llms-maintainer",
-      "description": "Generates and maintains llms.txt roadmap files for AI crawler navigation. Updates when build processes complete, content changes, or site structure modifications occur."
-    },
-    {
-      "id": "logic-scan",
-      "name": "logic-scan",
-      "description": "认证授权（C3）+ 业务逻辑（C7）审计 Agent。端点权限遍历、CRUD 一致性、IDOR、竞态条件、支付逻辑、状态机缺陷。"
-    },
-    {
-      "id": "markdown-syntax-formatter",
-      "name": "markdown-syntax-formatter",
-      "description": "Converts text with visual formatting into proper markdown syntax, fixes markdown formatting issues, and ensures consistent document structure. Handles lists, headings, code blocks, and emphasis markers."
-    },
-    {
-      "id": "market-analyst",
-      "name": "market-analyst",
-      "description": "你是一位市场技术分析师（Market Analyst）。你的职责是分析指定标的的价格走势和技术指标，识别趋势、支撑/阻力位和动量信号。"
-    },
-    {
-      "id": "market-research-analyst",
-      "name": "market-research-analyst",
-      "description": "Conducts comprehensive market research and competitive analysis for business strategy and investment decisions. Analyzes industry trends, identifies key players, gathers pricing intelligence, and evaluates market opportunities with collaborative research workflows."
-    },
-    {
-      "id": "mcp-deployment-orchestrator",
-      "name": "mcp-deployment-orchestrator",
-      "description": "Deploys MCP servers to production with containerization, Kubernetes deployments, autoscaling, monitoring, and high-availability operations. Handles Docker images, Helm charts, service mesh setup, security hardening, and performance optimization."
-    },
-    {
-      "id": "mcp-expert",
-      "name": "mcp-expert",
-      "description": "Create Model Context Protocol integrations and server configurations. Use PROACTIVELY when building MCP servers, configuring integrations, or designing protocol implementations."
-    },
-    {
-      "id": "mcp-registry-navigator",
-      "name": "mcp-registry-navigator",
-      "description": "You are an MCP Registry Navigator specializing in discovering, evaluating, and integrating MCP servers from various registries. Use when searching for servers with specific capabilities, assessing trustworthiness, generating configurations, or publishing to registries."
-    },
-    {
-      "id": "mcp-security-auditor",
-      "name": "mcp-security-auditor",
-      "description": "You are an MCP Security Auditor specializing in reviewing MCP server implementations for vulnerabilities, designing authentication systems, and ensuring compliance. Use when implementing OAuth 2.1, designing RBAC, conducting security reviews, or auditing MCP servers."
-    },
-    {
-      "id": "mcp-server-architect",
-      "name": "mcp-server-architect",
-      "description": "Designs and implements MCP servers with transport layers, tool/resource/prompt definitions, completion support, session management, and protocol compliance. Creates servers from scratch or enhances existing ones following MCP specification best practices."
-    },
-    {
-      "id": "mcp-testing-engineer",
-      "name": "mcp-testing-engineer",
-      "description": "Tests, debugs, and ensures quality for MCP servers including JSON schema validation, protocol compliance, security vulnerability assessment, load testing, and comprehensive debugging. Provides automated testing strategies and detailed quality reports."
-    },
-    {
-      "id": "mermaid-expert",
-      "name": "mermaid-expert",
-      "description": "Create Mermaid diagrams for flowcharts, sequences, ERDs, and architectures. Masters syntax for all diagram types and styling. Use PROACTIVELY for visual documentation, system diagrams, or process flows."
-    },
-    {
-      "id": "metadata-agent",
-      "name": "metadata-agent",
-      "description": "Handles frontmatter standardization and metadata addition across vault files. Ensures consistent metadata structure, generates tags, and maintains creation/modification dates."
-    },
-    {
-      "id": "michael-burry",
-      "name": "michael-burry",
-      "description": "你是迈克尔·伯里（Michael Burry）投资分析智能体——\"大空头\"，一个纯粹的数据驱动深度价值投资者。"
-    },
-    {
-      "id": "minecraft-bukkit-pro",
-      "name": "minecraft-bukkit-pro",
-      "description": "Master Minecraft server plugin development with Bukkit, Spigot, and Paper APIs. Specializes in event-driven architecture, command systems, world manipulation, player management, and performance optimization. Use PROACTIVELY for plugin architecture, gameplay mechanics, server-side features, or cross-version compatibility."
-    },
-    {
-      "id": "ml-engineer",
-      "name": "ml-engineer",
-      "description": "Build production ML systems with PyTorch 2.x, TensorFlow, and modern ML frameworks. Implements model serving, feature engineering, A/B testing, and monitoring. Use PROACTIVELY for ML model deployment, inference optimization, or production ML infrastructure."
-    },
-    {
-      "id": "mlops-engineer",
-      "name": "mlops-engineer",
-      "description": "Build comprehensive ML pipelines, experiment tracking, and model registries with MLflow, Kubeflow, and modern MLOps tools. Implements automated training, deployment, and monitoring across cloud platforms. Use PROACTIVELY for ML infrastructure, experiment management, or pipeline automation."
-    },
-    {
-      "id": "mobile-developer",
-      "name": "mobile-developer",
-      "description": "Develop React Native, Flutter, or native mobile apps with modern architecture patterns. Masters cross-platform development, native integrations, offline sync, and app store optimization. Use PROACTIVELY for mobile features, cross-platform code, or app optimization."
-    },
-    {
-      "id": "mobile-security-coder",
-      "name": "mobile-security-coder",
-      "description": "Expert in secure mobile coding practices specializing in input validation, WebView security, and mobile-specific security patterns. Use PROACTIVELY for mobile security implementations or mobile security code reviews."
-    },
-    {
-      "id": "moc-agent",
-      "name": "moc-agent",
-      "description": "Identifies and generates missing Maps of Content (MOCs) and organizes orphaned assets. Creates navigation hubs for vault content and maintains MOC networks with proper linking structure."
-    },
-    {
-      "id": "mohnish-pabrai",
-      "name": "mohnish-pabrai",
-      "description": "你是莫尼什·帕布莱（Mohnish Pabrai）投资分析智能体。你践行 Dhandho 哲学——\"正面我赢，反面我输不多\"。"
-    },
-    {
-      "id": "monorepo-architect",
-      "name": "monorepo-architect",
-      "description": "Migrated WorkBuddy expert: monorepo-architect"
-    },
-    {
-      "id": "morning-briefing",
-      "name": "morning-briefing",
-      "description": "你是一位A股晨间策略分析师，负责每日开盘前为交易者生成一份高质量决策简报。"
-    },
-    {
-      "id": "multimodal-looker",
-      "name": "multimodal-looker",
-      "description": "Analyze media files (PDFs, images, diagrams) that require interpretation beyond raw text"
-    },
-    {
-      "id": "nassim-taleb",
-      "name": "nassim-taleb",
-      "description": "你是纳西姆·塔勒布（Nassim Taleb）投资分析智能体。你以反脆弱哲学评估投资标的。"
-    },
-    {
-      "id": "network-engineer",
-      "name": "network-engineer",
-      "description": "Expert network engineer specializing in modern cloud networking, security architectures, and performance optimization. Masters multi-cloud connectivity, service mesh, zero-trust networking, SSL/TLS, global load balancing, and advanced troubleshooting. Handles CDN optimization, network automation, and compliance. Use PROACTIVELY for network design, connectivity issues, or performance optimization."
-    },
-    {
-      "id": "neutral-risk-analyst",
-      "name": "neutral-risk-analyst",
-      "description": "你是一名中性风险分析师（Neutral Risk Analyst）。你的职责是提供平衡视角，权衡收益和风险，倡导温和可持续的策略。你必须同时挑战激进和保守两方的极端立场。"
-    },
-    {
-      "id": "news-analyst",
-      "name": "news-analyst",
-      "description": "你是一位新闻分析师（News Analyst）。你的职责是分析近期公司新闻、行业趋势和宏观经济变化，评估其对标的和整体市场的影响。"
-    },
-    {
-      "id": "news-sentiment-analyst",
-      "name": "news-sentiment-analyst",
-      "description": "你是新闻情绪分析师（News Sentiment Analyst）。你分析近期新闻对标的的影响。"
-    },
-    {
-      "id": "nextjs-app-router-developer",
-      "name": "nextjs-app-router-developer",
-      "description": "Build modern Next.js applications using App Router with Server Components, Server Actions, PPR, and advanced caching strategies. Expert in Next.js 14+ features including streaming, suspense boundaries, and parallel routes. Use PROACTIVELY for Next.js App Router development, performance optimization, or migrating from Pages Router."
-    },
-    {
-      "id": "observability-engineer",
-      "name": "observability-engineer",
-      "description": "Build production-ready monitoring, logging, and tracing systems. Implements comprehensive observability strategies, SLI/SLO management, and incident response workflows. Use PROACTIVELY for monitoring infrastructure, performance optimization, or production reliability."
-    },
-    {
-      "id": "ocr-grammar-fixer",
-      "name": "ocr-grammar-fixer",
-      "description": "You are an OCR Grammar Fixer specializing in cleaning up text processed through OCR that contains recognition errors, spacing issues, or grammatical problems. Use when correcting OCR-processed marketing copy, business documents, or scanned text with typical recognition artifacts."
-    },
-    {
-      "id": "ocr-quality-assurance",
-      "name": "ocr-quality-assurance",
-      "description": "You are an OCR Quality Assurance specialist performing final review and validation of OCR-corrected text against original image sources. Use as the final step in OCR pipelines after visual analysis, text comparison, grammar fixes, and markdown formatting."
-    },
-    {
-      "id": "optimize",
-      "name": "optimize",
-      "description": "Performance optimization coordinator leading optimization experts for systematic performance improvement"
-    },
-    {
-      "id": "oracle",
-      "name": "oracle",
-      "description": "Expert technical advisor with deep reasoning for architecture decisions, code analysis, and engineering guidance"
-    },
-    {
-      "id": "payment-integration",
-      "name": "payment-integration",
-      "description": "Integrate Stripe, PayPal, and payment processors. Handles checkout flows, subscriptions, webhooks, and PCI compliance. Use PROACTIVELY when implementing payments, billing, or subscription features."
-    },
-    {
-      "id": "performance-engineer",
-      "name": "performance-engineer",
-      "description": "Expert performance engineer specializing in modern observability, application optimization, and scalable system performance. Masters OpenTelemetry, distributed tracing, load testing, multi-tier caching, Core Web Vitals, and performance monitoring. Handles end-to-end optimization, real user monitoring, and scalability patterns. Use PROACTIVELY for performance optimization, observability, or scalability challenges."
-    },
-    {
-      "id": "peter-lynch",
-      "name": "peter-lynch",
-      "description": "你是彼得·林奇（Peter Lynch）投资分析智能体。你寻找\"你所了解的领域中被低估的成长股\"。"
-    },
-    {
-      "id": "phil-fisher",
-      "name": "phil-fisher",
-      "description": "你是菲利普·费雪（Phil Fisher）投资分析智能体。你以\"闲聊调研\"(Scuttlebutt)方法论评估企业的长期成长品质。"
-    },
-    {
-      "id": "php-developer",
-      "name": "php-developer",
-      "description": "Write idiomatic PHP code with design patterns, SOLID principles, and modern best practices. Implements PSR standards, dependency injection, and comprehensive testing. Use PROACTIVELY for PHP architecture, refactoring, or implementing design patterns."
-    },
-    {
-      "id": "php-pro",
-      "name": "php-pro",
-      "description": "Write idiomatic PHP code with generators, iterators, SPL data structures, and modern OOP features. Use PROACTIVELY for high-performance PHP applications."
-    },
-    {
-      "id": "plugin-recommender",
-      "name": "plugin-recommender",
-      "description": "Use this agent when the user expresses a need for functionality but doesn't mention plugins, or when they might benefit from a plugin. Examples:"
-    },
-    {
-      "id": "plugin-validator",
-      "name": "plugin-validator",
-      "description": "Use this agent when the user asks to \"validate my plugin\", \"check plugin structure\", \"verify plugin is correct\", \"validate plugin.json\", \"check plugin files\", or mentions plugin validation. Also trigger proactively after user creates or modifies plugin components. Examples:"
-    },
-    {
-      "id": "podcast-content-analyzer",
-      "name": "podcast-content-analyzer",
-      "description": "Analyze podcast transcripts to identify engaging segments and viral moments. Use PROACTIVELY for content optimization, chapter creation, or social media clip selection."
-    },
-    {
-      "id": "podcast-metadata-specialist",
-      "name": "podcast-metadata-specialist",
-      "description": "You are a Podcast Metadata Specialist generating comprehensive metadata, show notes, chapter markers, and platform-specific descriptions for podcast episodes. Use when creating SEO-optimized titles, timestamps, social media posts, and formatted descriptions for podcast platforms."
-    },
-    {
-      "id": "podcast-transcriber",
-      "name": "podcast-transcriber",
-      "description": "You are a Podcast Transcriber specializing in extracting accurate transcripts from audio/video files with timestamp precision. Use when converting media files for transcription, generating timestamped segments, identifying speakers, and producing structured transcript data."
-    },
-    {
-      "id": "podcast-trend-scout",
-      "name": "podcast-trend-scout",
-      "description": "You are a Podcast Trend Scout identifying emerging tech topics and news for podcast episodes. Use when planning content for tech podcasts, researching current trends, finding breaking developments, or suggesting timely topics aligned with tech focus areas."
-    },
-    {
-      "id": "portfolio-diagnosis",
-      "name": "portfolio-diagnosis",
-      "description": "你是一位A股投资组合风险诊断专家，负责对用户持仓进行全面健康检查并给出调仓建议。"
-    },
-    {
-      "id": "portfolio-manager",
-      "name": "portfolio-manager",
-      "description": "你是投资组合经理（Portfolio Manager）。你是最终的决策者——综合所有分析师的信号和风险管理师的约束，做出明确的投资决策。"
-    },
-    {
-      "id": "posix-shell-pro",
-      "name": "posix-shell-pro",
-      "description": "Expert in strict POSIX sh scripting for maximum portability across Unix-like systems. Specializes in shell scripts that run on any POSIX-compliant shell (dash, ash, sh, bash --posix)."
-    },
-    {
-      "id": "ppt-designer",
-      "name": "ppt-designer",
-      "description": "专业PPT设计顾问，擅长演示文稿内容策划、视觉设计和演讲辅导"
-    },
-    {
-      "id": "pr-test-analyzer",
-      "name": "pr-test-analyzer",
-      "description": "Use this agent when you need to review a pull request for test coverage quality and completeness. This agent should be invoked after a PR is created or updated to ensure tests adequately cover new functionality and edge cases. Examples:\\n\\n<example>\\nContext: Daisy has just created a pull request with new functionality.\\nuser: \"I've created the PR. Can you check if the tests are thorough?\"\\nassistant: \"I'll use the pr-test-analyzer agent to review the test coverage and identify any critical gaps.\"\\n<commentary>\\nSince Daisy is asking about test thoroughness in a PR, use the Task tool to launch the pr-test-analyzer agent.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: A pull request has been updated with new code changes.\\nuser: \"The PR is ready for review - I added the new validation logic we discussed\"\\nassistant: \"Let me analyze the PR to ensure the tests adequately cover the new validation logic and edge cases.\"\\n<commentary>\\nThe PR has new functionality that needs test coverage analysis, so use the pr-test-analyzer agent.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: Reviewing PR feedback before marking as ready.\\nuser: \"Before I mark this PR as ready, can you double-check the test coverage?\"\\nassistant: \"I'll use the pr-test-analyzer agent to thoroughly review the test coverage and identify any critical gaps before you mark it ready.\"\\n<commentary>\\nDaisy wants a final test coverage check before marking PR ready, use the pr-test-analyzer agent.\\n</commentary>\\n</example>"
-    },
-    {
-      "id": "project-supervisor-orchestrator",
-      "name": "project-supervisor-orchestrator",
-      "description": "You are a Project Supervisor Orchestrator managing complex multi-step workflows that coordinate multiple specialized agents in sequence. Use when orchestrating agent pipelines, detecting incomplete information, or managing sophisticated multi-agent processes."
-    },
-    {
-      "id": "prompt-engineer",
-      "name": "prompt-engineer",
-      "description": "Expert prompt engineer specializing in advanced prompting techniques, LLM optimization, and AI system design. Masters chain-of-thought, constitutional AI, and production prompt strategies. Use when building AI features, improving agent performance, or crafting system prompts."
-    },
-    {
-      "id": "python-expert",
-      "name": "python-expert",
-      "description": "Write idiomatic Python code with advanced features like decorators, generators, and async/await. Optimizes performance, implements design patterns, and ensures comprehensive testing. Use PROACTIVELY for Python refactoring, optimization, or complex Python features."
-    },
-    {
-      "id": "python-pro",
-      "name": "python-pro",
-      "description": "Master Python 3.12+ with modern features, async programming, performance optimization, and production-ready practices. Expert in the latest Python ecosystem including uv, ruff, pydantic, and FastAPI. Use PROACTIVELY for Python development, optimization, or advanced Python patterns."
-    },
-    {
-      "id": "quant-analyst",
-      "name": "quant-analyst",
-      "description": "Build financial models, backtest trading strategies, and analyze market data. Implements risk metrics, portfolio optimization, and statistical arbitrage. Use PROACTIVELY for quantitative finance, trading algorithms, or risk analysis."
-    },
-    {
-      "id": "query-clarifier",
-      "name": "query-clarifier",
-      "description": "Analyze research queries for clarity and determine if clarification is needed. Use PROACTIVELY at the beginning of research workflows to ensure queries are specific and actionable."
-    },
-    {
-      "id": "rails-expert",
-      "name": "rails-expert",
-      "description": "Build scalable Rails applications with modern patterns and best practices. Implements service objects, background jobs, and API design. Use PROACTIVELY for Rails development, performance optimization, or architectural decisions."
-    },
-    {
-      "id": "rakesh-jhunjhunwala",
-      "name": "rakesh-jhunjhunwala",
-      "description": "你是拉凯什·金君瓦拉（Rakesh Jhunjhunwala）投资分析智能体——被称为\"印度的沃伦·巴菲特\"。"
-    },
-    {
-      "id": "react-performance-optimization",
-      "name": "react-performance-optimization",
-      "description": "You are a React Performance Optimization specialist focusing on identifying, analyzing, and resolving performance bottlenecks in React applications. Your expertise covers rendering optimization, bundle analysis, memory management, and Core Web Vitals improvements."
-    },
-    {
-      "id": "red-team",
-      "name": "red-team",
-      "description": "红队攻击面深度审计 Agent。聚焦 vuln-scan/logic-scan 思维盲区：自造轮子（Q1）、异常路径安全（Q2）、跨边界信任穿越（Q3）。"
-    },
-    {
-      "id": "reference-builder",
-      "name": "reference-builder",
-      "description": "Creates exhaustive technical references and API documentation. Generates comprehensive parameter listings, configuration guides, and searchable reference materials. Use PROACTIVELY for API docs, configuration references, or complete technical specifications."
-    },
-    {
-      "id": "remotion-video-expert",
-      "name": "remotion-video-expert",
-      "description": "Video generation expert creating programmatic videos with Remotion framework — scene planning, React-based video components, BGM integration, and production-ready rendering. Triggers on video generation, animation creation, programmatic video, and Remotion-based video production requests."
-    },
-    {
-      "id": "report-generator",
-      "name": "report-generator",
-      "description": "You are the Report Generator, a specialized expert in transforming synthesized research findings into comprehensive, well-structured final reports. Your expertise lies in creating clear narratives from complex data while maintaining academic rigor and proper citation standards."
-    },
-    {
-      "id": "requirements-code",
-      "name": "requirements-code",
-      "description": "Direct implementation agent that converts technical specifications into working code with minimal architectural overhead"
-    },
-    {
-      "id": "requirements-generate",
-      "name": "requirements-generate",
-      "description": "Transform user requirements into code-friendly technical specifications optimized for automatic code generation"
-    },
-    {
-      "id": "requirements-review",
-      "name": "requirements-review",
-      "description": "Pragmatic code review agent focused on functionality, integration quality, and maintainability rather than architectural perfection"
-    },
-    {
-      "id": "requirements-testing",
-      "name": "requirements-testing",
-      "description": "Practical testing agent focused on functional validation and integration testing rather than exhaustive test coverage"
-    },
-    {
-      "id": "research-brief-generator",
-      "name": "research-brief-generator",
-      "description": "Transforms user research queries into structured, actionable research briefs with specific questions, keywords, source preferences, and success criteria. Creates comprehensive research plans that guide subsequent research activities."
-    },
-    {
-      "id": "research-coordinator",
-      "name": "research-coordinator",
-      "description": "Strategically plan and coordinate complex research tasks across multiple specialists. Use PROACTIVELY for multi-faceted research projects requiring diverse expertise."
-    },
-    {
-      "id": "research-manager",
-      "name": "research-manager",
-      "description": "你是投资组合经理（Research Manager），同时担任多空辩论的裁判。你的职责是批判性评估辩论结果，做出明确的投资决策，并制定可执行的投资计划。"
-    },
-    {
-      "id": "research-orchestrator",
-      "name": "research-orchestrator",
-      "description": "You are the Research Orchestrator, an elite coordinator responsible for managing comprehensive research projects using the Open Deep Research methodology. You excel at breaking down complex research queries into manageable phases and coordinating specialized agents to deliver thorough, high-quality research outputs."
-    },
-    {
-      "id": "research-subagent",
-      "name": "research-subagent",
-      "description": "Responsible for researching and executing tasks assigned by the lead research agent."
-    },
-    {
-      "id": "research-synthesizer",
-      "name": "research-synthesizer",
-      "description": "Consolidate and synthesize findings from multiple research sources into unified analysis. Use when merging diverse perspectives, identifying patterns, and creating structured insights from complex research."
-    },
-    {
-      "id": "review-agent",
-      "name": "review-agent",
-      "description": "You are a specialized quality assurance agent for knowledge management systems. Your primary responsibility is to review and validate work performed by other enhancement agents, ensuring consistency and quality across the vault through systematic validation and cross-checking."
-    },
-    {
-      "id": "risk-manager",
-      "name": "risk-manager",
-      "description": "Monitor portfolio risk, R-multiples, and position limits. Creates hedging strategies, calculates expectancy, and implements stop-losses. Use PROACTIVELY for risk assessment, trade tracking, or portfolio protection."
-    },
-    {
-      "id": "ruby-expert",
-      "name": "ruby-expert",
-      "description": "Write idiomatic Ruby code following best practices and design patterns. Implements SOLID principles, service objects, and comprehensive testing. Use PROACTIVELY for Ruby refactoring, performance optimization, or complex Ruby features."
-    },
-    {
-      "id": "ruby-pro",
-      "name": "ruby-pro",
-      "description": "Write idiomatic Ruby code with metaprogramming, Rails patterns, and performance optimization. Specializes in Ruby on Rails, gem development, and testing frameworks. Use PROACTIVELY for Ruby refactoring, optimization, or complex Ruby features."
-    },
-    {
-      "id": "rust-expert",
-      "name": "rust-expert",
-      "description": "Write idiomatic Rust code with ownership, lifetimes, and type safety. Implements concurrent systems, async programming, and memory-safe abstractions. Use PROACTIVELY for Rust development, systems programming, or performance-critical code."
-    },
-    {
-      "id": "rust-pro",
-      "name": "rust-pro",
-      "description": "Master Rust 1.75+ with modern async patterns, advanced type system features, and production-ready systems programming. Expert in the latest Rust ecosystem including Tokio, axum, and cutting-edge crates. Use PROACTIVELY for Rust development, performance optimization, or systems programming."
-    },
-    {
-      "id": "sales-automator",
-      "name": "sales-automator",
-      "description": "Draft cold emails, follow-ups, and proposal templates. Creates pricing pages, case studies, and sales scripts. Use PROACTIVELY for sales outreach or lead nurturing."
-    },
-    {
-      "id": "scala-pro",
-      "name": "scala-pro",
-      "description": "Master enterprise-grade Scala development with functional programming, distributed systems, and big data processing. Expert in Apache Pekko, Akka, Spark, ZIO/Cats Effect, and reactive architectures. Use PROACTIVELY for Scala system design, performance optimization, or enterprise integration."
-    },
-    {
-      "id": "search-specialist",
-      "name": "search-specialist",
-      "description": "Expert web researcher using advanced search techniques and synthesis. Masters search operators, result filtering, and multi-source verification. Handles competitive analysis and fact-checking. Use PROACTIVELY for deep research, information gathering, or trend analysis."
-    },
-    {
-      "id": "sector-screening",
-      "name": "sector-screening",
-      "description": "你是一位A股行业比较与配置策略研究员，负责从众多板块中筛选出当前最值得关注的投资方向。"
-    },
-    {
-      "id": "security-auditor",
-      "name": "security-auditor",
-      "description": "Expert security auditor specializing in DevSecOps, comprehensive cybersecurity, and compliance frameworks. Masters vulnerability assessment, threat modeling, secure authentication (OAuth2/OIDC), OWASP standards, cloud security, and security automation. Handles DevSecOps integration, compliance (GDPR/HIPAA/SOC2), and incident response. Use PROACTIVELY for security audits, DevSecOps, or compliance implementation."
-    },
-    {
-      "id": "sentiment-analyst",
-      "name": "sentiment-analyst",
-      "description": "你是一位市场情绪分析师（Sentiment Analyst）。你的职责是分析市场对指定标的的整体情绪、机构态度、资金动向和投资者关注热点。"
-    },
-    {
-      "id": "seo-authority-builder",
-      "name": "seo-authority-builder",
-      "description": "Analyzes content for E-E-A-T signals and suggests improvements to build authority and trust. Identifies missing credibility elements. Use PROACTIVELY for YMYL topics."
-    },
-    {
-      "id": "seo-cannibalization-detector",
-      "name": "seo-cannibalization-detector",
-      "description": "Analyzes multiple provided pages to identify keyword overlap and potential cannibalization issues. Suggests differentiation strategies. Use PROACTIVELY when reviewing similar content."
-    },
-    {
-      "id": "seo-content-auditor",
-      "name": "seo-content-auditor",
-      "description": "Analyzes provided content for quality, E-E-A-T signals, and SEO best practices. Scores content and provides improvement recommendations based on established guidelines. Use PROACTIVELY for content review."
-    },
-    {
-      "id": "seo-content-planner",
-      "name": "seo-content-planner",
-      "description": "Creates comprehensive content outlines and topic clusters for SEO. Plans content calendars and identifies topic gaps. Use PROACTIVELY for content strategy and planning."
-    },
-    {
-      "id": "seo-content-refresher",
-      "name": "seo-content-refresher",
-      "description": "Identifies outdated elements in provided content and suggests updates to maintain freshness. Finds statistics, dates, and examples that need updating. Use PROACTIVELY for older content."
-    },
-    {
-      "id": "seo-content-writer",
-      "name": "seo-content-writer",
-      "description": "Writes SEO-optimized content based on provided keywords and topic briefs. Creates engaging, comprehensive content following best practices. Use PROACTIVELY for content creation tasks."
-    },
-    {
-      "id": "seo-keyword-strategist",
-      "name": "seo-keyword-strategist",
-      "description": "Analyzes keyword usage in provided content, calculates density, suggests semantic variations and LSI keywords based on the topic. Prevents over-optimization. Use PROACTIVELY for content optimization."
-    },
-    {
-      "id": "seo-meta-optimizer",
-      "name": "seo-meta-optimizer",
-      "description": "Creates optimized meta titles, descriptions, and URL suggestions based on character limits and best practices. Generates compelling, keyword-rich metadata. Use PROACTIVELY for new content."
-    },
-    {
-      "id": "seo-podcast-optimizer",
-      "name": "seo-podcast-optimizer",
-      "description": "You are an SEO consultant specializing in tech podcasts. Your expertise lies in crafting search-optimized content that balances keyword effectiveness with engaging, click-worthy copy that accurately represents podcast content for maximum search visibility."
-    },
-    {
-      "id": "seo-snippet-hunter",
-      "name": "seo-snippet-hunter",
-      "description": "Formats content to be eligible for featured snippets and SERP features. Creates snippet-optimized content blocks based on best practices. Use PROACTIVELY for question-based content."
-    },
-    {
-      "id": "seo-structure-architect",
-      "name": "seo-structure-architect",
-      "description": "Analyzes and optimizes content structure including header hierarchy, suggests schema markup, and internal linking opportunities. Creates search-friendly content organization. Use PROACTIVELY for content structuring."
-    },
-    {
-      "id": "service-mesh-expert",
-      "name": "service-mesh-expert",
-      "description": "Migrated WorkBuddy expert: service-mesh-expert"
-    },
-    {
-      "id": "sheet-agent",
-      "name": "sheet-agent",
-      "description": "表格子代理，调用时文件路径必须传入完整 local_path 或 file_id/sheet_id。"
-    },
-    {
-      "id": "shortterm-surfer",
-      "name": "shortterm-surfer",
-      "description": "Short-term Surfer - A-share + US dual-market short-term trader (~60% win rate), catches weekly themes, confirms via opening auction, exits on moving-average breaks"
-    },
-    {
-      "id": "signal-chief",
-      "name": "signal-chief",
-      "description": "Signal Chief - 20-year veteran using 4-layer signal system (policy, industry, news, capital) for timing decisions across short and long horizons"
-    },
-    {
-      "id": "silent-failure-hunter",
-      "name": "silent-failure-hunter",
-      "description": "Use this agent when reviewing code changes in a pull request to identify silent failures, inadequate error handling, and inappropriate fallback behavior. This agent should be invoked proactively after completing a logical chunk of work that involves error handling, catch blocks, fallback logic, or any code that could potentially suppress errors. Examples:\\n\\n<example>\\nContext: Daisy has just finished implementing a new feature that fetches data from an API with fallback behavior.\\nDaisy: \"I've added error handling to the API client. Can you review it?\"\\nAssistant: \"Let me use the silent-failure-hunter agent to thoroughly examine the error handling in your changes.\"\\n<Task tool invocation to launch silent-failure-hunter agent>\\n</example>\\n\\n<example>\\nContext: Daisy has created a PR with changes that include try-catch blocks.\\nDaisy: \"Please review PR #1234\"\\nAssistant: \"I'll use the silent-failure-hunter agent to check for any silent failures or inadequate error handling in this PR.\"\\n<Task tool invocation to launch silent-failure-hunter agent>\\n</example>\\n\\n<example>\\nContext: Daisy has just refactored error handling code.\\nDaisy: \"I've updated the error handling in the authentication module\"\\nAssistant: \"Let me proactively use the silent-failure-hunter agent to ensure the error handling changes don't introduce silent failures.\"\\n<Task tool invocation to launch silent-failure-hunter agent>\\n</example>"
-    },
-    {
-      "id": "skill-reviewer",
-      "name": "skill-reviewer",
-      "description": "Use this agent when the user has created or modified a skill and needs quality review, asks to \"review my skill\", \"check skill quality\", \"improve skill description\", or wants to ensure skill follows best practices. Trigger proactively after skill creation. Examples:"
-    },
-    {
-      "id": "smart-money-tracker",
-      "name": "smart-money-tracker",
-      "description": "你是一位A股资金行为研究专家，擅长追踪各路\"聪明钱\"的动向，识别资金共识方向。"
-    },
-    {
-      "id": "social-media-clip-creator",
-      "name": "social-media-clip-creator",
-      "description": "Creates optimized video clips for social media platforms from longer content. Handles platform-specific aspect ratios, durations, encoding settings for TikTok, Instagram, YouTube Shorts, Twitter, and LinkedIn using FFMPEG processing and optimization."
-    },
-    {
-      "id": "social-media-copywriter",
-      "name": "social-media-copywriter",
-      "description": "You are an expert social media copywriter specializing in podcast promotion. Your role is to transform episode information into compelling social media content that drives engagement and listenership across Twitter/X, LinkedIn, and Instagram platforms."
-    },
-    {
-      "id": "soe",
-      "name": "soe",
-      "description": "腾讯云安全运营专家。当用户提及安全事件分析、漏洞管理、告警研判、入侵排查、日志分析、DDoS 攻击分析、勒索病毒分析、资产纳管、SOC 告警处理、WAF/御界/天幕日志分析等安全运营场景时使用。"
-    },
-    {
-      "id": "sql-expert",
-      "name": "sql-expert",
-      "description": "Write complex SQL queries and optimize database performance. Use PROACTIVELY for query optimization, schema design, or complex data transformations."
-    },
-    {
-      "id": "sql-pro",
-      "name": "sql-pro",
-      "description": "Master modern SQL with cloud-native databases, OLTP/OLAP optimization, and advanced query techniques. Expert in performance tuning, data modeling, and hybrid analytical systems. Use PROACTIVELY for database optimization or complex analysis."
-    },
-    {
-      "id": "stanley-druckenmiller",
-      "name": "stanley-druckenmiller",
-      "description": "你是斯坦利·德鲁肯米勒（Stanley Druckenmiller）投资分析智能体。你追求非对称的风险收益机会。"
-    },
-    {
-      "id": "startup-analyst",
-      "name": "startup-analyst",
-      "description": "Expert startup business analyst specializing in market sizing, financial modeling, competitive analysis, and strategic planning for early-stage companies. Use PROACTIVELY when the user asks about market opportunity, TAM/SAM/SOM, financial projections, unit economics, competitive landscape, team planning, startup metrics, or business strategy for pre-seed through Series A startups."
-    },
-    {
-      "id": "stock-partner-lead",
-      "name": "stock-partner-lead",
-      "description": "Stock analysis roundtable orchestrator. When users ask about stocks, markets, portfolios, or investment decisions, create a team to orchestrate the 6 expert sub-agents for a roundtable discussion — do not answer alone."
-    },
-    {
-      "id": "stock-research",
-      "name": "stock-research",
-      "description": "你是一位A股资深股票研究员，负责对单只股票生成一份全方位深度研究报告。"
-    },
-    {
-      "id": "tag-agent",
-      "name": "tag-agent",
-      "description": "Normalizes and hierarchically organizes tag taxonomy for knowledge management systems. Maintains clean, consistent tag structures and consolidates duplicates."
-    },
-    {
-      "id": "task-checker",
-      "name": "task-checker",
-      "description": "Use this agent to verify that tasks marked as 'review' have been properly implemented according to their specifications. This agent performs quality assurance by checking implementations against requirements, running tests, and ensuring best practices are followed. <example>Context: A task has been marked as 'review' after implementation. user: 'Check if task 118 was properly implemented' assistant: 'I'll use the task-checker agent to verify the implementation meets all requirements.' <commentary>Tasks in 'review' status need verification before being marked as 'done'.</commentary></example> <example>Context: Multiple tasks are in review status. user: 'Verify all tasks that are ready for review' assistant: 'I'll deploy the task-checker to verify all tasks in review status.' <commentary>The checker ensures quality before tasks are marked complete.</commentary></example>"
-    },
-    {
-      "id": "task-decomposition-expert",
-      "name": "task-decomposition-expert",
-      "description": "Break down complex user goals into actionable tasks and identify optimal combinations of tools, agents, and workflows for system integration."
-    },
-    {
-      "id": "task-executor",
-      "name": "task-executor",
-      "description": "Use this agent when you need to implement, complete, or work on a specific task that has been identified by the task-orchestrator or when explicitly asked to execute a particular task. This agent focuses on the actual implementation and completion of individual tasks rather than planning or orchestration. Examples: <example>Context: The task-orchestrator has identified that task 2.3 'Implement user authentication' needs to be worked on next. user: 'Let's work on the authentication task' assistant: 'I'll use the task-executor agent to implement the user authentication task that was identified.' <commentary>Since we need to actually implement a specific task rather than plan or identify tasks, use the task-executor agent.</commentary></example> <example>Context: User wants to complete a specific subtask. user: 'Please implement the JWT token validation for task 2.3.1' assistant: 'I'll launch the task-executor agent to implement the JWT token validation subtask.' <commentary>The user is asking for specific implementation work on a known task, so the task-executor is appropriate.</commentary></example> <example>Context: After reviewing the task list, implementation is needed. user: 'Now let's actually build the API endpoint for user registration' assistant: 'I'll use the task-executor agent to implement the user registration API endpoint.' <commentary>Moving from planning to execution phase requires the task-executor agent.</commentary></example>"
-    },
-    {
-      "id": "task-orchestrator",
-      "name": "task-orchestrator",
-      "description": "Use this agent when you need to coordinate and manage the execution of Task Master tasks, especially when dealing with complex task dependencies and parallel execution opportunities. This agent should be invoked at the beginning of a work session to analyze the task queue, identify parallelizable work, and orchestrate the deployment of task-executor agents. It should also be used when tasks complete to reassess the dependency graph and deploy new executors as needed.\\n\\n<example>\\nContext: User wants to start working on their project tasks using Task Master\\nuser: \"Let's work on the next available tasks in the project\"\\nassistant: \"I'll use the task-orchestrator agent to analyze the task queue and coordinate execution\"\\n<commentary>\\nThe user wants to work on tasks, so the task-orchestrator should be deployed to analyze dependencies and coordinate execution.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: Multiple independent tasks are available in the queue\\nuser: \"Can we work on multiple tasks at once?\"\\nassistant: \"Let me deploy the task-orchestrator to analyze task dependencies and parallelize the work\"\\n<commentary>\\nWhen parallelization is mentioned or multiple tasks could be worked on, the orchestrator should coordinate the effort.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: A complex feature with many subtasks needs implementation\\nuser: \"Implement the authentication system tasks\"\\nassistant: \"I'll use the task-orchestrator to break down the authentication tasks and coordinate their execution\"\\n<commentary>\\nFor complex multi-task features, the orchestrator manages the overall execution strategy.\\n</commentary>\\n</example>"
-    },
-    {
-      "id": "tdd-orchestrator",
-      "name": "tdd-orchestrator",
-      "description": "Master TDD orchestrator specializing in red-green-refactor discipline, multi-agent workflow coordination, and comprehensive test-driven development practices. Enforces TDD best practices across teams with AI-assisted testing and modern frameworks. Use PROACTIVELY for TDD implementation and governance."
-    },
-    {
-      "id": "technical-researcher",
-      "name": "technical-researcher",
-      "description": "Analyze code repositories, technical documentation, and implementation details. Use PROACTIVELY for evaluating technical solutions, reviewing APIs, or assessing code quality."
-    },
-    {
-      "id": "technicals-analyst",
-      "name": "technicals-analyst",
-      "description": "你是技术面分析师（Technical Analyst）。你通过价格和成交量数据判断市场趋势和交易时机。"
-    },
-    {
-      "id": "temporal-python-pro",
-      "name": "temporal-python-pro",
-      "description": "Master Temporal workflow orchestration with Python SDK. Implements durable workflows, saga patterns, and distributed transactions. Covers async/await, testing strategies, and production deployment. Use PROACTIVELY for workflow design, microservice orchestration, or long-running processes."
-    },
-    {
-      "id": "terraform-specialist",
-      "name": "terraform-specialist",
-      "description": "Expert Terraform/OpenTofu specialist mastering advanced IaC automation, state management, and enterprise infrastructure patterns. Handles complex module design, multi-cloud deployments, GitOps workflows, policy as code, and CI/CD integration. Covers migration strategies, security best practices, and modern IaC ecosystems. Use PROACTIVELY for advanced IaC, state management, or infrastructure automation."
-    },
-    {
-      "id": "test-automator",
-      "name": "test-automator",
-      "description": "Master AI-powered test automation with modern frameworks, self-healing tests, and comprehensive quality engineering. Build scalable testing strategies with advanced CI/CD integration. Use PROACTIVELY for testing automation or quality assurance."
-    },
-    {
-      "id": "text-comparison-validator",
-      "name": "text-comparison-validator",
-      "description": "Compare extracted text from images with existing markdown files to ensure accuracy and consistency. Detects discrepancies, errors, and formatting inconsistencies."
-    },
-    {
-      "id": "thematic-hunter",
-      "name": "thematic-hunter",
-      "description": "你是一位A股主题投资策略研究员，擅长从市场主线出发，沿产业链挖掘投资机会，构建高质量标的池。"
-    },
-    {
-      "id": "timestamp-precision-specialist",
-      "name": "timestamp-precision-specialist",
-      "description": "Extract frame-accurate timestamps from audio/video files for podcast editing. Identifies precise cut points, detects speech boundaries, and ensures clean transitions."
-    },
-    {
-      "id": "trader",
-      "name": "trader",
-      "description": "你是一名交易员（Trader）。你的职责是综合所有分析报告和研究主管的投资计划，做出最终的具体交易建议。"
-    },
-    {
-      "id": "tutorial-engineer",
-      "name": "tutorial-engineer",
-      "description": "Creates step-by-step tutorials and educational content from code. Transforms complex concepts into progressive learning experiences with hands-on examples. Use PROACTIVELY for onboarding guides, feature tutorials, or concept explanations."
-    },
-    {
-      "id": "twitter-ai-influencer-manager",
-      "name": "twitter-ai-influencer-manager",
-      "description": "Interact with Twitter around AI thought leaders and influencers. Post tweets, search content, analyze influencer tweets, schedule posts, and engage with AI community."
-    },
-    {
-      "id": "type-design-analyzer",
-      "name": "type-design-analyzer",
-      "description": "Use this agent when you need expert analysis of type design in your codebase. Specifically use it: (1) when introducing a new type to ensure it follows best practices for encapsulation and invariant expression, (2) during pull request creation to review all types being added, (3) when refactoring existing types to improve their design quality. The agent will provide both qualitative feedback and quantitative ratings on encapsulation, invariant expression, usefulness, and enforcement.\\n\\n<example>\\nContext: Daisy is writing code that introduces a new UserAccount type and wants to ensure it has well-designed invariants.\\nuser: \"I've just created a new UserAccount type that handles user authentication and permissions\"\\nassistant: \"I'll use the type-design-analyzer agent to review the UserAccount type design\"\\n<commentary>\\nSince a new type is being introduced, use the type-design-analyzer to ensure it has strong invariants and proper encapsulation.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: Daisy is creating a pull request and wants to review all newly added types.\\nuser: \"I'm about to create a PR with several new data model types\"\\nassistant: \"Let me use the type-design-analyzer agent to review all the types being added in this PR\"\\n<commentary>\\nDuring PR creation with new types, use the type-design-analyzer to review their design quality.\\n</commentary>\\n</example>"
-    },
-    {
-      "id": "typescript-expert",
-      "name": "typescript-expert",
-      "description": "Write type-safe TypeScript with advanced type system features, generics, and utility types. Implements complex type inference, discriminated unions, and conditional types. Use PROACTIVELY for TypeScript development, type system design, or migrating JavaScript to TypeScript."
-    },
-    {
-      "id": "typescript-pro",
-      "name": "typescript-pro",
-      "description": "Master TypeScript with advanced types, generics, and strict type safety. Handles complex type systems, decorators, and enterprise-grade patterns. Use PROACTIVELY for TypeScript architecture, type inference optimization, or advanced typing patterns."
-    },
-    {
-      "id": "ui-ux-designer",
-      "name": "ui-ux-designer",
-      "description": "Create interface designs, wireframes, and design systems. Masters user research, accessibility standards, and modern design tools. Specializes in design tokens, component libraries, and inclusive design. Use PROACTIVELY for design systems, user flows, or interface optimization."
-    },
-    {
-      "id": "ui-visual-validator",
-      "name": "ui-visual-validator",
-      "description": "Rigorous visual validation expert specializing in UI testing, design system compliance, and accessibility verification. Masters screenshot analysis, visual regression testing, and component validation. Use PROACTIVELY to verify UI modifications have achieved their intended goals through comprehensive visual analysis."
-    },
-    {
-      "id": "unity-developer",
-      "name": "unity-developer",
-      "description": "Build Unity games with optimized C# scripts, efficient rendering, and proper asset management. Masters Unity 6 LTS, URP/HDRP pipelines, and cross-platform deployment. Handles gameplay systems, UI implementation, and platform optimization. Use PROACTIVELY for Unity performance issues, game mechanics, or cross-platform builds."
-    },
-    {
-      "id": "url-context-validator",
-      "name": "url-context-validator",
-      "description": "Validate URLs for both technical functionality and contextual appropriateness. Goes beyond link checking to analyze content relevance and alignment."
-    },
-    {
-      "id": "url-link-extractor",
-      "name": "url-link-extractor",
-      "description": "Find, extract, and catalog all URLs and links within website codebases. Includes internal links, external links, API endpoints, and asset references."
-    },
-    {
-      "id": "valuation-analyst",
-      "name": "valuation-analyst",
-      "description": "Valuation Analyst - ex-sell-side strategist with 12 years experience, prices stocks via PE Bands/PEG/EPS analysis anchored in macro asset allocation"
-    },
-    {
-      "id": "vector-database-engineer",
-      "name": "vector-database-engineer",
-      "description": "Migrated WorkBuddy expert: vector-database-engineer"
-    },
-    {
-      "id": "verifier",
-      "name": "verifier",
-      "description": "对抗验证 Agent。对扫描发现执行攻击链验证和对抗审查，支持按 sourceAgent 并行分片（verifier-vuln / verifier-logic / verifier-redteam）。"
-    },
-    {
-      "id": "visual-analysis-ocr",
-      "name": "visual-analysis-ocr",
-      "description": "Extract and analyze text content from PNG images while preserving original formatting and structure. Converts visual hierarchy into markdown format."
-    },
-    {
-      "id": "vuln-scan",
-      "name": "vuln-scan",
-      "description": "Source→Sink 数据流追踪漏洞审计 Agent。基于语义索引执行注入类（C1）漏洞的数据流追踪分析。"
-    },
-    {
-      "id": "warren-buffett",
-      "name": "warren-buffett",
-      "description": "你是沃伦·巴菲特（Warren Buffett）投资分析智能体。你以巴菲特的价值投资原则做出投资决策。"
-    },
-    {
-      "id": "weixin-minigame-helper",
-      "name": "weixin-minigame-helper",
-      "description": "你是微信小游戏预览和调试的专用 Agent。你的职责是帮助用户运行、调试、测试和发布微信小游戏。"
-    },
-    {
-      "id": "wordpress-developer",
-      "name": "wordpress-developer",
-      "description": "Build professional WordPress solutions with custom themes, plugins, and advanced functionality. Expert in WordPress architecture, custom post types, block development, performance optimization, and security. Use PROACTIVELY for WordPress development, custom plugin creation, or WP architecture."
-    },
-    {
-      "id": "xiaohongshu-operations-expert",
-      "name": "xiaohongshu-operations-expert",
-      "description": "Expert Xiaohongshu marketing specialist focused on lifestyle content, trend-driven strategies, and authentic community engagement. Masters micro-content creation and drives viral growth through aesthetic storytelling."
+      "id": "AccessibilityAuditor",
+      "name": "AccessibilityAuditor",
+      "display_name": "无障碍审计师",
+      "role_name": "无碍碍",
+      "description": "按WCAG标准审计界面可访问性，确保每个用户都能使用产品",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AccountsPayableAgent",
+      "name": "AccountsPayableAgent",
+      "display_name": "应付账款代理",
+      "role_name": "付清清",
+      "description": "自动化处理应付账款流程，确保付款准确及时",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AdCreativeStrategist",
+      "name": "AdCreativeStrategist",
+      "display_name": "广告创意策略师",
+      "role_name": "点睛睛",
+      "description": "精通广告创意设计和效果预判，创作高转化广告素材",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AdortDesignExpert",
+      "name": "AdortDesignExpert",
+      "display_name": "Ardot 设计专家",
+      "role_name": "林觉初",
+      "description": "精通 Ardot 设计软件，既能在画布上构建精准 UI，也能将设计稿直接生成前端代码",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AdTrackingExpert",
+      "name": "AdTrackingExpert",
+      "display_name": "广告追踪技术专家",
+      "role_name": "追踪踪",
+      "description": "精通广告追踪代码和转化归因技术，确保投放效果可追踪",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AgentIdentityTrustExpert",
+      "name": "AgentIdentityTrustExpert",
+      "display_name": "智能体身份信任专家",
+      "role_name": "信链链",
+      "description": "构建AI智能体间的身份认证和信任机制",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AgentOrchestrator",
+      "name": "AgentOrchestrator",
+      "display_name": "智能体编排师",
+      "role_name": "调度达",
+      "description": "精通多智能体系统的编排和协调，让AI团队高效协作",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AiContentCreatorTeam",
+      "name": "AiContentCreatorTeam",
+      "display_name": "内容创作专家团",
+      "role_name": "内容创作专家团",
+      "description": "AI驱动的多模态内容生产团队，从创意策划到成品交付全覆盖，涵盖品牌定位、情绪板、广告方向、文案创作、视频生成、图片设计、精修合成和素材改编。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AiDataCopilot",
+      "name": "AiDataCopilot",
+      "display_name": "智数分析专家团",
+      "role_name": "智数分析专家团",
+      "description": "6人AI数据分析团队，擅长自然语言转SQL、Python建模、RAG知识问答、仪表盘可视化与报告生成",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AiEngineer",
+      "name": "AiEngineer",
+      "display_name": "AI工程师",
+      "role_name": "深网网",
+      "description": "精通ML模型开发部署优化的全栈AI工程师，将AI从论文带到生产环境",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AiHot",
+      "name": "AiHot",
+      "display_name": "资讯速递专家",
+      "role_name": "数字生命卡兹克",
+      "description": "一句话查到每天精选的 AI 模型/产品/行业/论文动态，自动整理成中文简报，免配置免登录。",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AiImagePromptEngineer",
+      "name": "AiImagePromptEngineer",
+      "display_name": "AI图像提示词工程师",
+      "role_name": "画令令",
+      "description": "精通AI图像生成的语言密码，将抽象视觉概念转化为精准提示词",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AIShifuExpert",
+      "name": "AIShifuExpert",
+      "display_name": "AI师傅课程制作专家",
+      "role_name": "AI师傅",
+      "description": "基于你的教学需求和原始内容(PPT、Word、PDF、txt等)，帮你快速做门AI一对一互动课",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AndonQExpert",
+      "name": "AndonQExpert",
+      "display_name": "腾讯云智能客服",
+      "role_name": "AndonQ",
+      "description": "精通腾讯云全线产品，提供产品咨询、故障排查、服务报告等多维度服务的技术专家。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ApiTestingExpert",
+      "name": "ApiTestingExpert",
+      "display_name": "API测试专家",
+      "role_name": "接口探",
+      "description": "在用户之前发现API的每一个缺陷，确保接口稳定性和正确性",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "APMPerformanceExpert",
+      "name": "APMPerformanceExpert",
+      "display_name": "应用性能专家",
+      "role_name": "安迪",
+      "description": "精通腾讯云 APM 性能诊断与调优，快速定位应用瓶颈并给出优化方案",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AppStoreOptimizationExpert",
+      "name": "AppStoreOptimizationExpert",
+      "display_name": "应用商店优化专家",
+      "role_name": "榜上上",
+      "description": "精通App Store和Google Play搜索排名算法，让应用脱颖而出",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AShareAnalysis",
+      "name": "AShareAnalysis",
+      "display_name": "A股研究团队",
+      "role_name": "A股研究团队",
+      "description": "8位研究专家支持6个预设工作流编排，覆盖宏观策略、盘面解读、个股深度、估值定价、产业链映射、资金追踪、风险诊断",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AskLiuxiaopai",
+      "name": "AskLiuxiaopai",
+      "display_name": "产品顾问",
+      "role_name": "AI 刘小排",
+      "description": "Raphael AI 创始人刘小排的数字分身，office-hours 风格陪你拆 idea：钉死具体的人、真痛点、第一笔钱、第一批用户在哪，再给一件今晚就能做的事。",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "AutonomousOptimizationArchitect",
+      "name": "AutonomousOptimizationArchitect",
+      "display_name": "自主优化架构师",
+      "role_name": "自进化",
+      "description": "专精于设计能自主优化和进化的智能系统架构，让系统越用越聪明",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BackendArchitect",
+      "name": "BackendArchitect",
+      "display_name": "后端架构师",
+      "role_name": "磐石石",
+      "description": "深耕分布式系统和高并发架构，擅长将复杂业务转化为优雅技术方案",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BaiduSeoExpert",
+      "name": "BaiduSeoExpert",
+      "display_name": "百度SEO专家",
+      "role_name": "度优优",
+      "description": "深谙百度搜索算法和中国搜索生态，让品牌获得最大曝光",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BehavioralNudgeEngine",
+      "name": "BehavioralNudgeEngine",
+      "display_name": "行为助推引擎",
+      "role_name": "助推推",
+      "description": "运用行为经济学设计产品助推机制，引导用户做出更好的决策",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BilibiliContentStrategist",
+      "name": "BilibiliContentStrategist",
+      "display_name": "B站内容策略师",
+      "role_name": "弹幕幕",
+      "description": "精通B站平台生态和年轻用户偏好，打造高播放量视频策略",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BlockchainSecurityAuditor",
+      "name": "BlockchainSecurityAuditor",
+      "display_name": "区块链安全审计师",
+      "role_name": "链审审",
+      "description": "专精区块链智能合约和DeFi协议安全审计",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BookCoCreator",
+      "name": "BookCoCreator",
+      "display_name": "图书联合创作者",
+      "role_name": "著书书",
+      "description": "与作者深度协作，帮助规划书籍结构和内容，达到出版级品质",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "BrandGuardian",
+      "name": "BrandGuardian",
+      "display_name": "品牌策略师",
+      "role_name": "盾卫卫",
+      "description": "15年品牌战略经验，守护品牌一致性的终极捍卫者",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CapacityExpert",
+      "name": "CapacityExpert",
+      "display_name": "腾讯云容量规划专家",
+      "role_name": "CloudQ",
+      "description": "容量规划专家。擅长水位监控、容量预测与弹性伸缩策略制定，防止资源瓶颈与浪费。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CarouselContentGrowthExpert",
+      "name": "CarouselContentGrowthExpert",
+      "display_name": "轮播内容增长专家",
+      "role_name": "翻页页",
+      "description": "专精设计高互动率轮播图内容，驱动社交平台用户参与和增长",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CATNetworkQualityAnalyst",
+      "name": "CATNetworkQualityAnalyst",
+      "display_name": "网络质量分析专家",
+      "role_name": "亚伦",
+      "description": "精通多维性能分析、异常定位、抓包诊断、问题定界，快速定位网络与服务异常根因",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ChaosExpert",
+      "name": "ChaosExpert",
+      "display_name": "腾讯云混沌演练专家",
+      "role_name": "CloudQ",
+      "description": "混沌演练专家。擅长故障注入演练、韧性验证与熔断策略评估，提升系统抗脆弱能力。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CharityDocFinanceExpert",
+      "name": "CharityDocFinanceExpert",
+      "display_name": "公益文书与财务专家",
+      "role_name": "小益",
+      "description": "公益机构文书与财务一站式专家，覆盖项目申请书、结项报告、票据管理、审计准备与合规咨询，帮助公益人从繁琐行政中解放。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ChatLawTeam",
+      "name": "ChatLawTeam",
+      "display_name": "中文法律咨询团",
+      "role_name": "中文法律咨询团",
+      "description": "案情采集、法条研究、判例分析、建议撰写，为民事、婚姻、合同、劳动等高频场景出具专业法律咨询报告。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ChinaEcommerceOperationsExpert",
+      "name": "ChinaEcommerceOperationsExpert",
+      "display_name": "中国电商运营专家",
+      "role_name": "卖得好",
+      "description": "精通天猫京东拼多多等平台运营，从选品到爆款一站式操盘",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CloudOpsTeam",
+      "name": "CloudOpsTeam",
+      "display_name": "腾讯云技术支持",
+      "role_name": "腾讯云技术支持",
+      "description": "三位专家组成的运维团队 — CloudQ 负责多云统一治理与架构可视化，AndonQ 负责工单管理与智能问答，MigraQ 负责跨云迁移规划与 TCO 分析。从迁移上云到日常运维，提供端到端的腾讯云运维服务。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "Code",
+      "name": "Code",
+      "display_name": "代码开发流程专家",
+      "role_name": "鹏城信息AI专家",
+      "description": "提供规划执行验证测试全流程编码指导，将复杂需求拆解为可独立验证步骤，支持多任务跟踪与偏好记忆。",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "local"
+    },
+    {
+      "id": "CodeReviewExpert",
+      "name": "CodeReviewExpert",
+      "display_name": "代码审查专家",
+      "role_name": "火眼眼",
+      "description": "以鹰眼标准检查每行代码，在缺陷到达生产环境之前将其拦截",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ComplianceAuditor",
+      "name": "ComplianceAuditor",
+      "display_name": "合规审计师",
+      "role_name": "合规规",
+      "description": "全面审计企业运营合规性，确保符合行业标准",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ContentCreator",
+      "name": "ContentCreator",
+      "display_name": "内容创作专家",
+      "role_name": "文博凯",
+      "description": "擅长创作引人入胜的多平台内容，让品牌故事触达目标受众",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ContentDistributionTeam",
+      "name": "ContentDistributionTeam",
+      "display_name": "全域内容分发专家团",
+      "role_name": "全域内容分发专家团",
+      "description": "一站式多平台内容分发方案，覆盖13+全球社交媒体平台（含微信视频号），提供发布规则适配、排期管理、批量发布编排、跨平台数据分析和小红书自动化发布能力",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ContentMonetizationTeam",
+      "name": "ContentMonetizationTeam",
+      "display_name": "内容变现商业化专家团",
+      "role_name": "内容变现商业化专家团",
+      "description": "5人专家团覆盖CPS带货分佣、CPE/CPM效果广告、创作者-品牌交易撮合与收益分析，助力内容创作者和品牌方实现商业化闭环",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CorporateTrainingDesigner",
+      "name": "CorporateTrainingDesigner",
+      "display_name": "企业培训设计师",
+      "role_name": "育才才",
+      "description": "设计系统化企业培训课程和学习路径，让员工技能快速提升",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CrossBorderEcommerceExpert",
+      "name": "CrossBorderEcommerceExpert",
+      "display_name": "跨境电商专家",
+      "role_name": "海跨洋",
+      "description": "精通亚马逊Shopify等国际电商平台，助力品牌出海全球",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CulturalIntelligenceStrategist",
+      "name": "CulturalIntelligenceStrategist",
+      "display_name": "文化智能策略师",
+      "role_name": "知文文",
+      "description": "帮助品牌建立全球化过程中的文化敏感度",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "CustomerSupportExpert",
+      "name": "CustomerSupportExpert",
+      "display_name": "客户支持专家",
+      "role_name": "暖心心",
+      "description": "将每次沮丧的用户互动转化为忠实拥护者，用卓越服务创口碑",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DataAnalysisExpert",
+      "name": "DataAnalysisExpert",
+      "display_name": "数据分析专家",
+      "role_name": "析数数",
+      "description": "数据分析专家，支持 Excel 电子表格的创建、编辑、分析、公式计算、格式化和数据可视化",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DataAnalyticsReporter",
+      "name": "DataAnalyticsReporter",
+      "display_name": "数据分析报告师",
+      "role_name": "舒明析",
+      "description": "将复杂数据转化为战略洞察，提供指标诊断、KPI框架设计、数据质量评估与决策报告",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DatabaseOptimizationExpert",
+      "name": "DatabaseOptimizationExpert",
+      "display_name": "数据库优化专家",
+      "role_name": "索引灵",
+      "description": "专精数据库性能调优和查询优化，让慢查询变快让瓶颈消失",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DataEngineer",
+      "name": "DataEngineer",
+      "display_name": "数据工程师",
+      "role_name": "管道通",
+      "description": "构建高效可靠的数据管道和ETL流程，让数据从源头到洞察畅通无阻",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DataExplorationExpert",
+      "name": "DataExplorationExpert",
+      "display_name": "数据探索专家",
+      "role_name": "探数数",
+      "description": "数据探索专家，支持 SQL 查询、数据探索、可视化、仪表板构建、数据验证和洞察生成",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DataIntegrationAgent",
+      "name": "DataIntegrationAgent",
+      "display_name": "数据整合代理",
+      "role_name": "聚数数",
+      "description": "将分散数据清洗整合统一，构建企业统一数据视图",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DealStrategist",
+      "name": "DealStrategist",
+      "display_name": "交易策略师",
+      "role_name": "赢单单",
+      "description": "精通复杂交易策略制定和推进，帮助销售团队赢得大单",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DeepResearchExpert",
+      "name": "DeepResearchExpert",
+      "display_name": "深度研究专家",
+      "role_name": "深研研",
+      "description": "综合性深度研究专家，支持多源信息检索、事实验证、知识发现和结构化报告生成，含微信公众号文章搜索能力",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DelightfulExperienceDesigner",
+      "name": "DelightfulExperienceDesigner",
+      "display_name": "趣味体验设计师",
+      "role_name": "惊喜喜",
+      "description": "专注于在品牌体验中注入意想不到的愉悦时刻",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DesignEngineTeam",
+      "name": "DesignEngineTeam",
+      "display_name": "设计原型专家团",
+      "role_name": "设计原型专家团",
+      "description": "6 角色 AI 设计团队，覆盖从需求发现到品牌级原型交付的完整工作流，内置 71 套设计系统",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DesignMdArchitect",
+      "name": "DesignMdArchitect",
+      "display_name": "设计系统架构师",
+      "role_name": "规范范",
+      "description": "基于58个品牌参考库，生成设计系统规范文档并直接输出高质量HTML/CSS页面与UI组件代码",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DesignToCodeExpert",
+      "name": "DesignToCodeExpert",
+      "display_name": "设计转代码专家",
+      "role_name": "图变码",
+      "description": "将 Figma 设计稿和截图转换为可直接使用的代码组件，内置无障碍性支持",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DeveloperEvangelist",
+      "name": "DeveloperEvangelist",
+      "display_name": "开发者布道师",
+      "role_name": "布道道",
+      "description": "构建发展开发者社区，推动产品在开发者群体中的采用",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DevOpsAutomationEngineer",
+      "name": "DevOpsAutomationEngineer",
+      "display_name": "DevOps自动化工程师",
+      "role_name": "一键达",
+      "description": "将一切手动运维自动化，从CI/CD到基础设施即代码，部署一键搞定",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DiscoveryCoach",
+      "name": "DiscoveryCoach",
+      "display_name": "需求发现教练",
+      "role_name": "掘需需",
+      "description": "训练销售掌握深度需求挖掘技巧，发现真正的业务痛点",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DiversityVisualExpert",
+      "name": "DiversityVisualExpert",
+      "display_name": "多元视觉专家",
+      "role_name": "多元元",
+      "description": "致力于消除AI图像中的系统性偏见，确保视觉内容文化准确和包容",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DockerfileGenExpert",
+      "name": "DockerfileGenExpert",
+      "display_name": "Dockerfile生成专家",
+      "role_name": "容器器",
+      "description": "Dockerfile 自动生成专家，遵循容器化最佳实践",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DocumentGenerationExpert",
+      "name": "DocumentGenerationExpert",
+      "display_name": "文档生成专家",
+      "role_name": "文档达",
+      "description": "自动化生成各类业务文档，大幅提升文档创建效率",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DocumentProcessingExpert",
+      "name": "DocumentProcessingExpert",
+      "display_name": "文档处理专家",
+      "role_name": "理文文",
+      "description": "文档处理套件：Excel 电子表格、Word 文档、PowerPoint 演示文稿和 PDF 文件的创建、编辑与转换",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "DouyinStrategist",
+      "name": "DouyinStrategist",
+      "display_name": "抖音策略师",
+      "role_name": "斗音音",
+      "description": "精通抖音算法和内容生态，打造短视频爆款并实现商业化变现",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EarningsReviewer",
+      "name": "EarningsReviewer",
+      "display_name": "财报研究员",
+      "role_name": "季明辨",
+      "description": "资深季报复核分析师,读财报电话会和公告更新覆盖模型,产出季报后记、方差表与估值调整,供研究部门沿用。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EmbeddedFirmwareEngineer",
+      "name": "EmbeddedFirmwareEngineer",
+      "display_name": "嵌入式固件工程师",
+      "role_name": "固件通",
+      "description": "精通微控制器编程，在资源受限的硬件上编写高效可靠的固件代码",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EngineeringAssuranceTeam",
+      "name": "EngineeringAssuranceTeam",
+      "display_name": "工程保障团队",
+      "role_name": "工程保障团队",
+      "description": "由工程总监领导的 5 人工程专家团队：代码审查师（安全/性能/正确性）、架构师（系统设计/ADR）、SRE 工程师（事故响应/部署）、测试专家（测试策略/覆盖率）和技术文档师（文档/Runbook）。处理从代码审查到事故响应的复杂工程工作流。",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EngineeringWorkflowSkills",
+      "name": "EngineeringWorkflowSkills",
+      "display_name": "工程实践专家",
+      "role_name": "工序达",
+      "description": "基于Google 工程师的《Agent Skills》打造的资深工程全流程教练：规约驱动、测试驱动、代码评审、CI/CD发布",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EnterpriseAccountStrategist",
+      "name": "EnterpriseAccountStrategist",
+      "display_name": "大客户策略师",
+      "role_name": "拓客客",
+      "description": "精通大客户经营和账户扩展策略，将客户发展为长期战略伙伴",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EnterpriseLegalTeam",
+      "name": "EnterpriseLegalTeam",
+      "display_name": "企业法务专家团",
+      "role_name": "企业法务专家团",
+      "description": "面向企业法务的多角色专家团，覆盖合同、交易、隐私、产品、监管、AI 治理、雇佣与知识产权分诊。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EntrepreneurshipCoach",
+      "name": "EntrepreneurshipCoach",
+      "display_name": "创业伙伴",
+      "role_name": "林正刚",
+      "description": "林老师分身+读书伙伴。送《创业可以学》，陪创业者读书，从读书中听痛点，痛点匹配时自然引出课程咨询。擅长GTM落地、敢见客户情绪层突破、顺序判断。",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EquityResearchExpert",
+      "name": "EquityResearchExpert",
+      "display_name": "股票研究专家",
+      "role_name": "严估深",
+      "description": "全面的股票研究工具集：财报分析、首次覆盖报告、DCF与可比估值、多空推介、投资备忘录、事件情景分析、组合风险管理，覆盖完整买方卖方研究工作流",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "EvidenceCollector",
+      "name": "EvidenceCollector",
+      "display_name": "证据收集员",
+      "role_name": "截图图",
+      "description": "不放过任何没有截图证据的问题，用视觉证据确保缺陷无处遁形",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ExecutiveSummaryGenerator",
+      "name": "ExecutiveSummaryGenerator",
+      "display_name": "战略报告顾问",
+      "role_name": "简明明",
+      "description": "将冗长报告浓缩为高管可快速消化的精华摘要，节省每分钟",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ExperimentTrackingManager",
+      "name": "ExperimentTrackingManager",
+      "display_name": "实验追踪管理者",
+      "role_name": "实验通",
+      "description": "系统化管理实验全生命周期，确保每个实验有假设有执行有结论",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FbsirSuperPartner",
+      "name": "FbsirSuperPartner",
+      "display_name": "超级合伙人|魔镜行动",
+      "role_name": "超级合伙人|魔镜行动",
+      "description": "带上目标或真实材料，立即得到可使用成品；宿主能力可用且获授权时执行并回执，再做72小时裁决。",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "local"
+    },
+    {
+      "id": "FeedbackSynthesisAnalyst",
+      "name": "FeedbackSynthesisAnalyst",
+      "display_name": "反馈综合分析师",
+      "role_name": "听声声",
+      "description": "从海量用户反馈中提炼有价值洞察，将用户声音转化为改进方向",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FinanceAccountingExpert",
+      "name": "FinanceAccountingExpert",
+      "display_name": "财务会计专家",
+      "role_name": "记账账",
+      "description": "财务会计工具集：月末结账、日记账分录、账户核对、财务报表生成、差异分析和 SOX 审计支持",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FinanceDataExpert",
+      "name": "FinanceDataExpert",
+      "display_name": "金融数据检索专家",
+      "role_name": "财数数",
+      "description": "金融数据检索专家，通过自然语言查询 209 个金融数据 API，涵盖股票、指数、期货、债券、基金和宏观经济等 15 大类",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FinancialModelingExpert",
+      "name": "FinancialModelingExpert",
+      "display_name": "金融建模专家",
+      "role_name": "建模模",
+      "description": "核心金融建模工具：DCF 估值、可比公司分析、LBO 模型、三张表模型、竞争格局分析和 PPT 质检",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FinancialTracker",
+      "name": "FinancialTracker",
+      "display_name": "财务追踪师",
+      "role_name": "账清清",
+      "description": "精准追踪项目和业务的财务数据，确保每笔收支清晰透明",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FinopsExpert",
+      "name": "FinopsExpert",
+      "display_name": "腾讯云FinOps专家",
+      "role_name": "CloudQ",
+      "description": "云成本治理专家。擅长账单分析、闲置资源识别、计费模式优化与成本分摊，驱动降本增效决策。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FortuneConsultant",
+      "name": "FortuneConsultant",
+      "display_name": "赛博神算子",
+      "role_name": "运势分析师",
+      "description": "传统命理参考工具——八字紫微排盘、塔罗梅花起卦、农历黄历查询，多体系交叉参考，仅供娱乐。",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FrontendDeveloper",
+      "name": "FrontendDeveloper",
+      "display_name": "前端开发工程师",
+      "role_name": "像素匠",
+      "description": "精通现代Web技术和主流框架，以像素级精度构建响应式高性能Web应用",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "FsiMarketResearcher",
+      "name": "FsiMarketResearcher",
+      "display_name": "行业研究员",
+      "role_name": "严研行",
+      "description": "面向分析师与基金经理的行业研究分析师,产出行业全景、竞争格局、可比公司估值表与主题选股清单等研究交付物。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GameAudioEngineer",
+      "name": "GameAudioEngineer",
+      "display_name": "游戏音频工程师",
+      "role_name": "音效效",
+      "description": "精通FMOD/Wwise集成和空间音频，让游戏声音栩栩如生",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GameDesigner",
+      "name": "GameDesigner",
+      "display_name": "游戏设计师",
+      "role_name": "玩法师",
+      "description": "精通游戏系统和机制设计，用循环杠杆和心理构建玩法",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GaokaoAdvisor",
+      "name": "GaokaoAdvisor",
+      "display_name": "高考我帮你",
+      "role_name": "专业高考顾问",
+      "description": "辅助检索高考知识库并调用分数线、一分一段能力，整理带来源的真题、高校专业和志愿参考；同时提供全流程志愿填报引导，产出可转发的腾讯文档志愿报告",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "local"
+    },
+    {
+      "id": "GitWorkflowExpert",
+      "name": "GitWorkflowExpert",
+      "display_name": "Git工作流专家",
+      "role_name": "分支通",
+      "description": "精通Git高级工作流和分支策略，让团队协作像行云流水般顺畅",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GlReconciler",
+      "name": "GlReconciler",
+      "display_name": "总账对账师",
+      "role_name": "钱对齐",
+      "description": "基金后台日终与月末对账专员,在总账与子账之间找出差异、追溯到源交易、归类 timing/reclass/FX 等原因并出具可签核清单。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GodotGameScriptEngineer",
+      "name": "GodotGameScriptEngineer",
+      "display_name": "Godot游戏脚本工程师",
+      "role_name": "节点通",
+      "description": "精通GDScript 2.0和Godot 4节点架构",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GodotMultiplayerEngineer",
+      "name": "GodotMultiplayerEngineer",
+      "display_name": "Godot多人联机工程师",
+      "role_name": "联网达",
+      "description": "精通Godot 4 MultiplayerAPI和网络复制",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GodotShaderDeveloper",
+      "name": "GodotShaderDeveloper",
+      "display_name": "Godot着色器开发者",
+      "role_name": "渲染达",
+      "description": "精通Godot着色语言和VisualShader",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GovernmentDigitalPresalesConsultant",
+      "name": "GovernmentDigitalPresalesConsultant",
+      "display_name": "政府数字化售前顾问",
+      "role_name": "政通通",
+      "description": "精通政府数字化转型需求和采购流程",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GPTResearcherTeam",
+      "name": "GPTResearcherTeam",
+      "display_name": "深度研究团队",
+      "role_name": "深度研究团队",
+      "description": "深度研究报告输出，7角色5阶段聚合多源信息，经审稿修订循环输出带引用的专业报告",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "GrowthHacker",
+      "name": "GrowthHacker",
+      "display_name": "增长黑客",
+      "role_name": "裂变变",
+      "description": "用数据驱动的实验方法论找到未开发的增长渠道，实现指数级增长",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "HealthcareMarketingComplianceExpert",
+      "name": "HealthcareMarketingComplianceExpert",
+      "display_name": "医疗营销合规专家",
+      "role_name": "医合合",
+      "description": "确保医疗营销内容符合法规要求，守护信息准确性",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "HrOperationsTeam",
+      "name": "HrOperationsTeam",
+      "display_name": "HR 运营团队",
+      "role_name": "HR 运营团队",
+      "description": "人力资源管理流程化，招聘筛选、薪酬体系设计、组织发展与HR运营流程化管理，助力企业人才战略落地",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "HuashuDataPro",
+      "name": "HuashuDataPro",
+      "display_name": "花叔数据分析专家团",
+      "role_name": "花叔数据分析专家团",
+      "description": "「一人公司」本地数据分析专家团。一份 Excel 进，趋势 / 结构 / 异常三专家并行分析，交付网页、Excel、PPT 三格式报告，数据不出本地。",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "HuashuDocReviewer",
+      "name": "HuashuDocReviewer",
+      "display_name": "合同与公文审稿",
+      "role_name": "花叔文档审稿专家",
+      "description": "为「一人公司」打造的 AI 审稿专家。直接在 .docx 原文里加批注气泡和追踪修订，不返回新文档、不破坏原格式。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "HumanizePptTeam",
+      "name": "HumanizePptTeam",
+      "display_name": "卡尔的人感PPT专家团",
+      "role_name": "PPT大纲、生成、视频、演示与交付专家团",
+      "description": "把原始资料梳理成人感PPT大纲，调度HTML生成、演讲模式、视频动效与交付质检，形成可演示成果。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "IdentityGraphOperator",
+      "name": "IdentityGraphOperator",
+      "display_name": "身份图谱运营师",
+      "role_name": "识图图",
+      "description": "构建维护用户身份图谱系统，实现跨平台身份识别",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "IncidentResponseCommander",
+      "name": "IncidentResponseCommander",
+      "display_name": "事故响应指挥官",
+      "role_name": "救火队",
+      "description": "系统故障时冷静指挥团队快速定位处理和恢复，是终极救火队长",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "IndieFounderCoach",
+      "name": "IndieFounderCoach",
+      "display_name": "独立创业教练",
+      "role_name": "创迪",
+      "description": "信奉精益创业与自力更生理念，帮助独立创业者用最少资源从0到1构建可持续盈利事业，覆盖创业全旅程关键决策",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "IndustrySreTeam",
+      "name": "IndustrySreTeam",
+      "display_name": "腾讯云行业SRE",
+      "role_name": "腾讯云行业 SRE",
+      "description": "12 位行业 SRE 覆盖游戏、金融、电商等场景，做五维巡检，输出可对照可执行的架构治理建议。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "InfrastructureOperationsExpert",
+      "name": "InfrastructureOperationsExpert",
+      "display_name": "基础设施运维专家",
+      "role_name": "运维通",
+      "description": "确保IT基础设施的持续稳定运行，一切尽在掌控",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "InspectionExpert",
+      "name": "InspectionExpert",
+      "display_name": "腾讯云风险巡检专家",
+      "role_name": "CloudQ",
+      "description": "云资源巡检专家。覆盖五维巡检（安全、性能、可靠性、成本、合规）、高危风险扫描与优先级处置、巡检趋势分析与可视化报告生成，主动发现潜在隐患，防患于未然。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "InstagramOperationsExpert",
+      "name": "InstagramOperationsExpert",
+      "display_name": "Instagram运营专家",
+      "role_name": "晒图图",
+      "description": "精通Instagram视觉美学和内容策略，打造令人向往的品牌形象",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "InternalCommsExpert",
+      "name": "InternalCommsExpert",
+      "display_name": "内部沟通专家",
+      "role_name": "传令令",
+      "description": "内部沟通模板专家：状态报告、领导汇报、公司简报、FAQ、事故报告和项目更新",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "InvestmentBankingExpert",
+      "name": "InvestmentBankingExpert",
+      "display_name": "投资银行专家",
+      "role_name": "银拓远",
+      "description": "全能投资银行专家：交易材料制作、估值建模（Comps/DCF/LBO/三表）、资本市场融资、买方尽调分析、重组与回收瀑布、交易全流程执行",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "InvestmentMastersTeam",
+      "name": "InvestmentMastersTeam",
+      "display_name": "投资大师专家团",
+      "role_name": "投资大师专家团",
+      "description": "13位传奇投资哲学家 + 6位专业分析师并行分析，风险管理师评估约束，投资组合经理信号聚合投票，多角度投资分析参考",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "JiraWorkflowAdmin",
+      "name": "JiraWorkflowAdmin",
+      "display_name": "Jira工作流管理员",
+      "role_name": "看板达",
+      "description": "精通Jira配置和敏捷工作流设计，让工具真正服务于团队效率",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KdocsDataTable",
+      "name": "KdocsDataTable",
+      "display_name": "数据建表专家",
+      "role_name": "金山文档智能建表助手",
+      "description": "金山文档出品将群聊接龙一键转为结构化表格，一句话生成可分享的信息收集表，智能美化表格并固化规则（条件格式高亮异常值、数据校验下拉约束、区域保护锁定表头）。擅长接龙识别、字段推断、格式规范与数据去重。",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KdocsDocButler",
+      "name": "KdocsDocButler",
+      "display_name": "文档管家",
+      "role_name": "金山文档文档管家助手",
+      "description": "金山文档出品一站式管理金山文档全生命周期：新建各类在线文档、按关键词快速搜索定位、AI 按主题自动分类整理文件夹、批量移动重命名、生成分享链接与权限管理、读取文档内容输出为 Markdown。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KdocsKnowledgeCollector",
+      "name": "KdocsKnowledgeCollector",
+      "display_name": "知识收藏专家",
+      "role_name": "金山文档知识收藏助手",
+      "description": "金山文档出品把网页、消息、笔记等碎片内容沉淀为结构化知识资产：一键剪藏公众号与网页为云文档，AI 按主题聚合零散笔记生成整理稿，多份文档自动提炼摘要与要点，一键归档到个人知识库并智能整理已有内容。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KdocsPdfToolbox",
+      "name": "KdocsPdfToolbox",
+      "display_name": "PDF 处理专家",
+      "role_name": "金山文档PDF处理助手",
+      "description": "金山文档出品PDF 文档处理一站式：按页拆分、多文件合并、提取指定页、转换为 Word/Excel/PPT、全文翻译导出（双语/指定语言）、内容读取与页数查询。适用于合同拆分、报告合并、格式转换、跨语言文档处理等场景。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KdocsPptCreator",
+      "name": "KdocsPptCreator",
+      "display_name": "AIPPT专家",
+      "role_name": "WPS AIPPT创作助手",
+      "description": "WPS官方出品一句话主题或一份参考文档，AI 自动设计大纲并生成包含标题页、内容页、总结页的完整 PPT，并按场景统一配色与排版。覆盖工作汇报、项目展示、培训课件、方案演示等高频场景。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KuaishouStrategist",
+      "name": "KuaishouStrategist",
+      "display_name": "快手策略师",
+      "role_name": "老铁铁",
+      "description": "深谙快手下沉市场特性和老铁文化，打造接地气的内容策略",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "KycScreener",
+      "name": "KycScreener",
+      "display_name": "客户合规官",
+      "role_name": "查本源",
+      "description": "客户准入合规分析师,解析 KYC 材料、跑规则引擎、比对制裁与 PEP 名单,并按风险等级形成可交合规签核的升级包。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LawStudentCoach",
+      "name": "LawStudentCoach",
+      "display_name": "法学学习教练",
+      "role_name": "法学生陪练",
+      "description": "面向法学生的学习陪练，训练苏格拉底问答、案例摘要、IRAC、课程大纲和律考复习。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LegalBuilderHubExpert",
+      "name": "LegalBuilderHubExpert",
+      "display_name": "法律技能治理专家",
+      "role_name": "法律技能运营官",
+      "description": "面向法律运营和技能开发者的治理助手，评估技能来源、工具权限、新鲜度、许可证和信任边界。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LegalClinicSupervisor",
+      "name": "LegalClinicSupervisor",
+      "display_name": "法律诊所督导顾问",
+      "role_name": "法律诊所督导",
+      "description": "面向法学院诊所导师的监督助手，支持客户接待、研究启动、期限追踪、学生入职和学期交接。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LegalComplianceReviewer",
+      "name": "LegalComplianceReviewer",
+      "display_name": "法律合规审查员",
+      "role_name": "律守正",
+      "description": "确保业务运营和产品功能符合法律法规要求，防范合规风险",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LevelDesigner",
+      "name": "LevelDesigner",
+      "display_name": "关卡设计师",
+      "role_name": "关卡卡",
+      "description": "将每个关卡视为精心编排的体验，用空间讲述故事",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LinkedInContentCreator",
+      "name": "LinkedInContentCreator",
+      "display_name": "LinkedIn内容创作者",
+      "role_name": "领英达",
+      "description": "精通LinkedIn专业社交平台内容策略，帮助建立思想领袖地位",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LitigationLegalExpert",
+      "name": "LitigationLegalExpert",
+      "display_name": "诉讼支持顾问",
+      "role_name": "诉讼法务专家",
+      "description": "面向诉讼律师的案件支持专家，梳理案件、证据、时间线、质证准备、索赔图表和文书草稿。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LivestreamEcommerceCoach",
+      "name": "LivestreamEcommerceCoach",
+      "display_name": "直播电商教练",
+      "role_name": "播旺旺",
+      "description": "精通直播带货全链路运营，从话术到投流帮助实现GMV突破",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LlmWiki",
+      "name": "LlmWiki",
+      "display_name": "知识管理专家",
+      "role_name": "知库库",
+      "description": "基于 Andrej Karpathy 的 LLM Wiki 模式，帮助用户构建、维护和查询持久化的个人知识库。擅长将原始资料（论文、文章、笔记等）编译为结构化 Markdown Wiki，自动建立交叉引用、标注矛盾、维护索引。",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "LspIndexEngineer",
+      "name": "LspIndexEngineer",
+      "display_name": "LSP索引工程师",
+      "role_name": "索引引",
+      "description": "精通语言服务器协议和代码索引技术",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MacOsSpatialMetalEngineer",
+      "name": "MacOsSpatialMetalEngineer",
+      "display_name": "macOS空间Metal工程师",
+      "role_name": "渲染师",
+      "description": "精通Apple Metal图形API和macOS空间计算开发",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MarketingCampaignExpert",
+      "name": "MarketingCampaignExpert",
+      "display_name": "营销活动策划专家",
+      "role_name": "策动动",
+      "description": "策划、创建和优化全渠道营销活动，包括内容策略、社交媒体、邮件营销和广告投放",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MarketingCampaignTeam",
+      "name": "MarketingCampaignTeam",
+      "display_name": "营销战役团队",
+      "role_name": "营销战役团队",
+      "description": "由营销总监领导的 4 人营销专家团队：内容创作者（博客/邮件/社媒/品牌声音）、活动策划师（战役策略/受众/渠道/预算）、SEO 专家（技术审计/内容优化/效果分析）和品牌分析师（竞品定位/品牌审核）。覆盖完整营销生命周期。",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "McpBuildExpert",
+      "name": "McpBuildExpert",
+      "display_name": "MCP构建专家",
+      "role_name": "协议通",
+      "description": "精通Model Context Protocol设计实现",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MeetingPrepAgent",
+      "name": "MeetingPrepAgent",
+      "display_name": "会前准备助理",
+      "role_name": "周备全",
+      "description": "理财顾问的会议准备搭档,在每次客户见面前汇总关系历史、持仓近况、市场要闻与议题清单,让顾问 5 分钟进入状态。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MermaidDiagramExpert",
+      "name": "MermaidDiagramExpert",
+      "display_name": "图表设计与渲染专家",
+      "role_name": "绘灵",
+      "description": "将自然语言转化为专业级Mermaid图表，支持6种图表类型、15种主题配色，秒级渲染出版级SVG与ASCII可视化",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "Migraq",
+      "name": "Migraq",
+      "display_name": "腾讯云迁移服务专家",
+      "role_name": "MigraQ",
+      "description": "腾讯云迁移服务专家，支持阿里云、AWS、华为云等多云资源扫描、规格对标、TCO成本分析与迁移方案规划",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MigraqTeam",
+      "name": "MigraqTeam",
+      "display_name": "腾讯云上云迁移专家团",
+      "role_name": "腾讯云上云迁移专家团",
+      "description": "7位专家协作完成上云迁移：产品选型、Landing Zone、架构设计、交付实施、运维与FDE部署",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MobileApplicationDeveloper",
+      "name": "MobileApplicationDeveloper",
+      "display_name": "移动应用开发工程师",
+      "role_name": "掌中灵",
+      "description": "精通iOS和Android原生及跨平台开发，打造流畅美观的移动应用",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ModelBuilder",
+      "name": "ModelBuilder",
+      "display_name": "财务建模师",
+      "role_name": "莫百炼",
+      "description": "专业财务建模师,在 Excel 中从零搭建 DCF、LBO、三张表模型与可比公司估值,公式全链接、可追溯、机构级品控。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ModelQualityAssuranceExpert",
+      "name": "ModelQualityAssuranceExpert",
+      "display_name": "模型质量保障专家",
+      "role_name": "模检检",
+      "description": "系统化评估保障AI模型质量，确保输出准确公平安全",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ModernWebappExpert",
+      "name": "ModernWebappExpert",
+      "display_name": "现代Web开发专家",
+      "role_name": "速构构",
+      "description": "现代 Web 应用开发专家，基于 React + TypeScript + Vite + Tailwind CSS + shadcn/ui 技术栈，含浏览器自动化能力",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MonthEndCloser",
+      "name": "MonthEndCloser",
+      "display_name": "月末结账会计",
+      "role_name": "关月结",
+      "description": "财务负责人的月末关账搭档,按清单跑应计、滚动表、差异说明,把关账包整理好交给 controller 签核。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MultiCloudExpert",
+      "name": "MultiCloudExpert",
+      "display_name": "多云AIOps专家",
+      "role_name": "CloudQ",
+      "description": "统一管理腾讯云、阿里云、AWS、Azure、GCP 等多云平台，一个智能体即可管多云。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "MultiCloudManagementExpert",
+      "name": "MultiCloudManagementExpert",
+      "display_name": "腾讯云DevOps专家",
+      "role_name": "CloudQ",
+      "description": "精通腾讯云、阿里云、AWS等多云架构治理、架构可视化、智能巡检、云成本优化和风险评估，一个专家管理所有云。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "NarrativeDesigner",
+      "name": "NarrativeDesigner",
+      "display_name": "叙事设计师",
+      "role_name": "剧本本",
+      "description": "将叙事和游戏玩法无缝融合，让故事与互动不可分割",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "OpcTeam",
+      "name": "OpcTeam",
+      "display_name": "一人公司专家团",
+      "role_name": "一人公司专家团",
+      "description": "基于由Easy创作的《一人企业方法论》，9位专家陪你走完从资源盘点、利基定位到MVP、转化、复盘的一人公司全流程共创",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "OpenSpecDocTeam",
+      "name": "OpenSpecDocTeam",
+      "display_name": "专业文档生成团队",
+      "role_name": "专业文档生成团队",
+      "description": "企业级长文档生成，4角色协作完成深度调研、大纲规划、内容撰写与合规审核全流程",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "OutboundStrategist",
+      "name": "OutboundStrategist",
+      "display_name": "外呼策略师",
+      "role_name": "拨必通",
+      "description": "精通外呼和冷启动销售策略，让陌生人30秒内愿意继续倾听",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PaidMediaAuditor",
+      "name": "PaidMediaAuditor",
+      "display_name": "付费媒体审计师",
+      "role_name": "查账账",
+      "description": "深度审计广告投放数据和预算分配，找出被浪费的广告费",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PerformanceTestingExpert",
+      "name": "PerformanceTestingExpert",
+      "display_name": "性能测试专家",
+      "role_name": "压测测",
+      "description": "精通性能测试和基准评估，用数据证明性能改进而非凭感觉",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PitchAgent",
+      "name": "PitchAgent",
+      "display_name": "投行交易助理",
+      "role_name": "白必得",
+      "description": "资深投行关联人,从零搭建 pitch 初稿——可比公司、先例交易、DCF、足球场估值图,并生成绑在模型上的品牌化 PPT。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PodcastStrategist",
+      "name": "PodcastStrategist",
+      "display_name": "播客策略师",
+      "role_name": "声浪浪",
+      "description": "精通播客内容策划和增长策略，通过音频建立深度用户连接",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PpcBiddingStrategist",
+      "name": "PpcBiddingStrategist",
+      "display_name": "PPC竞价广告策略师",
+      "role_name": "竞高高",
+      "description": "精通Google Ads和百度竞价，以最低点击成本获取高质量流量",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PptCreationExpert",
+      "name": "PptCreationExpert",
+      "display_name": "PPT制作专家",
+      "role_name": "幻灯灯",
+      "description": "智能 PPT 生成助手，一键将想法转化为精美演示文稿",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PresalesTechnicalConsultant",
+      "name": "PresalesTechnicalConsultant",
+      "display_name": "售前技术顾问",
+      "role_name": "方案通",
+      "description": "架起技术与商业的桥梁，帮助客户理解解决方案的价值",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PrivateDomainMarketingExpert",
+      "name": "PrivateDomainMarketingExpert",
+      "display_name": "私域营销专家",
+      "role_name": "司玉琦",
+      "description": "深谙私域运营增长，盘活现有数据资源、洞察营销机会、实现业绩增长",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PrivateDomainOperationsExpert",
+      "name": "PrivateDomainOperationsExpert",
+      "display_name": "私域运营专家",
+      "role_name": "留客客",
+      "description": "精通微信私域流量池搭建运营，将公域流量沉淀为私域资产",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PrivateEquityExpert",
+      "name": "PrivateEquityExpert",
+      "display_name": "私募股权专家",
+      "role_name": "募资资",
+      "description": "私募股权工具集：Deal Sourcing、项目筛选、尽调清单、IC Memo、单位经济学分析、回报分析、投后管理和价值创造方案",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ProductManagementExpert",
+      "name": "ProductManagementExpert",
+      "display_name": "产品管理专家",
+      "role_name": "产品通",
+      "description": "产品管理工具集：功能规格编写、路线图规划、利益相关者沟通、用户研究综合、竞品分析和指标追踪",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ProductStrategyTeam",
+      "name": "ProductStrategyTeam",
+      "display_name": "产品战略团队",
+      "role_name": "产品战略团队",
+      "description": "由产品总监领导的 5 人产品专家团队：需求分析师（PRD/功能规格书）、用户研究员（调研综合分析）、竞品分析师（竞争情报）、数据分析师（指标追踪）和路线图规划师（路线图管理/迭代规划）。覆盖从构思到上线的完整产品生命周期。",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ProgrammaticAdBuyer",
+      "name": "ProgrammaticAdBuyer",
+      "display_name": "程序化广告买手",
+      "role_name": "算法投",
+      "description": "精通程序化广告购买和DSP平台，通过算法实现大规模精准投放",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ProjectShepherd",
+      "name": "ProjectShepherd",
+      "display_name": "项目牧羊人",
+      "role_name": "牧羊羊",
+      "description": "温和但坚定地引导项目按计划推进，确保里程碑准时交付",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "PromoCreatorTeam",
+      "name": "PromoCreatorTeam",
+      "display_name": "宣传片创作团队",
+      "role_name": "袋鼠帝宣传片创作团队",
+      "description": "6位专业角色分6阶段协作完成产品宣传片全流程制作：创意简报、逐镜头分镜、素材生产、HyperFrames剪辑合成、BGM设计与交付，从产品URL到可发布的60-90秒宣传片MP4",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ProposalStrategist",
+      "name": "ProposalStrategist",
+      "display_name": "方案策划师",
+      "role_name": "策必中",
+      "description": "精通销售提案和方案设计，将价值转化为无法拒绝的商业论证",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RapidPrototypingEngineer",
+      "name": "RapidPrototypingEngineer",
+      "display_name": "快速原型工程师",
+      "role_name": "闪造造",
+      "description": "以极快速度将创意转化为可工作的原型，让团队快速验证想法",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RealityChecker",
+      "name": "RealityChecker",
+      "display_name": "现实检查员",
+      "role_name": "验真真",
+      "description": "默认认为一切需要更多证据，需要压倒性证据才批准生产就绪",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RecruitmentExpert",
+      "name": "RecruitmentExpert",
+      "display_name": "招聘专家",
+      "role_name": "伯乐乐",
+      "description": "精通人才招聘全流程，为团队找到最佳人才",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RedditCommunityBuilder",
+      "name": "RedditCommunityBuilder",
+      "display_name": "Reddit社区建设者",
+      "role_name": "红迪迪",
+      "description": "深谙Reddit社区文化，在全球最大论坛上建立真实社区影响力",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RemotionVideoExpert",
+      "name": "RemotionVideoExpert",
+      "display_name": "视频生成专家",
+      "role_name": "动画画",
+      "description": "基于 Remotion 的视频生成专家，创建产品演示、解说视频、社交媒体内容和演示文稿",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ReportDistributionAgent",
+      "name": "ReportDistributionAgent",
+      "display_name": "报告分发代理",
+      "role_name": "送报报",
+      "description": "自动化管理报告生成和分发流程",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RobloxAvatarCreator",
+      "name": "RobloxAvatarCreator",
+      "display_name": "Roblox虚拟形象创作者",
+      "role_name": "捏脸达",
+      "description": "精通Roblox UGC和虚拟形象管线",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RobloxExperienceDesigner",
+      "name": "RobloxExperienceDesigner",
+      "display_name": "Roblox体验设计师",
+      "role_name": "乐体验",
+      "description": "精通Roblox平台UX和商业化设计",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RobloxSystemScriptEngineer",
+      "name": "RobloxSystemScriptEngineer",
+      "display_name": "Roblox系统脚本工程师",
+      "role_name": "脚本通",
+      "description": "精通Luau和Roblox客户端-服务器安全模型",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "RumFullstackTeam",
+      "name": "RumFullstackTeam",
+      "display_name": "腾讯云 RUM 全链路专家团",
+      "role_name": "腾讯云 RUM 全链路专家团",
+      "description": "腾讯云 RUM 全链路服务：10 大平台 aegis SDK 接入 + WebVitals/异常/接口/资源分析，支持 RUM-APM 联动",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SalesBattleTeam",
+      "name": "SalesBattleTeam",
+      "display_name": "销售作战团队",
+      "role_name": "销售作战团队",
+      "description": "销售攻坚体系，客户研究锁定目标、外联策略提升触达、竞品情报预警风险、销售预测优化资源分配",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SalesCoach",
+      "name": "SalesCoach",
+      "display_name": "销售教练",
+      "role_name": "单必成",
+      "description": "全栈销售教练：从能力培养到实战执行——会议准备、交易策略、商业案例、竞品分析、通话复盘，用苏格拉底式提问驱动",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SalesDataExtractionAgent",
+      "name": "SalesDataExtractionAgent",
+      "display_name": "销售数据提取代理",
+      "role_name": "拉数数",
+      "description": "从各类数据源中自动提取整理销售数据",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SalesPipelineAnalyst",
+      "name": "SalesPipelineAnalyst",
+      "display_name": "销售管道分析师",
+      "role_name": "漏斗通",
+      "description": "用数据驱动方法分析销售管道健康度，让预测从猜测变科学",
+      "category": "销售商务",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SearchTermAnalyst",
+      "name": "SearchTermAnalyst",
+      "display_name": "搜索词分析师",
+      "role_name": "词探探",
+      "description": "深度分析搜索词数据，挖掘用户真实搜索意图",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SecurityEngineer",
+      "name": "SecurityEngineer",
+      "display_name": "安全工程师",
+      "role_name": "盾甲甲",
+      "description": "全方位保障系统安全，在黑客之前发现并修复安全漏洞",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SeniorDeveloper",
+      "name": "SeniorDeveloper",
+      "display_name": "高级开发工程师",
+      "role_name": "吴八哥",
+      "description": "10年以上全栈经验，精通多种语言和框架，是团队的技术中坚",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SeniorProjectManager",
+      "name": "SeniorProjectManager",
+      "display_name": "高级项目经理",
+      "role_name": "关德豪",
+      "description": "10年以上项目管理经验，精通瀑布和敏捷，是复杂项目定海神针",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SeoContentTeam",
+      "name": "SeoContentTeam",
+      "display_name": "SEO 内容营销团队",
+      "role_name": "SEO 内容营销团队",
+      "description": "7位专业角色分5阶段协作：关键词研究、SEO长文创作、技术优化、内容编辑、链接策略、转化率分析，全流程自动化产出高质量SEO内容",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SeoExpert",
+      "name": "SeoExpert",
+      "display_name": "SEO专家",
+      "role_name": "搜霸霸",
+      "description": "精通Google搜索算法和技术SEO，让网站在搜索结果中稳居前列",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ShortVideoEditingCoach",
+      "name": "ShortVideoEditingCoach",
+      "display_name": "短视频剪辑教练",
+      "role_name": "剪神神",
+      "description": "精通短视频剪辑技巧和节奏把控，让每条视频具有专业冲击力",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SiteReliabilityEngineer",
+      "name": "SiteReliabilityEngineer",
+      "display_name": "站点可靠性工程师",
+      "role_name": "稳如山",
+      "description": "用软件工程方法论解决运维问题，确保99.99%可用性",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SocialAdStrategist",
+      "name": "SocialAdStrategist",
+      "display_name": "社交广告策略师",
+      "role_name": "精投投",
+      "description": "精通社交平台广告投放，以精准定向实现最优获客成本",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SocialEngagementTeam",
+      "name": "SocialEngagementTeam",
+      "display_name": "社媒互动增长专家团",
+      "role_name": "社媒互动增长专家团",
+      "description": "通过智能化互动自动化、AI评论运营、高转化信号挖掘和品牌舆情监控，安全高效提升社交媒体互动效果，覆盖14+全球主流平台",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SocialMediaStrategist",
+      "name": "SocialMediaStrategist",
+      "display_name": "社交媒体策略师",
+      "role_name": "传声声",
+      "description": "全面统筹多平台社交媒体策略，让品牌在每个平台发出最强音",
+      "category": "营销增长",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "Soe",
+      "name": "Soe",
+      "display_name": "腾讯云安全运营专家",
+      "role_name": "腾讯云安全运营专家",
+      "description": "分析WAF/主机安全/云防火墙/SOC/御界/天幕的告警/事件等离线数据，含漏洞、攻击、溯源分析。",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "local"
+    },
+    {
+      "id": "SoftwareArchitect",
+      "name": "SoftwareArchitect",
+      "display_name": "软件架构师",
+      "role_name": "架构通",
+      "description": "站在全局高度设计可扩展高可用的软件架构，为技术团队指明方向",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SoftwareCompany",
+      "name": "SoftwareCompany",
+      "display_name": "软件开发团队",
+      "role_name": "软件开发团队",
+      "description": "高效软件研发团队，产品经理定需求、架构师设计+拆任务、工程师批量实现代码、QA验证质量，小需求支持快速模式",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SoftwareWorkshop",
+      "name": "SoftwareWorkshop",
+      "display_name": "软件工坊",
+      "role_name": "软件工坊",
+      "description": "6位工程专业角色：产品评审、代码审查、安全审计、QA测试、设计系统、调试运维，覆盖从想法到生产的完整软件生命周期",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SoliditySmartContractEngineer",
+      "name": "SoliditySmartContractEngineer",
+      "display_name": "Solidity智能合约工程师",
+      "role_name": "链合约",
+      "description": "精通Solidity和EVM生态，编写安全高效的智能合约",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SprintPriorityManager",
+      "name": "SprintPriorityManager",
+      "display_name": "迭代优先级管理者",
+      "role_name": "排序序",
+      "description": "在有限迭代周期内做出最优优先级决策，确保Sprint交付最大价值",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SreExpert",
+      "name": "SreExpert",
+      "display_name": "腾讯云SRE专家",
+      "role_name": "CloudQ",
+      "description": "站点可靠性专家。擅长故障根因推理、告警关联分析、业务进程诊断与 SLO 治理，通过系统化诊断方法论保障服务持续稳定运行。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "StatementAuditor",
+      "name": "StatementAuditor",
+      "display_name": "LP 报表审核师",
+      "role_name": "审细明",
+      "description": "LP 资本账户报表最后把关人,按基金 NAV 反算每条项目、对齐分配与管理费,发差前形成签核建议与异常清单。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "StockPartnerTeam",
+      "name": "StockPartnerTeam",
+      "display_name": "腾讯自选股股票投研专家团",
+      "role_name": "腾讯自选股股票投研专家团",
+      "description": "六位投研专家团，兼擅产业策略、信号捕捉、估值定价、逆向布局、基本面与短线，基于实时行情多视角研判。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "StrategyBacktestExpert",
+      "name": "StrategyBacktestExpert",
+      "display_name": "量化策略回测师",
+      "role_name": "回测明算",
+      "description": "把自然语言描述的交易策略转成可运行的 Python 回测脚本，输出标准指标、可视化图表、HTML 仪表盘，并给出实现细节、已知偏差和结果解读。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "StudioOperationsManager",
+      "name": "StudioOperationsManager",
+      "display_name": "工作室运营管理者",
+      "role_name": "统筹筹",
+      "description": "全面管理工作室日常运营，从资源调配到流程优化",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "StudioProducer",
+      "name": "StudioProducer",
+      "display_name": "工作室制片人",
+      "role_name": "制片达",
+      "description": "统筹项目从立项到交付的全过程，平衡创意预算和时间",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "StudyAbroadConsultant",
+      "name": "StudyAbroadConsultant",
+      "display_name": "留学顾问",
+      "role_name": "留洋洋",
+      "description": "精通各国留学申请流程和院校信息",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "SupplyChainStrategist",
+      "name": "SupplyChainStrategist",
+      "display_name": "供应链策略师",
+      "role_name": "链优优",
+      "description": "优化供应链每个环节，实现成本效率韧性的最佳平衡",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TaxComplianceTeam",
+      "name": "TaxComplianceTeam",
+      "display_name": "财税合规专家团",
+      "role_name": "财税合规专家团",
+      "description": "覆盖票据处理、记账核算、报表编制、税务申报、合规审计五大环节的企业财税合规全链路管理专家团",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TechnicalArtist",
+      "name": "TechnicalArtist",
+      "display_name": "技术美术",
+      "role_name": "技美美",
+      "description": "在美术愿景与引擎实现之间架起桥梁，精通着色器和VFX",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TechnicalDocumentationEngineer",
+      "name": "TechnicalDocumentationEngineer",
+      "display_name": "技术文档工程师",
+      "role_name": "文通通",
+      "description": "将复杂技术概念转化为清晰准确的文档，让技术知识可传播",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TencentCharityExpert",
+      "name": "TencentCharityExpert",
+      "display_name": "腾讯技术公益智能化专家",
+      "role_name": "小益",
+      "description": "精通公益行业产品和技术解决方案的腾讯技术公益智能化专家",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TencentCloudPriceExpert",
+      "name": "TencentCloudPriceExpert",
+      "display_name": "腾讯云刊例价查询助手",
+      "role_name": "腾讯云刊例价查询助手",
+      "description": "腾讯云销售刊例价查询助手。支持产品咨询、单产品/批量询价、图片配置识别，价格来自实时 API。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TencentRtcExpert",
+      "name": "TencentRtcExpert",
+      "display_name": "腾讯云实时音视频专家",
+      "role_name": "CloudQ",
+      "description": "TRTC 技术支持专家：通话用量与质量查询、单次通话诊断、云端巡检解读、故障排查与友商代码迁移。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TencentSecurityExpert",
+      "name": "TencentSecurityExpert",
+      "display_name": "腾讯安全专家",
+      "role_name": "云鼎安全专家",
+      "description": "深耕安全领域多年，提供威胁建模、漏洞评估、安全代码审查、架构设计、事件响应、安全咨询等服务",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TerminalIntegrationExpert",
+      "name": "TerminalIntegrationExpert",
+      "display_name": "终端集成专家",
+      "role_name": "终端通",
+      "description": "精通终端应用与空间计算环境的集成",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TestResultsAnalyst",
+      "name": "TestResultsAnalyst",
+      "display_name": "测试结果分析师",
+      "role_name": "析测测",
+      "description": "像侦探解读证据一样分析测试结果，发现隐藏的质量问题",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ThreatDetectionEngineer",
+      "name": "ThreatDetectionEngineer",
+      "display_name": "威胁检测工程师",
+      "role_name": "猎威威",
+      "description": "专精构建威胁检测系统，在攻击者造成损害前发现拦截威胁",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TikTokStrategist",
+      "name": "TikTokStrategist",
+      "display_name": "TikTok策略师",
+      "role_name": "拓刻刻",
+      "description": "精通TikTok算法和海外短视频生态，帮助品牌在全球平台爆发",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ToolEvaluationExpert",
+      "name": "ToolEvaluationExpert",
+      "display_name": "工具评估专家",
+      "role_name": "选品品",
+      "description": "系统化评估推荐最适合团队的工具，避免浪费时间在错误工具上",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TradingAgentTeam",
+      "name": "TradingAgentTeam",
+      "display_name": "交易分析团队",
+      "role_name": "交易分析团队",
+      "description": "13位专业角色分5阶段协作完成投资分析：技术面、基本面、新闻面、情绪面数据采集 → 多空辩论 → 交易决策 → 三方风险评估 → 最终报告，输出 BUY/SELL/HOLD 建议及完整操作方案",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TrendResearcher",
+      "name": "TrendResearcher",
+      "display_name": "行业趋势专家",
+      "role_name": "风向标",
+      "description": "持续追踪行业和技术趋势，为产品战略提供前瞻性洞察",
+      "category": "数据智能",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TripStarAgent",
+      "name": "TripStarAgent",
+      "display_name": "旅游攻略管家",
+      "role_name": "路小鲜",
+      "description": "生活服务管家，一站式搞定行程规划、景点/酒店/天气/预算与美团红包领取",
+      "category": "行业顾问",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "TwitterOperationsExpert",
+      "name": "TwitterOperationsExpert",
+      "display_name": "Twitter运营专家",
+      "role_name": "推文文",
+      "description": "精通Twitter/X平台互动策略和话题运营，让品牌占据全球对话",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "Txzhaopin",
+      "name": "Txzhaopin",
+      "display_name": "腾讯招聘专家",
+      "role_name": "腾讯招聘专家",
+      "description": "腾讯官方招聘助手：覆盖校招/社招全流程，含需求沟通、搜简历、面试安排、出题、面评、待办与数据看板。",
+      "category": "运营人力",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UiDesigner",
+      "name": "UiDesigner",
+      "display_name": "UI设计师",
+      "role_name": "像素君",
+      "description": "精通设计系统和组件库，追求像素级完美，打造无障碍用户界面",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnityArchitect",
+      "name": "UnityArchitect",
+      "display_name": "Unity架构师",
+      "role_name": "解耦达",
+      "description": "精通ScriptableObjects和解耦系统设计",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnityEditorToolDeveloper",
+      "name": "UnityEditorToolDeveloper",
+      "display_name": "Unity编辑器工具开发者",
+      "role_name": "插件达",
+      "description": "精通Unity自定义EditorWindow和管线自动化",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnityMultiplayerEngineer",
+      "name": "UnityMultiplayerEngineer",
+      "display_name": "Unity多人联机工程师",
+      "role_name": "同步达",
+      "description": "精通Netcode for GameObjects和网络预测",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnityShaderGraphArtist",
+      "name": "UnityShaderGraphArtist",
+      "display_name": "Unity着色器图表艺术家",
+      "role_name": "着色师",
+      "description": "精通Unity Shader Graph和HLSL",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnrealMultiplayerArchitect",
+      "name": "UnrealMultiplayerArchitect",
+      "display_name": "Unreal多人架构师",
+      "role_name": "联机达",
+      "description": "精通Unreal Actor复制和服务器权威架构",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnrealSystemEngineer",
+      "name": "UnrealSystemEngineer",
+      "display_name": "Unreal系统工程师",
+      "role_name": "虚幻通",
+      "description": "精通C++/Blueprint和Nanite/Lumen",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnrealTechnicalArtist",
+      "name": "UnrealTechnicalArtist",
+      "display_name": "Unreal技术美术",
+      "role_name": "材质通",
+      "description": "精通UE5材质编辑器和Niagara VFX",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UnrealWorldBuilder",
+      "name": "UnrealWorldBuilder",
+      "display_name": "Unreal世界构建师",
+      "role_name": "造世界",
+      "description": "精通UE5 World Partition和大世界流式加载",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UserExperienceArchitect",
+      "name": "UserExperienceArchitect",
+      "display_name": "用户体验架构师",
+      "role_name": "体验达",
+      "description": "为开发者提供坚实的技术基础和CSS系统，是设计与开发之间的桥梁",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "UserExperienceResearcher",
+      "name": "UserExperienceResearcher",
+      "display_name": "用户体验研究员",
+      "role_name": "探真真",
+      "description": "用真实数据而非假设验证设计决策，专精用户行为分析和可用性测试",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ValuationReviewer",
+      "name": "ValuationReviewer",
+      "display_name": "组合估值主管",
+      "role_name": "顾估衡",
+      "description": "PE/VC 基金组合估值主管,收 GP 估值包、跑标准估值模板、算基金 NAV 与 LP 分配、出 LP 报告草稿交投资者关系签核。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "VideoDissection",
+      "name": "VideoDissection",
+      "display_name": "视频解剖专家团",
+      "role_name": "苍何视频解剖",
+      "description": "专业拆解火爆抖音视频拍摄手法的专家团。输入抖音链接，自动提取视频、转录文案、分析景别运镜、剪辑节奏、色调风格，生成完整拍摄脚本拆解文档，并提供可落地的仿拍建议。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "VideoGenTeam",
+      "name": "VideoGenTeam",
+      "display_name": "AI视频创作团队",
+      "role_name": "苍何视频生成团队",
+      "description": "三位一体的AI视频创作团队：灵阅负责采集AI/科技热点，灵枢负责策划选题与脚本，灵映负责渲染MP4视频成品（配音+字幕）。全流程自动化，60秒短视频一键生成。",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "VisionOsSpatialEngineer",
+      "name": "VisionOsSpatialEngineer",
+      "display_name": "visionOS空间工程师",
+      "role_name": "空间通",
+      "description": "精通visionOS平台开发，打造Apple Vision Pro空间应用",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "VisualStorytellingExpert",
+      "name": "VisualStorytellingExpert",
+      "display_name": "视觉叙事专家",
+      "role_name": "图说说",
+      "description": "擅长将复杂信息转化为引人入胜的视觉故事",
+      "category": "产品设计",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WealthManagementExpert",
+      "name": "WealthManagementExpert",
+      "display_name": "财富管理专家",
+      "role_name": "理财财",
+      "description": "财富管理工具集：客户回顾、财务规划、投资组合再平衡、税损收割、投资提案和客户报告生成",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WebappTestingExpert",
+      "name": "WebappTestingExpert",
+      "display_name": "Web应用测试专家",
+      "role_name": "端测测",
+      "description": "Web 应用测试助手，引导用户完成 Web 应用的启动、配置和测试流程",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WeChatMiniProgramDeveloper",
+      "name": "WeChatMiniProgramDeveloper",
+      "display_name": "微信小程序开发者",
+      "role_name": "小程达",
+      "description": "精通微信小程序开发框架和生态，打造流畅微信原生体验应用",
+      "category": "技术工程",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WechatOfficialAccountExpert",
+      "name": "WechatOfficialAccountExpert",
+      "display_name": "微信公众号运营专家",
+      "role_name": "郝文昌",
+      "description": "精通公众号内容策略和粉丝增长，打造10万+品牌自媒体矩阵",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WeiboStrategist",
+      "name": "WeiboStrategist",
+      "display_name": "微博策略师",
+      "role_name": "热搜搜",
+      "description": "精通微博话题营销和舆论传播规律，让品牌在热搜持续出圈",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WellArchExpert",
+      "name": "WellArchExpert",
+      "display_name": "腾讯云卓越架构专家",
+      "role_name": "CloudQ",
+      "description": "卓越架构专家。擅长架构可视化评估、资源拓扑梳理、Well-Architected 六支柱评估与架构风险识别，确保架构符合最佳实践。",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "WorkflowOptimizationExpert",
+      "name": "WorkflowOptimizationExpert",
+      "display_name": "工作流优化专家",
+      "role_name": "流畅畅",
+      "description": "找到瓶颈修复流程自动化一切，让团队效率最大化",
+      "category": "项目质量",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "XiaohongshuOperationsExpert",
+      "name": "XiaohongshuOperationsExpert",
+      "display_name": "小红书运营专家",
+      "role_name": "薛红笙",
+      "description": "深谙小红书种草生态和推荐机制，打造高互动率种草内容",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "XrCockpitInteractionExpert",
+      "name": "XrCockpitInteractionExpert",
+      "display_name": "XR座舱交互专家",
+      "role_name": "座舱师",
+      "description": "专精XR环境下的座舱式交互设计",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "XrImmersiveDeveloper",
+      "name": "XrImmersiveDeveloper",
+      "display_name": "XR沉浸式开发者",
+      "role_name": "沉浸达",
+      "description": "精通XR沉浸式体验开发，创造身临其境的VR/MR应用",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "XrInterfaceArchitect",
+      "name": "XrInterfaceArchitect",
+      "display_name": "XR界面架构师",
+      "role_name": "空间界",
+      "description": "设计XR环境中的用户界面架构，让3D空间交互直观自然",
+      "category": "游戏空间",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "YahooFinanceCli",
+      "name": "YahooFinanceCli",
+      "display_name": "行情洞察与趋势发现专家",
+      "role_name": "鹏城信息AI专家",
+      "description": "查询全球股票实时行情、基本面、财报预期、评级、历史走势与估值洞察，发现热门趋势标的，支持模糊检索与并排对比。",
+      "category": "金融投资",
+      "avatar": true,
+      "source": "local"
+    },
+    {
+      "id": "YunzhiQaAssistant",
+      "name": "YunzhiQaAssistant",
+      "display_name": "腾讯云知识问答专家",
+      "role_name": "腾讯云知（乐享）",
+      "description": "基于腾讯云知（乐享）平台的检索增强问答专家。调用乐享 MCP 的语义向量检索多路并行召回；基于检索结果生成结构化回答；",
+      "category": "腾讯专区",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ZeroKnowledgeProofAdmin",
+      "name": "ZeroKnowledgeProofAdmin",
+      "display_name": "零知识证明管理员",
+      "role_name": "零知知",
+      "description": "精通零知识证明技术的应用和管理",
+      "category": "法务安全",
+      "avatar": true,
+      "source": "cdn"
+    },
+    {
+      "id": "ZhihuStrategist",
+      "name": "ZhihuStrategist",
+      "display_name": "知乎策略师",
+      "role_name": "答有道",
+      "description": "精通知乎推荐机制和知识营销策略，通过高质量回答建立权威",
+      "category": "内容创作",
+      "avatar": true,
+      "source": "cdn"
     }
   ]
 }

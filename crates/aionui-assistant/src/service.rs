@@ -1897,6 +1897,28 @@ impl AssistantService {
         }
     }
 
+    /// Set an assistant's avatar directly from raw bytes (e.g. an embedded
+    /// marketplace catalog image), bypassing the string-based heuristics in
+    /// [`Self::normalize_legacy_user_avatar_input`] — those are designed to
+    /// parse a user-supplied string (a local path, an `/api/assistants/{id}/avatar`
+    /// reference, an emoji), not to accept bytes we already have in hand.
+    /// The assistant must already exist (call after `import_personas`).
+    pub async fn set_avatar_from_bytes(&self, id: &str, bytes: &[u8], extension: &str) -> Result<(), AssistantError> {
+        let definition = self
+            .definition_repo
+            .get_by_assistant_id(id)
+            .await
+            .map_err(|e| AssistantError::Internal(format!("load assistant for avatar set: {e}")))?
+            .ok_or_else(|| AssistantError::NotFound(format!("assistant '{id}' not found")))?;
+
+        let avatar_value = self.persist_user_avatar_bytes(id, bytes, Some(extension))?;
+        self.definition_repo
+            .update_avatar_fields_preserving_deleted(&definition.id, "user_asset", Some(&avatar_value))
+            .await
+            .map_err(|e| AssistantError::Internal(format!("update assistant avatar fields: {e}")))?;
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
@@ -4958,6 +4980,50 @@ mod tests {
             .unwrap();
         assert_eq!(definition.avatar_type, "user_asset");
         assert_eq!(definition.avatar_value.as_deref(), Some("custom-uploaded-avatar.png"));
+    }
+
+    #[tokio::test]
+    async fn set_avatar_from_bytes_writes_file_and_updates_definition() {
+        let fx = fixture().await;
+        fx.service
+            .create(CreateAssistantRequest {
+                id: Some("marketplace-installed".into()),
+                name: "Marketplace Installed".into(),
+                ..req_default()
+            })
+            .await
+            .unwrap();
+
+        fx.service
+            .set_avatar_from_bytes("marketplace-installed", b"webp-bytes", "webp")
+            .await
+            .unwrap();
+
+        let managed_avatar = fx._tmp.path().join("assistant-avatars").join("marketplace-installed.webp");
+        assert_eq!(std::fs::read(&managed_avatar).unwrap(), b"webp-bytes");
+
+        let definition = fx
+            .definition_repo
+            .get_by_assistant_id("marketplace-installed")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(definition.avatar_type, "user_asset");
+        assert_eq!(definition.avatar_value.as_deref(), Some("marketplace-installed.webp"));
+
+        let asset = fx.service.avatar_asset("marketplace-installed").await.unwrap();
+        assert_eq!(asset.bytes, b"webp-bytes");
+    }
+
+    #[tokio::test]
+    async fn set_avatar_from_bytes_errors_for_unknown_assistant() {
+        let fx = fixture().await;
+        let err = fx
+            .service
+            .set_avatar_from_bytes("does-not-exist", b"bytes", "webp")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AssistantError::NotFound(_)));
     }
 
     #[tokio::test]
