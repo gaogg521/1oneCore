@@ -5,6 +5,7 @@ use aionui_common::{
 use serde::{Deserialize, Serialize};
 
 use crate::acp::AcpConfigOptionDto;
+use crate::chat_file::{ChatFileRef, TaggedChatFileRef};
 
 /// Per-MCP snapshot status stored in `conversation.extra`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -91,62 +92,6 @@ pub struct UpdateConversationRequest {
 #[derive(Debug, Deserialize)]
 pub struct CloneConversationRequest {
     pub conversation: CreateConversationRequest,
-}
-
-/// A file sent along with a chat message.
-///
-/// Two shapes are accepted because two generations of client exist:
-///
-/// * a bare absolute path — every client before the project-scoped Explorer;
-/// * a tagged object — what the current desktop client sends for every
-///   attachment (`common/types/chatFile.ts`).
-///
-/// The tagged form is not cosmetic: a `project` entry identifies a file by
-/// `(pe_id, relative_path)` rather than by an absolute path, so it survives the
-/// project root moving and is checked for containment when resolved. Accepting
-/// only the bare form is what made *every* attachment fail with
-/// `400 Invalid JSON request body` — the client had already moved to the tagged
-/// shape while this struct still required `Vec<String>`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum ChatFileRef {
-    /// Absolute path on the backend host, sent as-is.
-    Path(String),
-    Tagged(TaggedChatFileRef),
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum TaggedChatFileRef {
-    /// A file inside a Project Explorer entry, resolved via `pe_id`.
-    Project { pe_id: String, relative_path: String },
-    /// A device upload already stored under the managed upload directory.
-    Upload { path: String },
-    /// A file picked from the backend host's own filesystem.
-    Local { path: String },
-}
-
-impl ChatFileRef {
-    /// The path this ref carries directly, if it has one. `project` refs return
-    /// `None` — they need the project store to become a path, which happens in
-    /// the service layer where that dependency is available.
-    pub fn direct_path(&self) -> Option<&str> {
-        match self {
-            Self::Path(path) => Some(path),
-            Self::Tagged(TaggedChatFileRef::Upload { path } | TaggedChatFileRef::Local { path }) => Some(path),
-            Self::Tagged(TaggedChatFileRef::Project { .. }) => None,
-        }
-    }
-
-    /// The `(pe_id, relative_path)` pair for a project ref.
-    pub fn project_ref(&self) -> Option<(&str, &str)> {
-        match self {
-            Self::Tagged(TaggedChatFileRef::Project { pe_id, relative_path }) => {
-                Some((pe_id.as_str(), relative_path.as_str()))
-            }
-            _ => None,
-        }
-    }
 }
 
 /// Body for `POST /api/conversations/:id/messages`.
@@ -289,6 +234,8 @@ pub struct ConversationResponse {
     pub channel_chat_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assistant: Option<ConversationAssistantIdentityResponse>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub created_at: TimestampMs,
     pub modified_at: TimestampMs,
     pub extra: serde_json::Value,
@@ -648,6 +595,7 @@ mod tests {
             pinned_at: None,
             channel_chat_id: None,
             assistant: None,
+            project_id: None,
             created_at: 1712345678000,
             modified_at: 1712345678000,
             extra: json!({ "workspace": "/project" }),
@@ -686,6 +634,7 @@ mod tests {
             pinned_at: None,
             channel_chat_id: None,
             assistant: None,
+            project_id: None,
             created_at: 1,
             modified_at: 1,
             extra: json!({}),
@@ -718,6 +667,7 @@ mod tests {
             pinned_at: Some(1712345678000),
             channel_chat_id: Some("group:42".into()),
             assistant: None,
+            project_id: None,
             created_at: 1000,
             modified_at: 2000,
             extra: json!({}),
@@ -802,6 +752,7 @@ mod tests {
                 pinned_at: None,
                 channel_chat_id: None,
                 assistant: None,
+                project_id: None,
                 created_at: 1712345678000,
                 modified_at: 1712345678000,
                 extra: json!({}),
@@ -839,6 +790,7 @@ mod tests {
                 pinned_at: None,
                 channel_chat_id: None,
                 assistant: None,
+                project_id: None,
                 created_at: 9000,
                 modified_at: 9000,
                 extra: json!({}),
@@ -858,7 +810,11 @@ mod tests {
     fn deserialize_send_message_full() {
         let raw = json!({
             "content": "Review this code",
-            "files": ["/tmp/a.rs"],
+            "files": [
+                { "kind": "project", "pe_id": "pe1", "relative_path": "src/a.rs" },
+                { "kind": "upload", "path": "/tmp/a.rs" },
+                { "kind": "local", "path": "/Users/me/notes.txt" }
+            ],
             "inject_skills": ["security-review"],
             "hidden": true
         });
@@ -866,10 +822,13 @@ mod tests {
         assert_eq!(req.content, "Review this code");
         // `files` became a two-shape enum so the tagged refs the desktop client
         // sends stop being rejected; a bare path still deserializes as before.
+        // `project` refs have no direct path (they resolve via the project
+        // store), so only the upload/local entries show up here.
         assert_eq!(
             req.files.iter().filter_map(|f| f.direct_path()).collect::<Vec<_>>(),
-            vec!["/tmp/a.rs"]
+            vec!["/tmp/a.rs", "/Users/me/notes.txt"]
         );
+        assert_eq!(req.files[0].project_ref(), Some(("pe1", "src/a.rs")));
         assert_eq!(req.inject_skills, vec!["security-review"]);
         assert!(req.hidden);
     }
@@ -915,6 +874,7 @@ mod tests {
                 pinned_at: None,
                 channel_chat_id: None,
                 assistant: None,
+                project_id: None,
                 created_at: 1000,
                 modified_at: 1000,
                 extra: json!({}),
@@ -967,6 +927,7 @@ mod tests {
                     pinned_at: None,
                     channel_chat_id: None,
                     assistant: None,
+                    project_id: None,
                     created_at: 5000,
                     modified_at: 5000,
                     extra: json!({}),
