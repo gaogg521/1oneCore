@@ -67,9 +67,10 @@ pub(crate) fn is_auto_injected_builtin(name: &str) -> bool {
 pub(crate) async fn load_session_mcp_rows(
     repo: &dyn IMcpServerRepository,
     selected_ids: Option<&[String]>,
+    user_id: &str,
     conversation_id: &str,
 ) -> Vec<McpServerRow> {
-    let rows = match repo.list().await {
+    let rows = match repo.list(user_id).await {
         Ok(r) => r,
         Err(err) => {
             warn!(
@@ -126,13 +127,13 @@ mod tests {
 
     #[async_trait]
     impl IMcpServerRepository for FakeRepo {
-        async fn list(&self) -> Result<Vec<McpServerRow>, DbError> {
+        async fn list(&self, _user_id: &str) -> Result<Vec<McpServerRow>, DbError> {
             Ok(self.rows.clone())
         }
-        async fn find_by_id(&self, id: &str) -> Result<Option<McpServerRow>, DbError> {
+        async fn find_by_id(&self, _user_id: &str, id: &str) -> Result<Option<McpServerRow>, DbError> {
             Ok(self.rows.iter().find(|r| r.id == id).cloned())
         }
-        async fn find_by_name(&self, name: &str) -> Result<Option<McpServerRow>, DbError> {
+        async fn find_by_name(&self, _user_id: &str, name: &str) -> Result<Option<McpServerRow>, DbError> {
             Ok(self.rows.iter().find(|r| r.name == name).cloned())
         }
         async fn create(&self, _params: aionui_db::CreateMcpServerParams<'_>) -> Result<McpServerRow, DbError> {
@@ -140,29 +141,32 @@ mod tests {
         }
         async fn update(
             &self,
+            _user_id: &str,
             _id: &str,
             _params: aionui_db::UpdateMcpServerParams<'_>,
         ) -> Result<McpServerRow, DbError> {
             unimplemented!()
         }
-        async fn delete(&self, _id: &str) -> Result<(), DbError> {
+        async fn delete(&self, _user_id: &str, _id: &str) -> Result<(), DbError> {
             unimplemented!()
         }
         async fn batch_upsert(
             &self,
+            _user_id: &str,
             _servers: &[aionui_db::CreateMcpServerParams<'_>],
         ) -> Result<Vec<McpServerRow>, DbError> {
             unimplemented!()
         }
         async fn update_status(
             &self,
+            _user_id: &str,
             _id: &str,
             _status: &str,
             _last_connected: Option<aionui_common::TimestampMs>,
         ) -> Result<(), DbError> {
             unimplemented!()
         }
-        async fn update_tools(&self, _id: &str, _tools: Option<&str>) -> Result<(), DbError> {
+        async fn update_tools(&self, _user_id: &str, _id: &str, _tools: Option<&str>) -> Result<(), DbError> {
             unimplemented!()
         }
     }
@@ -183,7 +187,7 @@ mod tests {
                 row("b2", "one-export-pdf", true, true),
             ],
         };
-        let rows = load_session_mcp_rows(&repo, None, "c1").await;
+        let rows = load_session_mcp_rows(&repo, None, "u", "c1").await;
         assert_eq!(names(&rows), vec!["user-server", "aionui-image-generation"]);
     }
 
@@ -197,7 +201,7 @@ mod tests {
                 row("b1", "aionui-image-generation", true, true),
             ],
         };
-        let rows = load_session_mcp_rows(&repo, Some(&["u1".to_owned()]), "c1").await;
+        let rows = load_session_mcp_rows(&repo, Some(&["u1".to_owned()]), "u", "c1").await;
         assert_eq!(names(&rows), vec!["user-server", "aionui-image-generation"]);
     }
 
@@ -211,9 +215,9 @@ mod tests {
                 row("b3", "one-team-knowledge", true, true),
             ],
         };
-        assert!(load_session_mcp_rows(&repo, None, "c1").await.is_empty());
+        assert!(load_session_mcp_rows(&repo, None, "u", "c1").await.is_empty());
         assert!(
-            load_session_mcp_rows(&repo, Some(&["b2".to_owned()]), "c1")
+            load_session_mcp_rows(&repo, Some(&["b2".to_owned()]), "u", "c1")
                 .await
                 .is_empty()
         );
@@ -226,9 +230,9 @@ mod tests {
         let repo = FakeRepo {
             rows: vec![row("b1", "aionui-image-generation", false, true)],
         };
-        assert!(load_session_mcp_rows(&repo, None, "c1").await.is_empty());
+        assert!(load_session_mcp_rows(&repo, None, "u", "c1").await.is_empty());
         assert!(
-            load_session_mcp_rows(&repo, Some(&["b1".to_owned()]), "c1")
+            load_session_mcp_rows(&repo, Some(&["b1".to_owned()]), "u", "c1")
                 .await
                 .is_empty()
         );
@@ -239,7 +243,7 @@ mod tests {
         let repo = FakeRepo {
             rows: vec![row("b1", "AionUi Image Generation", true, true)],
         };
-        let rows = load_session_mcp_rows(&repo, None, "c1").await;
+        let rows = load_session_mcp_rows(&repo, None, "u", "c1").await;
         assert_eq!(names(&rows), vec!["AionUi Image Generation"]);
     }
 
@@ -254,7 +258,7 @@ mod tests {
                 row("u2", "enabled-but-not-in-snapshot", true, false),
             ],
         };
-        let rows = load_session_mcp_rows(&repo, Some(&["u1".to_owned()]), "c1").await;
+        let rows = load_session_mcp_rows(&repo, Some(&["u1".to_owned()]), "u", "c1").await;
         assert_eq!(names(&rows), vec!["pinned-though-disabled"]);
     }
 
@@ -264,7 +268,7 @@ mod tests {
         let repo = FakeRepo {
             rows: vec![row("b1", "aionui-image-generation", true, true)],
         };
-        let rows = load_session_mcp_rows(&repo, Some(&["b1".to_owned()]), "c1").await;
+        let rows = load_session_mcp_rows(&repo, Some(&["b1".to_owned()]), "u", "c1").await;
         assert_eq!(names(&rows), vec!["aionui-image-generation"]);
     }
 }

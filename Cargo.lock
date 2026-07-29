@@ -531,6 +531,7 @@ version = "0.1.53-one.2"
 dependencies = [
  "aionui-ai-agent",
  "aionui-api-types",
+ "aionui-auth",
  "aionui-common",
  "aionui-conversation",
  "aionui-db",
@@ -638,6 +639,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sqlx",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
@@ -666,6 +668,7 @@ dependencies = [
  "iana-time-zone",
  "serde",
  "serde_json",
+ "sqlx",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
@@ -695,6 +698,7 @@ name = "aionui-extension"
 version = "0.1.53-one.2"
 dependencies = [
  "aionui-api-types",
+ "aionui-auth",
  "aionui-common",
  "aionui-db",
  "aionui-realtime",
@@ -727,6 +731,7 @@ name = "aionui-file"
 version = "0.1.53-one.2"
 dependencies = [
  "aionui-api-types",
+ "aionui-auth",
  "aionui-common",
  "aionui-project",
  "aionui-realtime",
@@ -756,6 +761,7 @@ name = "aionui-mcp"
 version = "0.1.53-one.2"
 dependencies = [
  "aionui-api-types",
+ "aionui-auth",
  "aionui-common",
  "aionui-db",
  "aionui-realtime",
@@ -829,6 +835,7 @@ name = "aionui-project"
 version = "0.1.53-one.2"
 dependencies = [
  "aionui-api-types",
+ "aionui-auth",
  "aionui-common",
  "aionui-db",
  "async-trait",
@@ -913,6 +920,7 @@ name = "aionui-shell"
 version = "0.1.53-one.2"
 dependencies = [
  "aionui-api-types",
+ "aionui-auth",
  "aionui-common",
  "aionui-db",
  "aionui-runtime",

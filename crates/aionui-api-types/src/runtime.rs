@@ -51,6 +51,8 @@ pub enum RuntimeFailureKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeStatusPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
     pub resource: RuntimeResourceKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_id: Option<String>,
@@ -81,6 +83,7 @@ mod tests {
     #[test]
     fn runtime_status_payload_serializes() {
         let payload = RuntimeStatusPayload {
+            user_id: Some("user-1".into()),
             resource: RuntimeResourceKind::Node,
             resource_id: None,
             scope: RuntimeStatusScope {
@@ -95,6 +98,7 @@ mod tests {
 
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["resource"], "node");
+        assert_eq!(json["user_id"], "user-1");
         assert_eq!(json["scope"]["kind"], "conversation");
         assert_eq!(json["phase"], "downloading");
         assert_eq!(json["message"], "downloading");

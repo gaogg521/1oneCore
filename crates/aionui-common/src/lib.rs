@@ -3,6 +3,7 @@
 //! Shared primitives: error types, enums, ID generation, crypto, timestamps, and pagination.
 pub mod constants;
 pub mod dlp;
+pub mod user_paths;
 
 mod agent_bridge;
 mod case_convert;
@@ -39,3 +40,4 @@ pub use pagination::PaginatedResult;
 pub use timestamp::{TimestampMs, now_ms};
 pub use tool_schema::{IncompatibilityReason, SchemaIncompatibility, is_tool_compatible, validate_tool};
 pub use types::{CommandSpec, Confirmation, ConfirmationOption, EnvVar, ProviderWithModel, UpdateType, VersionInfo};
+pub use user_paths::{UserDirNameError, user_dir_name};

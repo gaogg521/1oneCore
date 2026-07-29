@@ -63,8 +63,10 @@ pub use assistant::{
     assistant_avatar_response_value_with_version, is_local_avatar_value,
 };
 pub use auth::{
-    AuthStatusResponse, ChangePasswordRequest, LoginRequest, LoginResponse, PublicUser, QrLoginRequest,
-    RefreshResponse, RefreshTokenRequest, UserInfoResponse, WebuiChangePasswordRequest, WebuiChangeUsernameRequest,
+    AuthStatusResponse, ChangePasswordRequest, EnsureExternalSessionRequest, EnsureExternalSessionResponse,
+    EnsureExternalUserRequest, EnsureExternalUserResponse, ExternalUserType, InternalAuthErrorCode, LoginRequest,
+    LoginResponse, PublicUser, QrLoginRequest, RefreshResponse, RefreshTokenRequest, RevokeExternalSessionRequest,
+    RevokeExternalSessionResponse, UserInfoResponse, WebuiChangePasswordRequest, WebuiChangeUsernameRequest,
     WebuiChangeUsernameResponse, WebuiGenerateQrTokenResponse, WebuiResetPasswordResponse, WsTokenResponse,
 };
 pub use channel::{

@@ -38,6 +38,7 @@ impl ProjectService {
     /// `Upload` paths must live under it.
     pub async fn resolve_chat_message(
         &self,
+        user_id: &str,
         content: &str,
         files: &[ChatFileRef],
         upload_root: &Path,
@@ -59,11 +60,14 @@ impl ProjectService {
                 }
                 ChatFileRef::Tagged(TaggedChatFileRef::Project { pe_id, relative_path }) => {
                     let resolved = self
-                        .resolve_reference(ReferenceInput {
-                            pe_id: pe_id.clone(),
-                            relative_path: relative_path.clone(),
-                            op: FileOp::Read,
-                        })
+                        .resolve_reference(
+                            user_id,
+                            ReferenceInput {
+                                pe_id: pe_id.clone(),
+                                relative_path: relative_path.clone(),
+                                op: FileOp::Read,
+                            },
+                        )
                         .await?;
                     let abs = resolved.absolute_path.ok_or_else(|| ProjectError::ChatFileMissing {
                         path: relative_path.clone(),

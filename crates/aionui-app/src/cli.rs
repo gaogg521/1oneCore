@@ -47,6 +47,10 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub local: bool,
 
+    /// Identity source mode. AionPro mode requires AIONCORE_BOOTSTRAP_SECRET.
+    #[arg(long, value_enum, default_value_t = IdentityModeArg::Webui)]
+    pub identity_mode: IdentityModeArg,
+
     /// Directory for log files. Defaults to {data-dir}/logs/.
     /// Also settable via `AIONUI_LOG_DIR`.
     #[arg(long, env = "AIONUI_LOG_DIR")]
@@ -77,6 +81,23 @@ pub(crate) struct Cli {
 pub(crate) enum ManagedResourcesModeArg {
     Bundled,
     Download,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdentityModeArg {
+    Local,
+    Webui,
+    Aionpro,
+}
+
+impl From<IdentityModeArg> for aionui_app::IdentityMode {
+    fn from(value: IdentityModeArg) -> Self {
+        match value {
+            IdentityModeArg::Local => Self::Local,
+            IdentityModeArg::Webui => Self::WebUi,
+            IdentityModeArg::Aionpro => Self::AionPro,
+        }
+    }
 }
 
 impl From<ManagedResourcesModeArg> for aionui_runtime::ManagedResourcesMode {

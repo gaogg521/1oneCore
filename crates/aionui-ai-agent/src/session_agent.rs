@@ -296,6 +296,9 @@ fn session_content_blocks_to_json(content: &[ContentBlock]) -> Vec<serde_json::V
 pub struct SessionAgentTask {
     agent_type: AgentType,
     conversation_id: String,
+    /// Owner Core user — every acp_session persistence write and catalog
+    /// writeback is scoped to this user (multi-account boundary).
+    user_id: String,
     workspace: String,
     backend: Arc<dyn SessionBackend>,
     runtime: Arc<SessionRuntime>,
@@ -336,6 +339,7 @@ impl SessionAgentTask {
     pub fn new(
         agent_type: AgentType,
         conversation_id: String,
+        user_id: String,
         workspace: String,
         backend: Arc<dyn SessionBackend>,
         session_repo: Option<Arc<dyn IAcpSessionRepository>>,
@@ -343,6 +347,7 @@ impl SessionAgentTask {
         Self::build(
             agent_type,
             conversation_id,
+            user_id,
             workspace,
             backend,
             session_repo,
@@ -360,6 +365,7 @@ impl SessionAgentTask {
     pub fn new_with_preload(
         agent_type: AgentType,
         conversation_id: String,
+        user_id: String,
         workspace: String,
         backend: Arc<dyn SessionBackend>,
         session_repo: Option<Arc<dyn IAcpSessionRepository>>,
@@ -369,6 +375,7 @@ impl SessionAgentTask {
         Self::build(
             agent_type,
             conversation_id,
+            user_id,
             workspace,
             backend,
             session_repo,
@@ -377,9 +384,11 @@ impl SessionAgentTask {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build(
         agent_type: AgentType,
         conversation_id: String,
+        user_id: String,
         workspace: String,
         backend: Arc<dyn SessionBackend>,
         session_repo: Option<Arc<dyn IAcpSessionRepository>>,
@@ -400,10 +409,17 @@ impl SessionAgentTask {
         // stream to the pump — never a backend Arc (see `spawn_event_pump` for why
         // capturing a backend Arc there would leak the child process).
         let events = backend.events();
-        spawn_event_pump(events, runtime.clone(), conversation_id.clone(), session_repo.clone());
+        spawn_event_pump(
+            events,
+            runtime.clone(),
+            conversation_id.clone(),
+            user_id.clone(),
+            session_repo.clone(),
+        );
         Arc::new(Self {
             agent_type,
             conversation_id,
+            user_id,
             workspace,
             backend,
             runtime,
@@ -872,7 +888,7 @@ impl SessionAgentTask {
         };
         // Merge into the existing selection map (preserve unrelated keys).
         let mut selections: std::collections::HashMap<String, String> = match repo
-            .load_runtime_state(&self.conversation_id)
+            .load_runtime_state_for_user(&self.user_id, &self.conversation_id)
             .await
         {
             Ok(Some(state)) => state
@@ -898,7 +914,10 @@ impl SessionAgentTask {
             config_selections_json: Some(Some(&json)),
             ..Default::default()
         };
-        if let Err(err) = repo.save_runtime_state(&self.conversation_id, &params).await {
+        if let Err(err) = repo
+            .save_runtime_state_for_user(&self.user_id, &self.conversation_id, &params)
+            .await
+        {
             tracing::warn!(conversation_id = %self.conversation_id, error = %err, "persist_effort: save_runtime_state failed");
         }
     }
@@ -999,7 +1018,10 @@ impl IAgentTask for SessionAgentTask {
             // never becomes a `TurnResult` on the event pump.
             Err(BackendError::SessionNotFound(detail)) => {
                 if let Some(repo) = self.session_repo.as_ref() {
-                    match repo.clear_session_id(&self.conversation_id).await {
+                    match repo
+                        .clear_session_id_for_user(&self.user_id, &self.conversation_id)
+                        .await
+                    {
                         Ok(_) => tracing::info!(
                             conversation_id = %self.conversation_id,
                             "send: cleared dead resume anchor (backend session not found) — next attempt opens Fresh"
@@ -1111,6 +1133,9 @@ impl SessionAgentTask {
 pub struct SessionBuildInputs<'a> {
     /// The conversation this session belongs to (the clean-slate `session_id`).
     pub conversation_id: String,
+    /// Owner Core user. Scopes every acp_session persistence write, the MCP
+    /// server resolution, and the catalog writeback (multi-account boundary).
+    pub user_id: String,
     /// The resolved workspace path (`SessionConfig.cwd`).
     pub workspace: String,
     /// The conversation's persisted build `extra` (mode/model/mcp/preset/skills).
@@ -1235,6 +1260,7 @@ pub async fn build_session_instance(
 
     let SessionBuildInputs {
         conversation_id,
+        user_id,
         workspace,
         config,
         metadata,
@@ -1260,6 +1286,7 @@ pub async fn build_session_instance(
         Some(repo) => {
             crate::mcp_resolve::resolve_session_mcp_servers(
                 repo.as_ref(),
+                &user_id,
                 config.mcp_server_ids.as_deref(),
                 &conversation_id,
                 broadcaster,
@@ -1461,7 +1488,7 @@ pub async fn build_session_instance(
     // GAP #7 (G5): project the backend's discovered catalog back into agent_metadata
     // so the cold-start picker stays fresh. Best-effort, detached, off the open path.
     if let Some((agent_id, catalog_tx)) = catalog_writeback {
-        spawn_catalog_writeback(agent_id, backend.clone(), catalog_tx);
+        spawn_catalog_writeback(agent_id, user_id.clone(), backend.clone(), catalog_tx);
     }
 
     let prompt_dump = prompt_dump_dir.map(|dir| SessionPromptDump {
@@ -1474,6 +1501,7 @@ pub async fn build_session_instance(
     let task = SessionAgentTask::new_with_preload(
         AgentType::Acp,
         conversation_id,
+        user_id,
         workspace,
         backend,
         acp_session_repo,
@@ -1638,6 +1666,7 @@ fn team_mcp_server_spec(cfg: &aionui_api_types::TeamMcpStdioConfig) -> aionui_se
 /// forwarding the best model-less partial only if the window elapses.
 pub fn spawn_catalog_writeback(
     agent_id: String,
+    user_id: String,
     backend: Arc<dyn aionui_session::SessionBackend>,
     catalog_tx: crate::registry::CatalogSender,
 ) {
@@ -1648,7 +1677,7 @@ pub fn spawn_catalog_writeback(
             if let Some(partial) = catalog_partial_from_caps(&caps) {
                 if !caps.available_models.is_empty() {
                     // Complete enough — models present → commit the full catalog.
-                    catalog_tx.send_partial(agent_id, partial);
+                    catalog_tx.send_partial(user_id.clone(), agent_id, partial);
                     return;
                 }
                 // Modes/commands only so far — remember it, keep waiting for models.
@@ -1657,7 +1686,7 @@ pub fn spawn_catalog_writeback(
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         if let Some(partial) = best_partial {
-            catalog_tx.send_partial(agent_id, partial);
+            catalog_tx.send_partial(user_id, agent_id, partial);
         }
     });
 }
@@ -1837,6 +1866,7 @@ fn spawn_event_pump(
     mut events: BoxStream<'static, SessionEnvelope>,
     runtime: Arc<SessionRuntime>,
     conversation_id: String,
+    user_id: String,
     session_repo: Option<Arc<dyn IAcpSessionRepository>>,
 ) {
     use futures_util::StreamExt as _;
@@ -2329,7 +2359,7 @@ fn spawn_event_pump(
             // AcpSessionSyncService (which this direct-CLI path bypasses). Best-effort:
             // a repo error is warn-logged, never fatal to the stream.
             if let Some(repo) = session_repo.as_ref() {
-                persist_side_effects(repo.as_ref(), &conversation_id, &env.event).await;
+                persist_side_effects(repo.as_ref(), &user_id, &conversation_id, &env.event).await;
             }
             for mut ev in translate_event(env.event, &conversation_id, terminal_result_seen) {
                 // Keep the tool name alive across a call's multi-frame lifecycle (see
@@ -2448,7 +2478,12 @@ fn is_dead_resume_anchor(event: &SessionEvent) -> bool {
 /// for the ACP-manager path. Without this the resume anchor
 /// (`build_session_instance` GAP #1) and the mode/model precedence source (GAP #2)
 /// are never written, so a restart always loses continuity.
-async fn persist_side_effects(repo: &dyn IAcpSessionRepository, conversation_id: &str, event: &SessionEvent) {
+async fn persist_side_effects(
+    repo: &dyn IAcpSessionRepository,
+    user_id: &str,
+    conversation_id: &str,
+    event: &SessionEvent,
+) {
     // Self-heal a dead resume anchor: a turn that failed *because* the stored
     // backend session id no longer resolves must null that id, or every subsequent
     // send re-resumes the same dead session and the conversation wedges forever.
@@ -2457,7 +2492,7 @@ async fn persist_side_effects(repo: &dyn IAcpSessionRepository, conversation_id:
     // direct-CLI path dropped: clean-slate `Orchestrator` emits `BackendBound{None}`
     // and legacy ACP does `rebuild_after_session_not_found` → `clear_session_id`.
     if is_dead_resume_anchor(event) {
-        match repo.clear_session_id(conversation_id).await {
+        match repo.clear_session_id_for_user(user_id, conversation_id).await {
             Ok(_) => tracing::info!(
                 conversation_id,
                 "session-sync: cleared dead resume anchor (unrecoverable resume error) — next turn opens Fresh"
@@ -2475,7 +2510,7 @@ async fn persist_side_effects(repo: &dyn IAcpSessionRepository, conversation_id:
         SessionEvent::BackendBound {
             backend_session_id: Some(bid),
         } => {
-            if let Err(err) = repo.update_session_id(conversation_id, bid).await {
+            if let Err(err) = repo.update_session_id_for_user(user_id, conversation_id, bid).await {
                 tracing::warn!(conversation_id, error = %err, "session-sync: update_session_id failed");
             }
         }
@@ -2488,7 +2523,10 @@ async fn persist_side_effects(repo: &dyn IAcpSessionRepository, conversation_id:
                 config_selections_json: None,
                 context_usage_json: None,
             };
-            if let Err(err) = repo.save_runtime_state(conversation_id, &params).await {
+            if let Err(err) = repo
+                .save_runtime_state_for_user(user_id, conversation_id, &params)
+                .await
+            {
                 tracing::warn!(conversation_id, error = %err, "session-sync: save_runtime_state failed");
             }
         }
@@ -3909,8 +3947,25 @@ mod persist_tests {
     // for the test's lifetime (the cloned SqlitePool keeps the in-memory DB alive).
     async fn seeded_repo() -> (Arc<dyn IAcpSessionRepository>, aionui_db::Database) {
         let db = init_database_memory().await.unwrap();
+        // The scoped repo authorizes through the conversations parent chain, so
+        // seed the owning user + conversation the acp_session row hangs off.
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, created_at, updated_at) \
+             VALUES ('user-1', 'user-1', 'hash', 0, 0)",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO conversations (id, user_id, name, type, status, created_at, updated_at, extra) \
+             VALUES ('conv-1', 'user-1', 'conv-1', 'acp', 'pending', 0, 0, '{}')",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
         let repo: Arc<dyn IAcpSessionRepository> = Arc::new(SqliteAcpSessionRepository::new(db.pool().clone()));
         repo.create(&CreateAcpSessionParams {
+            user_id: "user-1",
             conversation_id: "conv-1",
             agent_source: "builtin",
             agent_id: "claude",
@@ -3925,13 +3980,18 @@ mod persist_tests {
         let (repo, _db) = seeded_repo().await;
         persist_side_effects(
             repo.as_ref(),
+            "user-1",
             "conv-1",
             &SessionEvent::BackendBound {
                 backend_session_id: Some("bsid-abc".into()),
             },
         )
         .await;
-        let row = repo.get("conv-1").await.unwrap().expect("row exists");
+        let row = repo
+            .get_for_user("user-1", "conv-1")
+            .await
+            .unwrap()
+            .expect("row exists");
         assert_eq!(
             row.session_id.as_deref(),
             Some("bsid-abc"),
@@ -3942,16 +4002,23 @@ mod persist_tests {
     #[tokio::test]
     async fn backend_bound_none_does_not_clobber_anchor() {
         let (repo, _db) = seeded_repo().await;
-        repo.update_session_id("conv-1", "bsid-existing").await.unwrap();
+        repo.update_session_id_for_user("user-1", "conv-1", "bsid-existing")
+            .await
+            .unwrap();
         persist_side_effects(
             repo.as_ref(),
+            "user-1",
             "conv-1",
             &SessionEvent::BackendBound {
                 backend_session_id: None,
             },
         )
         .await;
-        let row = repo.get("conv-1").await.unwrap().expect("row exists");
+        let row = repo
+            .get_for_user("user-1", "conv-1")
+            .await
+            .unwrap()
+            .expect("row exists");
         assert_eq!(
             row.session_id.as_deref(),
             Some("bsid-existing"),
@@ -3964,6 +4031,7 @@ mod persist_tests {
         let (repo, _db) = seeded_repo().await;
         persist_side_effects(
             repo.as_ref(),
+            "user-1",
             "conv-1",
             &SessionEvent::ConfigChanged {
                 mode: Some("plan".into()),
@@ -3971,7 +4039,11 @@ mod persist_tests {
             },
         )
         .await;
-        let state = repo.load_runtime_state("conv-1").await.unwrap().expect("runtime state");
+        let state = repo
+            .load_runtime_state_for_user("user-1", "conv-1")
+            .await
+            .unwrap()
+            .expect("runtime state");
         assert_eq!(state.current_mode_id.as_deref(), Some("plan"));
         assert_eq!(state.current_model_id.as_deref(), Some("claude-opus-4-8"));
     }
@@ -3989,6 +4061,7 @@ mod persist_tests {
         let task = SessionAgentTask::new(
             AgentType::Acp,
             "conv-1".into(),
+            "user-1".into(),
             "/w".into(),
             backend,
             Some(repo.clone()),
@@ -4004,7 +4077,11 @@ mod persist_tests {
         );
 
         // Persisted under the effort key so build_session_instance can re-apply it.
-        let state = repo.load_runtime_state("conv-1").await.unwrap().expect("runtime state");
+        let state = repo
+            .load_runtime_state_for_user("user-1", "conv-1")
+            .await
+            .unwrap()
+            .expect("runtime state");
         let selections: std::collections::HashMap<String, String> = serde_json::from_str(
             state
                 .config_selections_json
@@ -4047,11 +4124,14 @@ mod persist_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn send_dispatch_session_not_found_clears_anchor_and_classifies() {
         let (repo, _db) = seeded_repo().await;
-        repo.update_session_id("conv-1", "dead-anchor").await.unwrap();
+        repo.update_session_id_for_user("user-1", "conv-1", "dead-anchor")
+            .await
+            .unwrap();
         let backend: Arc<dyn SessionBackend> = Arc::new(DeadSessionBackend);
         let task = SessionAgentTask::new(
             AgentType::Acp,
             "conv-1".into(),
+            "user-1".into(),
             "/w".into(),
             backend,
             Some(repo.clone()),
@@ -4075,7 +4155,11 @@ mod persist_tests {
             Some(aionui_api_types::AgentErrorCode::UserAgentSessionNotFound),
             "classified as the retryable session-not-found so TurnRecoveryPolicy replays once"
         );
-        let row = repo.get("conv-1").await.unwrap().expect("row exists");
+        let row = repo
+            .get_for_user("user-1", "conv-1")
+            .await
+            .unwrap()
+            .expect("row exists");
         assert!(
             row.session_id.is_none(),
             "a dispatch-time dead session must clear the resume anchor — the replay/next send opens Fresh"
@@ -4138,7 +4222,14 @@ mod persist_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn get_config_options_surfaces_reasoning_effort_for_current_model() {
         let backend: Arc<dyn SessionBackend> = Arc::new(EffortCapsBackend);
-        let task = SessionAgentTask::new(AgentType::Acp, "conv-1".into(), "/w".into(), backend, None);
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-1".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend,
+            None,
+        );
         let snapshot = task.get_config_options().await.unwrap();
         let effort = snapshot
             .config_options
@@ -4191,7 +4282,14 @@ mod persist_tests {
             }
         }
         let backend: Arc<dyn SessionBackend> = Arc::new(HaikuCurrentBackend);
-        let task = SessionAgentTask::new(AgentType::Acp, "conv-1".into(), "/w".into(), backend, None);
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-1".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend,
+            None,
+        );
         let snapshot = task.get_config_options().await.unwrap();
         assert!(
             snapshot
@@ -4210,7 +4308,14 @@ mod persist_tests {
     async fn set_config_option_effort_returns_observed_via_override() {
         let (repo, _db) = seeded_repo().await;
         let backend: Arc<dyn SessionBackend> = Arc::new(EffortCapsBackend);
-        let task = SessionAgentTask::new(AgentType::Acp, "conv-1".into(), "/w".into(), backend, Some(repo));
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-1".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend,
+            Some(repo),
+        );
         let resp = task.set_config_option("reasoning_effort", "high").await.unwrap();
         assert!(
             matches!(resp.confirmation, aionui_api_types::ConfigOptionConfirmation::Observed),
@@ -4251,14 +4356,21 @@ mod persist_tests {
     #[tokio::test]
     async fn no_conversation_found_clears_dead_anchor() {
         let (repo, _db) = seeded_repo().await;
-        repo.update_session_id("conv-1", "dead-sid").await.unwrap();
+        repo.update_session_id_for_user("user-1", "conv-1", "dead-sid")
+            .await
+            .unwrap();
         persist_side_effects(
             repo.as_ref(),
+            "user-1",
             "conv-1",
             &errored_turn("No conversation found with session ID dead-sid"),
         )
         .await;
-        let row = repo.get("conv-1").await.unwrap().expect("row exists");
+        let row = repo
+            .get_for_user("user-1", "conv-1")
+            .await
+            .unwrap()
+            .expect("row exists");
         assert_eq!(
             row.session_id, None,
             "an unrecoverable resume error must null the dead anchor so the next turn opens Fresh"
@@ -4268,9 +4380,21 @@ mod persist_tests {
     #[tokio::test]
     async fn error_during_execution_clears_dead_anchor() {
         let (repo, _db) = seeded_repo().await;
-        repo.update_session_id("conv-1", "dead-sid").await.unwrap();
-        persist_side_effects(repo.as_ref(), "conv-1", &errored_turn("error_during_execution")).await;
-        let row = repo.get("conv-1").await.unwrap().expect("row exists");
+        repo.update_session_id_for_user("user-1", "conv-1", "dead-sid")
+            .await
+            .unwrap();
+        persist_side_effects(
+            repo.as_ref(),
+            "user-1",
+            "conv-1",
+            &errored_turn("error_during_execution"),
+        )
+        .await;
+        let row = repo
+            .get_for_user("user-1", "conv-1")
+            .await
+            .unwrap()
+            .expect("row exists");
         assert_eq!(
             row.session_id, None,
             "error_during_execution is a structural resume failure"
@@ -4280,15 +4404,22 @@ mod persist_tests {
     #[tokio::test]
     async fn ordinary_error_keeps_anchor() {
         let (repo, _db) = seeded_repo().await;
-        repo.update_session_id("conv-1", "live-sid").await.unwrap();
+        repo.update_session_id_for_user("user-1", "conv-1", "live-sid")
+            .await
+            .unwrap();
         // A normal tool/turn error is NOT a resume failure — the anchor is still good.
         persist_side_effects(
             repo.as_ref(),
+            "user-1",
             "conv-1",
             &errored_turn("the Bash tool exited with code 1"),
         )
         .await;
-        let row = repo.get("conv-1").await.unwrap().expect("row exists");
+        let row = repo
+            .get_for_user("user-1", "conv-1")
+            .await
+            .unwrap()
+            .expect("row exists");
         assert_eq!(
             row.session_id.as_deref(),
             Some("live-sid"),
@@ -4300,11 +4431,14 @@ mod persist_tests {
     async fn cancelled_turn_keeps_anchor_even_with_matching_text() {
         use aionui_session::{CancelReason, TurnOutcome};
         let (repo, _db) = seeded_repo().await;
-        repo.update_session_id("conv-1", "live-sid").await.unwrap();
+        repo.update_session_id_for_user("user-1", "conv-1", "live-sid")
+            .await
+            .unwrap();
         // claude reports a user interrupt as is_error with cancel-noise text; the
         // anchor is still good, so a cancel must never trigger the self-heal.
         persist_side_effects(
             repo.as_ref(),
+            "user-1",
             "conv-1",
             &SessionEvent::TurnResult {
                 is_error: true,
@@ -4317,7 +4451,11 @@ mod persist_tests {
             },
         )
         .await;
-        let row = repo.get("conv-1").await.unwrap().expect("row exists");
+        let row = repo
+            .get_for_user("user-1", "conv-1")
+            .await
+            .unwrap()
+            .expect("row exists");
         assert_eq!(
             row.session_id.as_deref(),
             Some("live-sid"),
@@ -4467,7 +4605,14 @@ mod pump_tests {
             script,
             gate: gate.clone(),
         });
-        let task = SessionAgentTask::new(AgentType::Acp, "conv-1".into(), "/w".into(), backend, None);
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-1".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend,
+            None,
+        );
         let mut rx = crate::agent_task::IAgentTask::subscribe(task.as_ref());
         // Release only AFTER subscribing: the pump cannot emit before we listen.
         gate.notify_one();
@@ -4762,7 +4907,14 @@ mod pump_tests {
         let backend: Arc<dyn SessionBackend> = Arc::new(ScriptBackend(vec![env(SessionEvent::BackendBound {
             backend_session_id: Some("sid-abc".into()),
         })]));
-        let task = SessionAgentTask::new(AgentType::Acp, "conv-1".into(), "/w".into(), backend, None);
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-1".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend,
+            None,
+        );
         // Let the pump process the BackendBound so session_id is known.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let mut rx = crate::agent_task::IAgentTask::subscribe(task.as_ref());
@@ -4808,6 +4960,7 @@ mod pump_tests {
         let task = SessionAgentTask::build(
             AgentType::Acp,
             "conv-1".into(),
+            "user-1".into(),
             "/w".into(),
             backend,
             None,
@@ -4849,6 +5002,7 @@ mod pump_tests {
         let task = SessionAgentTask::build(
             AgentType::Acp,
             "conv-1".into(),
+            "user-1".into(),
             "/w".into(),
             backend,
             None,
@@ -4886,6 +5040,7 @@ mod pump_tests {
         let task = SessionAgentTask::build(
             AgentType::Acp,
             "conv-1".into(),
+            "user-1".into(),
             "/w".into(),
             backend,
             None,
@@ -5525,7 +5680,14 @@ mod pump_tests {
                 }]
             })),
         }));
-        let task = SessionAgentTask::new(AgentType::Acp, "conv-1".into(), "/w".into(), backend, None);
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-1".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend,
+            None,
+        );
         let confs = task.get_confirmations();
         assert_eq!(confs.len(), 1, "the pending permission must be recovered");
         assert_eq!(
@@ -5548,7 +5710,14 @@ mod pump_tests {
             tool_name: "Bash".into(),
             questions: None,
         }));
-        let task = SessionAgentTask::new(AgentType::Acp, "conv-1".into(), "/w".into(), backend, None);
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-1".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend,
+            None,
+        );
         let confs = task.get_confirmations();
         assert_eq!(confs.len(), 1);
         let vals: Vec<String> = confs[0]
@@ -5621,7 +5790,14 @@ mod pump_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn set_config_option_mode_returns_observed_via_override() {
         let backend: Arc<dyn SessionBackend> = Arc::new(StaticCapsBackend);
-        let task = SessionAgentTask::new(AgentType::Acp, "conv-1".into(), "/w".into(), backend, None);
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-1".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend,
+            None,
+        );
         let resp = task.set_config_option("mode", "plan").await.unwrap();
         assert!(
             matches!(resp.confirmation, aionui_api_types::ConfigOptionConfirmation::Observed),
@@ -5642,7 +5818,14 @@ mod pump_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn set_config_option_model_returns_observed_via_override() {
         let backend: Arc<dyn SessionBackend> = Arc::new(StaticCapsBackend);
-        let task = SessionAgentTask::new(AgentType::Acp, "conv-1".into(), "/w".into(), backend, None);
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-1".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend,
+            None,
+        );
         let resp = task.set_config_option("model", "sonnet").await.unwrap();
         assert!(
             matches!(resp.confirmation, aionui_api_types::ConfigOptionConfirmation::Observed),
@@ -5660,7 +5843,14 @@ mod pump_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn set_config_option_rejects_invalid_mode_and_model() {
         let backend: Arc<dyn SessionBackend> = Arc::new(StaticCapsBackend);
-        let task = SessionAgentTask::new(AgentType::Acp, "conv-1".into(), "/w".into(), backend, None);
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-1".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend,
+            None,
+        );
 
         let mode_err = task
             .set_config_option("mode", "no-such-mode")
@@ -5780,7 +5970,14 @@ mod pump_tests {
         // `_keep` is dropped here, so the ONLY remaining Sender is the backend's field
         // — the reap now hinges purely on the backend being dropped.
         drop(_keep);
-        let task = SessionAgentTask::new(AgentType::Acp, "conv-1".into(), "/w".into(), backend, None);
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-1".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend,
+            None,
+        );
         // Let the pump subscribe and settle into its await.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -5828,6 +6025,7 @@ mod pump_tests {
         let task = SessionAgentTask::new_with_preload(
             AgentType::Acp,
             "conv-1".into(),
+            "user-1".into(),
             "/w".into(),
             backend,
             None,
@@ -5886,6 +6084,7 @@ mod pump_tests {
         let task = SessionAgentTask::new_with_preload(
             AgentType::Acp,
             "conv-1".into(),
+            "user-1".into(),
             "/w".into(),
             backend,
             None,
@@ -5940,6 +6139,7 @@ mod pump_tests {
         let task = SessionAgentTask::new_with_preload(
             AgentType::Acp,
             "conv-1".into(),
+            "user-1".into(),
             "/w".into(),
             backend,
             None,
@@ -6032,7 +6232,14 @@ mod force_kill_tests {
         let backend: Arc<dyn SessionBackend> = Arc::new(TerminateCountingBackend {
             terminate_calls: Arc::clone(&counter),
         });
-        let task = SessionAgentTask::new(AgentType::Acp, "conv-1".into(), "/w".into(), backend, None);
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-1".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend,
+            None,
+        );
         (task, counter)
     }
 

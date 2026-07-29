@@ -105,7 +105,10 @@ impl McpAgentAdapter for CodexAdapter {
     /// up in their own Codex CLI. Safe because `mcp list` is strictly
     /// read-only. All mutations go to the isolated home instead (see struct
     /// docs).
-    async fn detect_existing(&self) -> Result<Vec<DetectedServer>, McpError> {
+    ///
+    /// `_user_id` is unused: the real config this reads is host-machine-wide,
+    /// not per-user, so there is nothing to scope by.
+    async fn detect_existing(&self, _user_id: &str) -> Result<Vec<DetectedServer>, McpError> {
         if !self.is_installed().await? {
             return Err(McpError::AgentNotInstalled(CLI_NAME.into()));
         }

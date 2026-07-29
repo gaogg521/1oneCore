@@ -31,6 +31,9 @@ impl From<ConversationError> for ApiError {
             }
             ConversationError::Archived { reason, .. } => ApiError::ConversationArchived(reason),
             ConversationError::BadRequest { reason } => ApiError::BadRequest(reason),
+            ConversationError::Busy { reason } if reason.starts_with("CROSS_ACCOUNT_REFERENCE:") => {
+                ApiError::coded(StatusCode::CONFLICT, "CROSS_ACCOUNT_REFERENCE", reason, None)
+            }
             ConversationError::Busy { reason } => ApiError::Conflict(reason),
             ConversationError::Forbidden { reason } => ApiError::Forbidden(reason),
             ConversationError::NotFoundReason { reason } => ApiError::NotFound(reason),
@@ -473,9 +476,9 @@ async fn check_approval(
 
 async fn active_count(
     State(state): State<ConversationRouterState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<ActiveCountResponse>>, ApiError> {
-    let count = state.task_manager.active_count();
+    let count = state.service.active_count_for_user(&user.id).await?;
     Ok(Json(ApiResponse::ok(ActiveCountResponse { count })))
 }
 
@@ -550,6 +553,16 @@ mod error_mapping_tests {
             model.error_details().expect("model denial carries the model id")["model"],
             "gpt-9"
         );
+    }
+
+    #[test]
+    fn cross_account_reference_maps_to_stable_conflict_code() {
+        let app = ApiError::from(ConversationError::Busy {
+            reason: "CROSS_ACCOUNT_REFERENCE: acp_session conversation 'conv-1' belongs to another user".into(),
+        });
+
+        assert_eq!(app.status_code(), StatusCode::CONFLICT);
+        assert_eq!(app.error_code(), "CROSS_ACCOUNT_REFERENCE");
     }
 
     #[test]

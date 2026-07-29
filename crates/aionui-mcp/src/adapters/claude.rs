@@ -118,7 +118,10 @@ impl McpAgentAdapter for ClaudeAdapter {
     /// *structurally correct* command/args/env straight from
     /// `~/.claude.json` — best-effort, never blocks detection if the file is
     /// missing or unreadable.
-    async fn detect_existing(&self) -> Result<Vec<DetectedServer>, McpError> {
+    ///
+    /// `_user_id` is unused: the real config this reads is host-machine-wide,
+    /// not per-user, so there is nothing to scope by.
+    async fn detect_existing(&self, _user_id: &str) -> Result<Vec<DetectedServer>, McpError> {
         if !self.is_installed().await? {
             return Err(McpError::AgentNotInstalled(CLI_NAME.into()));
         }
