@@ -22,6 +22,16 @@ pub enum BillingError {
     BudgetExceeded,
     #[error("Model '{0}' is not allowed by the team's policy")]
     ModelNotAllowed(String),
+    #[error("Upgrading the plan requires activating a license key")]
+    UpgradeRequiresLicense,
+    #[error("{0}")]
+    InvalidLicenseKey(String),
+}
+
+impl From<crate::license_key::LicenseKeyError> for BillingError {
+    fn from(e: crate::license_key::LicenseKeyError) -> Self {
+        Self::InvalidLicenseKey(e.to_string())
+    }
 }
 
 impl BillingError {
@@ -34,6 +44,8 @@ impl BillingError {
             Self::SeatLimitExceeded => "SEAT_LIMIT_EXCEEDED",
             Self::BudgetExceeded => "BUDGET_EXCEEDED",
             Self::ModelNotAllowed(_) => "MODEL_NOT_ALLOWED",
+            Self::UpgradeRequiresLicense => "UPGRADE_REQUIRES_LICENSE",
+            Self::InvalidLicenseKey(_) => "INVALID_LICENSE_KEY",
         }
     }
 
@@ -44,6 +56,10 @@ impl BillingError {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::EnterpriseNotFound => StatusCode::NOT_FOUND,
             Self::SeatLimitExceeded | Self::BudgetExceeded | Self::ModelNotAllowed(_) => StatusCode::CONFLICT,
+            // The request was well-formed and authorized; it is the *plan* that
+            // forbids it — same 409 family as the other entitlement refusals.
+            Self::UpgradeRequiresLicense => StatusCode::CONFLICT,
+            Self::InvalidLicenseKey(_) => StatusCode::BAD_REQUEST,
         }
     }
 }

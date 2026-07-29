@@ -14,7 +14,7 @@ use aionui_common::license::Tier;
 use aionui_common::now_ms;
 
 use crate::error::BillingError;
-use crate::models::{CheckoutResultDto, PlanDto, UsageSummaryDto};
+use crate::models::{CheckoutResultDto, LicenseInfoDto, PlanDto, UsageSummaryDto};
 use crate::state::OneBillingRouterState;
 
 pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
@@ -23,9 +23,53 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
         .route("/api/one/billing/usage", get(billing_usage))
         .route("/api/one/billing/tier", put(billing_set_tier))
         .route("/api/one/billing/model-control", put(billing_set_model_control))
+        .route(
+            "/api/one/billing/license",
+            get(billing_get_license).post(billing_activate_license),
+        )
         .route("/api/one/billing/checkout", post(billing_checkout))
         .route("/api/one/billing/webhook", post(billing_webhook))
         .with_state(state)
+}
+
+/// The license currently backing the plan, or `null` if none was ever
+/// activated (or the caller is a personal user).
+async fn billing_get_license(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Option<LicenseInfoDto>>>, BillingError> {
+    let Some(eid) = state.service.resolve_enterprise_id(&user.id).await? else {
+        return Ok(Json(ApiResponse::ok(None)));
+    };
+    Ok(Json(ApiResponse::ok(state.service.active_license(&eid).await?)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActivateLicenseBody {
+    license_key: String,
+}
+
+/// Activate a vendor-signed license key — the only way to *raise* a tier.
+/// Admin-gated: it changes what the whole company is entitled to.
+async fn billing_activate_license(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<ActivateLicenseBody>,
+) -> Result<Json<ApiResponse<PlanDto>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden("only an admin can activate a license".into()));
+    }
+    let eid = state
+        .service
+        .resolve_enterprise_id(&user.id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)?;
+    state
+        .service
+        .activate_license(&eid, &body.license_key, &user.id)
+        .await?;
+    Ok(Json(ApiResponse::ok(state.service.plan(&eid).await?)))
 }
 
 /// The caller's company plan, or `null` for personal / standalone users.
@@ -73,7 +117,9 @@ struct SetTierBody {
     seat_limit: Option<i64>,
 }
 
-/// Manually provision a tier (no payment). Billing-admin only.
+/// Change the tier **downward** (billing-admin only). Upgrades are refused with
+/// `UPGRADE_REQUIRES_LICENSE` — raising a tier requires activating a
+/// vendor-signed key via `POST /api/one/billing/license`.
 async fn billing_set_tier(
     State(state): State<OneBillingRouterState>,
     Extension(user): Extension<CurrentUser>,

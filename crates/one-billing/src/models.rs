@@ -29,6 +29,25 @@ pub struct PlanDto {
     pub allowed_models: Vec<String>,
 }
 
+/// The vendor-signed license currently backing this company's plan.
+///
+/// Shown in the admin UI so an operator can confirm what was purchased, for
+/// whom, and when it lapses. `expired` is computed server-side so the client
+/// never has to reason about clock skew.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LicenseInfoDto {
+    pub license_id: String,
+    pub customer: String,
+    pub tier: String,
+    /// `null` = the tier's default seat cap.
+    pub seats: Option<i64>,
+    /// `null` = perpetual.
+    pub expires_at: Option<i64>,
+    pub activated_at: i64,
+    pub expired: bool,
+}
+
 /// One aggregation bucket (by user, by model, or by day).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

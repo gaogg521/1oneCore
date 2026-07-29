@@ -14,6 +14,7 @@
 //! adapters wired in aionui-app.
 
 pub mod error;
+pub mod license_key;
 pub mod migrate;
 pub mod models;
 pub mod routes;
@@ -21,6 +22,7 @@ pub mod service;
 pub mod state;
 
 pub use error::BillingError;
+pub use license_key::{LicenseKeyError, LicensePayload, verify_license_key};
 pub use migrate::run_one_billing_migrations;
 pub use models::{CheckoutResultDto, PlanDto, UsageSummaryDto};
 pub use routes::one_billing_routes;

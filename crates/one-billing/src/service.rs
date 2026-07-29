@@ -13,7 +13,7 @@ use aionui_common::{generate_prefixed_id, now_ms};
 use sqlx::SqlitePool;
 
 use crate::error::BillingError;
-use crate::models::{CheckoutResultDto, EntitlementDto, PlanDto, UsageBucketDto, UsageSummaryDto};
+use crate::models::{CheckoutResultDto, EntitlementDto, LicenseInfoDto, PlanDto, UsageBucketDto, UsageSummaryDto};
 
 /// Pluggable payment backend. The default `ManualBillingProvider` is a stub
 /// (no real payments); a real Stripe/… provider can drop in later without
@@ -62,6 +62,17 @@ struct License {
 /// Rolling budget window (P1-2): 30 days.
 const BUDGET_WINDOW_MS: i64 = 30 * 24 * 3600 * 1000;
 
+/// Ordering for "is this an upgrade?". Kept local rather than deriving `Ord` on
+/// `Tier` in aionui-common, because tier ordering is a *billing* policy, not an
+/// intrinsic property of the enum.
+fn tier_rank(tier: Tier) -> u8 {
+    match tier {
+        Tier::Free => 0,
+        Tier::Team => 1,
+        Tier::Enterprise => 2,
+    }
+}
+
 /// Parse the stored `allowed_models` JSON array; malformed / null → empty
 /// (= all models allowed).
 fn parse_allowed_models(json: Option<&str>) -> Vec<String> {
@@ -95,13 +106,23 @@ impl BillingService {
         .fetch_optional(&self.pool)
         .await?;
         Ok(match row {
-            Some((tier, seat_limit, expires_at, cost_cap_micros, allowed_models_json)) => License {
-                tier: Tier::parse(&tier),
-                seat_limit,
-                expires_at,
-                cost_cap_micros,
-                allowed_models: parse_allowed_models(allowed_models_json.as_deref()),
-            },
+            Some((tier, seat_limit, expires_at, cost_cap_micros, allowed_models_json)) => {
+                // Expiry is enforced here, at the single read point every gate
+                // funnels through, so a lapsed license degrades everywhere at
+                // once without a background job. The row is left untouched: the
+                // admin UI still shows what was bought and when it ran out, and
+                // renewing re-activates it without losing history.
+                let expired = expires_at.is_some_and(|exp| exp <= aionui_common::now_ms());
+                License {
+                    tier: if expired { Tier::Free } else { Tier::parse(&tier) },
+                    // A lapsed license also loses its seat override, otherwise
+                    // an expired enterprise plan would keep an unlimited cap.
+                    seat_limit: if expired { None } else { seat_limit },
+                    expires_at,
+                    cost_cap_micros,
+                    allowed_models: parse_allowed_models(allowed_models_json.as_deref()),
+                }
+            }
             // No row → a company created before it was licensed, or an unknown
             // id: default to the entry tier (least privilege).
             None => License {
@@ -155,13 +176,27 @@ impl BillingService {
         Ok(tier_allows(license.tier, feature))
     }
 
-    /// Manually provision a tier (system-admin path; no payment). `seat_limit`
-    /// `None` = use the tier default.
+    /// Downgrade-only tier change (self-service).
+    ///
+    /// A customer admin may *drop* to a cheaper tier (e.g. to free up an
+    /// entitlement they are not using) but may never raise one — an upgrade
+    /// must come from a vendor-signed license via [`Self::activate_license`].
+    /// Without this asymmetry the whole licensing scheme is decorative: the
+    /// gates are enforced correctly, but anyone could grant themselves the top
+    /// tier. Raising a tier here returns [`BillingError::UpgradeRequiresLicense`].
     pub async fn set_tier(&self, enterprise_id: &str, tier: Tier, seat_limit: Option<i64>) -> Result<(), BillingError> {
+        let current = self.license_of(enterprise_id).await?;
+        if tier_rank(tier) > tier_rank(current.tier) {
+            return Err(BillingError::UpgradeRequiresLicense);
+        }
+        // A downgrade also clears any license expiry/seat override: the plan is
+        // now whatever the admin chose, not what a (possibly still-valid) key
+        // said. Re-activating the key restores it.
         sqlx::query(
             "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
              VALUES (?, ?, ?, NULL, ?) \
-             ON CONFLICT(enterprise_id) DO UPDATE SET tier = excluded.tier, seat_limit = excluded.seat_limit, updated_at = excluded.updated_at",
+             ON CONFLICT(enterprise_id) DO UPDATE SET tier = excluded.tier, seat_limit = excluded.seat_limit, \
+                 expires_at = NULL, updated_at = excluded.updated_at",
         )
         .bind(enterprise_id)
         .bind(tier.as_str())
@@ -170,6 +205,89 @@ impl BillingService {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Activate a vendor-signed license key: the only path that can *raise* a
+    /// tier. Verification is offline (Ed25519 against the built-in public key)
+    /// so an air-gapped deployment can be licensed.
+    ///
+    /// Idempotent by the key's `lid` claim — re-pasting the same key refreshes
+    /// the entitlement without stacking activation rows.
+    pub async fn activate_license(
+        &self,
+        enterprise_id: &str,
+        license_key: &str,
+        activated_by: &str,
+    ) -> Result<crate::license_key::LicensePayload, BillingError> {
+        let payload = crate::license_key::verify_license_key(license_key)?;
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO one_license_activation \
+                 (license_id, enterprise_id, customer, tier, seats, expires_at, issued_at, activated_at, activated_by) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(license_id) DO UPDATE SET enterprise_id = excluded.enterprise_id, \
+                 activated_at = excluded.activated_at, activated_by = excluded.activated_by",
+        )
+        .bind(&payload.lid)
+        .bind(enterprise_id)
+        .bind(&payload.customer)
+        .bind(&payload.tier)
+        .bind(payload.seats)
+        .bind(payload.exp)
+        .bind(payload.iat)
+        .bind(now_ms())
+        .bind(activated_by)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(enterprise_id) DO UPDATE SET tier = excluded.tier, seat_limit = excluded.seat_limit, \
+                 expires_at = excluded.expires_at, updated_at = excluded.updated_at",
+        )
+        .bind(enterprise_id)
+        .bind(&payload.tier)
+        .bind(payload.seats)
+        .bind(payload.exp)
+        .bind(now_ms())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        tracing::info!(
+            enterprise_id,
+            license_id = %payload.lid,
+            tier = %payload.tier,
+            "license activated"
+        );
+        Ok(payload)
+    }
+
+    /// The license currently backing this company's entitlements, if any was
+    /// ever activated. Shown in the admin UI so an operator can see what was
+    /// bought, for whom, and when it lapses.
+    pub async fn active_license(&self, enterprise_id: &str) -> Result<Option<LicenseInfoDto>, BillingError> {
+        type Row = (String, String, String, Option<i64>, Option<i64>, i64);
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT license_id, customer, tier, seats, expires_at, activated_at \
+             FROM one_license_activation WHERE enterprise_id = ? ORDER BY activated_at DESC LIMIT 1",
+        )
+        .bind(enterprise_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(
+            |(license_id, customer, tier, seats, expires_at, activated_at)| LicenseInfoDto {
+                license_id,
+                customer,
+                tier,
+                seats,
+                expires_at,
+                activated_at,
+                expired: expires_at.is_some_and(|e| e <= now_ms()),
+            },
+        ))
     }
 
     /// Set the model-control policy (P1-2): rolling-30-day spend cap
@@ -457,19 +575,95 @@ mod tests {
             .unwrap();
     }
 
+    /// Force a tier directly in the table, bypassing the license gate.
+    ///
+    /// Tests must not carry a real signing key (it would then live in the
+    /// repo), so entitlement fixtures write the row directly. The *gate* on
+    /// raising a tier is covered separately by
+    /// `set_tier_refuses_upgrade_without_license`.
+    async fn force_tier(svc: &BillingService, enterprise_id: &str, tier: Tier, expires_at: Option<i64>) {
+        sqlx::query(
+            "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, expires_at, updated_at) \
+             VALUES (?, ?, NULL, ?, 0) \
+             ON CONFLICT(enterprise_id) DO UPDATE SET tier = excluded.tier, expires_at = excluded.expires_at",
+        )
+        .bind(enterprise_id)
+        .bind(tier.as_str())
+        .bind(expires_at)
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn free_tier_gates_features_and_caps_seats() {
         let svc = service().await;
-        svc.set_tier("ent_free", Tier::Free, None).await.unwrap();
+        force_tier(&svc, "ent_free", Tier::Free, None).await;
         // Free: SSO disallowed.
         assert!(!svc.entitlement(Some("ent_free"), Feature::Sso).await.unwrap());
         // Seat cap 3: three ok, fourth blocked.
         add_members(&svc, "ent_free", 3).await;
         assert!(!svc.can_add_seat(Some("ent_free")).await.unwrap());
-        // Upgrade to team → SSO allowed, cap 25.
-        svc.set_tier("ent_free", Tier::Team, None).await.unwrap();
+        // On team → SSO allowed, cap 25.
+        force_tier(&svc, "ent_free", Tier::Team, None).await;
         assert!(svc.entitlement(Some("ent_free"), Feature::Sso).await.unwrap());
         assert!(svc.can_add_seat(Some("ent_free")).await.unwrap());
+    }
+
+    /// The commercial keystone: a customer's own admin must not be able to
+    /// grant themselves a higher tier. Without this the entire licensing
+    /// scheme is decorative.
+    #[tokio::test]
+    async fn set_tier_refuses_upgrade_without_license() {
+        let svc = service().await;
+        force_tier(&svc, "ent_x", Tier::Free, None).await;
+
+        for target in [Tier::Team, Tier::Enterprise] {
+            let err = svc.set_tier("ent_x", target, None).await.unwrap_err();
+            assert_eq!(
+                err.code(),
+                "UPGRADE_REQUIRES_LICENSE",
+                "raising free → {target:?} must be refused"
+            );
+        }
+        // Still free — the refused calls changed nothing.
+        assert!(!svc.entitlement(Some("ent_x"), Feature::Sso).await.unwrap());
+
+        // Downgrades remain self-service.
+        force_tier(&svc, "ent_x", Tier::Enterprise, None).await;
+        svc.set_tier("ent_x", Tier::Team, None).await.unwrap();
+        assert!(!svc.entitlement(Some("ent_x"), Feature::AuditLog).await.unwrap());
+        svc.set_tier("ent_x", Tier::Free, None).await.unwrap();
+        assert!(!svc.entitlement(Some("ent_x"), Feature::Sso).await.unwrap());
+    }
+
+    /// An expired license must degrade to free everywhere at once — including
+    /// dropping any seat override it granted.
+    #[tokio::test]
+    async fn expired_license_degrades_to_free() {
+        let svc = service().await;
+        let past = aionui_common::now_ms() - 1000;
+        force_tier(&svc, "ent_exp", Tier::Enterprise, Some(past)).await;
+        // Give it an explicit generous seat override too.
+        sqlx::query("UPDATE one_enterprise_license SET seat_limit = 500 WHERE enterprise_id = 'ent_exp'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+
+        // Enterprise features are gone...
+        assert!(!svc.entitlement(Some("ent_exp"), Feature::AuditLog).await.unwrap());
+        assert!(!svc.entitlement(Some("ent_exp"), Feature::Sso).await.unwrap());
+        // ...and the seat cap falls back to free's 3, not the 500 override.
+        add_members(&svc, "ent_exp", 3).await;
+        assert!(
+            !svc.can_add_seat(Some("ent_exp")).await.unwrap(),
+            "an expired license must not keep its seat override"
+        );
+
+        // A still-valid license keeps working.
+        let future = aionui_common::now_ms() + 60_000;
+        force_tier(&svc, "ent_ok", Tier::Enterprise, Some(future)).await;
+        assert!(svc.entitlement(Some("ent_ok"), Feature::AuditLog).await.unwrap());
     }
 
     #[tokio::test]
