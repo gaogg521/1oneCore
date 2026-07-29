@@ -1304,7 +1304,31 @@ struct EmptyProviderRepo;
 #[async_trait::async_trait]
 impl IProviderRepository for EmptyProviderRepo {
     async fn list(&self) -> Result<Vec<aionui_db::models::Provider>, DbError> {
-        Ok(vec![])
+        // Not literally "empty" any more: fork commit 8c778df1 made team
+        // provisioning fail fast when no enabled provider offers a teammate's
+        // model (instead of silently fabricating a provider_id). These fixtures
+        // create teammates on "claude"/"gpt-5"/etc., so serve one provider that
+        // covers them — mirrors what `src/test_utils.rs` already does. No test
+        // here asserts on the missing-provider error path.
+        Ok(vec![aionui_db::models::Provider {
+            id: "test-provider".into(),
+            platform: "anthropic".into(),
+            name: "Test Provider".into(),
+            base_url: "https://example.invalid".into(),
+            api_key_encrypted: String::new(),
+            models: serde_json::json!(["claude", "claude-sonnet-4", "codex", "gpt-5", "model-x"]).to_string(),
+            enabled: true,
+            capabilities: serde_json::json!([]).to_string(),
+            context_limit: None,
+            model_protocols: None,
+            model_enabled: None,
+            model_health: None,
+            model_settings: "{}".into(),
+            bedrock_config: None,
+            is_full_url: false,
+            created_at: 0,
+            updated_at: 0,
+        }])
     }
     async fn find_by_id(&self, _id: &str) -> Result<Option<aionui_db::models::Provider>, DbError> {
         Ok(None)

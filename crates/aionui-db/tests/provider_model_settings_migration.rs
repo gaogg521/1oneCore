@@ -24,13 +24,13 @@ async fn run_migrations_through(pool: &sqlx::SqlitePool, max_version: i64) {
 }
 
 #[tokio::test]
-async fn migration_027_adds_model_settings_without_losing_existing_providers() {
+async fn migration_038_adds_model_settings_without_losing_existing_providers() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    run_migrations_through(&pool, 25).await;
+    run_migrations_through(&pool, 37).await;
 
     sqlx::query(
         "INSERT INTO providers (
@@ -41,7 +41,7 @@ async fn migration_027_adds_model_settings_without_losing_existing_providers() {
     .await
     .unwrap();
 
-    run_migrations_through(&pool, 27).await;
+    run_migrations_through(&pool, 38).await;
 
     let row: (String, String) = sqlx::query_as("SELECT name, model_settings FROM providers WHERE id = 'provider-1'")
         .fetch_one(&pool)
@@ -52,13 +52,13 @@ async fn migration_027_adds_model_settings_without_losing_existing_providers() {
 }
 
 #[tokio::test]
-async fn migration_027_rejects_invalid_model_settings_json() {
+async fn migration_038_rejects_invalid_model_settings_json() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    run_migrations_through(&pool, 27).await;
+    run_migrations_through(&pool, 38).await;
 
     let result = sqlx::query(
         "INSERT INTO providers (
