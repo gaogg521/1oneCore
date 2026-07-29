@@ -181,7 +181,12 @@ async fn marketplace_install(
     // PascalCase id once installed.
     let installed_name = entry.display_name.clone().unwrap_or_else(|| entry.name.clone());
 
-    state
+    // `import_personas` is a batch API: it reports per-item failures in its
+    // result rather than returning Err, so a swallowed failure here used to
+    // surface as a misleading `assistant '<id>' not found` from the `get` below
+    // (the real cause being e.g. "no providers configured"). Propagate the
+    // item's own error instead.
+    let outcome = state
         .service
         .import_personas(ImportAssistantsRequest {
             assistants: vec![CreateAssistantRequest {
@@ -205,6 +210,9 @@ async fn marketplace_install(
             }],
         })
         .await?;
+    if let Some(failure) = outcome.errors.first() {
+        return Err(ApiError::BadRequest(failure.error.clone()));
+    }
 
     // `import_personas` intentionally never sets an avatar (see above) — the
     // catalog's own avatar bytes are wired in as a separate step so the
