@@ -52,6 +52,9 @@ pub fn node_runtime_root() -> Option<PathBuf> {
     runtime_root().map(|root| root.join("node"))
 }
 
+/// Fork-exclusive (restored 2026-07-29 sync): cache root for
+/// `acp_tool_runtime`'s on-demand npm-package downloads of the
+/// claude-agent-acp / codex-acp wrapper CLIs.
 pub fn managed_acp_tool_root() -> Option<PathBuf> {
     runtime_root().map(|root| root.join("managed-tools").join("acp"))
 }

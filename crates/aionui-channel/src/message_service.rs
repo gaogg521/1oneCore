@@ -231,7 +231,9 @@ impl ChannelMessageService {
             | AgentStreamEvent::System(_)
             | AgentStreamEvent::RequestTrace(_)
             | AgentStreamEvent::SlashCommandsUpdated(_)
-            | AgentStreamEvent::SessionAssigned(_) => None,
+            | AgentStreamEvent::SessionAssigned(_)
+            | AgentStreamEvent::SegmentBreak
+            | AgentStreamEvent::AcpDialectSignal(_) => None,
         }
     }
 

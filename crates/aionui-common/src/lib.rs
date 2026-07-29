@@ -8,6 +8,7 @@ mod case_convert;
 mod crypto;
 mod enums;
 mod error;
+pub mod error_extract;
 mod hooks;
 mod id;
 pub mod license;

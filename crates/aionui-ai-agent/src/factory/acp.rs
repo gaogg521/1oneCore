@@ -203,6 +203,18 @@ pub(super) async fn build(
         config.backend.clone_from(&meta.backend);
     }
 
+    // NOT adopted this sync (2026-07-29): upstream ports claude/codex to a
+    // clean-slate direct-CLI `SessionAgentTask` here (see `session_agent.rs`),
+    // bypassing the ACP manager path below entirely — including our
+    // first-party Codex/Claude bridge injection further down in this
+    // function. Upstream's session path only wires the third-party
+    // cc-switch fallback, not codex_bridge_config_repo/
+    // claude_bridge_config_repo, so adopting it as-is would silently
+    // regress the bridge to cc-switch-only for claude/codex. Staying on the
+    // ACP path below until a follow-up threads the bridge repos into
+    // SessionBuildInputs. See factory/mod.rs for the matching note on the
+    // dropped `session_spawner` field.
+
     let mut command_spec =
         resolve_agent_command_spec(&meta, &ctx.workspace, &ctx.conversation_id, deps.broadcaster.clone()).await?;
     let codex_bridge_config = match deps.codex_bridge_config_repo.as_ref() {
@@ -947,7 +959,7 @@ mod tests {
         )
         .await
         .expect("resolved release-pinned builtin command spec");
-        assert_eq!(spec.args, vec!["-y", "pi-acp@0.0.31"]);
+        assert_eq!(spec.args, vec!["-y", "pi-acp@0.0.32"]);
     }
 
     #[cfg(unix)]

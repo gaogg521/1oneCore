@@ -9,7 +9,9 @@ use crate::protocol::events::{
 use crate::protocol::send_error::AgentSendError;
 use crate::shared_kernel::SessionId as DomainSessionId;
 use crate::types::SendMessageData;
-use agent_client_protocol::schema::{ContentBlock, LoadSessionRequest, PromptRequest, SessionId, StopReason};
+use agent_client_protocol::schema::{
+    AuthMethod, ContentBlock, LoadSessionRequest, PromptRequest, SessionId, StopReason,
+};
 use aionui_api_types::SlashCommandItem;
 use serde_json::Value;
 use tokio::sync::broadcast::error::TryRecvError;
@@ -263,7 +265,14 @@ impl AcpAgentManager {
             .await
             .map_err(AcpSendFailure::from)?;
 
-        let empty_turn = is_empty_turn(&mut probe_rx);
+        // Drain the turn-scoped receiver once: detect both the empty-turn
+        // condition and any CodeBuddy dialect signal (session_end / token
+        // pressure) the tolerant transport absorbed during this turn. Because
+        // `probe_rx` was subscribed just before this prompt and is drained here,
+        // the signal is correlated strictly to the turn/near-window — signals
+        // seen earlier in the session lifetime are never attributed here.
+        let observations = drain_turn_observations(&mut probe_rx);
+        let empty_turn = observations.empty;
         if empty_turn && let Some(error) = self.empty_turn_terminal_error().await {
             return Ok(PromptOutcome::TerminalError {
                 session_id: sid.to_owned(),
@@ -271,11 +280,25 @@ impl AcpAgentManager {
             });
         }
 
+        // On an empty end-of-turn, surface the agent's advertised login method
+        // (if any). ACP defines no auth-failure stop reason, so an agent that
+        // isn't signed in can swallow the failure and return `end_turn` with no
+        // content (observed with kilo: the model call 401s, yet ACP reports a
+        // clean empty turn). The stable `authMethods` from `initialize` lets us
+        // turn that blank tip into an actionable "you may need to sign in" hint.
+        let auth_hint = if empty_turn {
+            auth_login_hint(self.session.read().await.auth_methods())
+        } else {
+            None
+        };
+
         Ok(prompt_outcome_from_stop_reason(
             sid,
             prompt_response.stop_reason,
             empty_turn,
             matched_command,
+            auth_hint,
+            observations.dialect_signal,
         ))
     }
 
@@ -354,20 +377,46 @@ impl AcpAgentManager {
 ///
 /// `Lagged` is treated as non-empty: the broadcast buffer overflowed,
 /// meaning many events flew by — definitely not an empty turn.
+/// Thin wrapper retained for the existing empty-turn detection tests; the
+/// production path now uses [`drain_turn_observations`] to observe the dialect
+/// signal alongside emptiness in a single drain.
+#[cfg(test)]
 fn is_empty_turn(rx: &mut tokio::sync::broadcast::Receiver<AgentStreamEvent>) -> bool {
+    drain_turn_observations(rx).empty
+}
+
+/// What a single drain of the turn-scoped receiver observed.
+struct TurnObservations {
+    /// The turn produced no user-visible output (see `is_empty_turn`).
+    empty: bool,
+    /// The tolerant transport absorbed at least one CodeBuddy dialect signal
+    /// (`session_end` or token-pressure/compaction) during this turn/near-window.
+    dialect_signal: bool,
+}
+
+/// Drain the turn-scoped receiver once, recording both the empty-turn condition
+/// and whether any `AcpDialectSignal` arrived. Preserves `is_empty_turn`'s
+/// original semantics for `empty` (visible output → not empty; `Lagged` → not
+/// empty) while additionally surfacing the dialect signal so the empty-turn
+/// judgment can prefer accurate token-limit attribution over the auth hint.
+fn drain_turn_observations(rx: &mut tokio::sync::broadcast::Receiver<AgentStreamEvent>) -> TurnObservations {
+    let mut empty = true;
+    let mut dialect_signal = false;
     loop {
         match rx.try_recv() {
+            Ok(AgentStreamEvent::AcpDialectSignal(_)) => dialect_signal = true,
             Ok(event) => {
                 if event_is_user_visible_output(&event) {
-                    return false;
+                    empty = false;
                 }
             }
-            Err(TryRecvError::Empty) => return true,
-            Err(TryRecvError::Closed) => return true,
+            Err(TryRecvError::Empty) | Err(TryRecvError::Closed) => break,
             // Buffer overflow: many events occurred — turn was clearly not empty.
-            Err(TryRecvError::Lagged(_)) => return false,
+            // Keep draining so a dialect signal later in the buffer is still seen.
+            Err(TryRecvError::Lagged(_)) => empty = false,
         }
     }
+    TurnObservations { empty, dialect_signal }
 }
 
 /// Whether a stream event represents user-visible output produced by the
@@ -391,6 +440,8 @@ fn prompt_outcome_from_stop_reason(
     stop_reason: StopReason,
     empty_turn: bool,
     _matched_command: Option<&SlashCommandItem>,
+    auth_hint: Option<Value>,
+    token_limit_signal: bool,
 ) -> PromptOutcome {
     if matches!(stop_reason, StopReason::Cancelled) {
         return PromptOutcome::Cancelled {
@@ -400,6 +451,30 @@ fn prompt_outcome_from_stop_reason(
 
     if empty_turn {
         if matches!(stop_reason, StopReason::EndTurn) {
+            // Priority 2 (B): a CodeBuddy dialect signal observed in this turn /
+            // near-window (session_end or emergency compaction / token pressure)
+            // attributes the empty turn to a likely context/token limit — taken
+            // *before* the auth hint so the accurate cause wins. Possibility
+            // wording only: the exact upstream cause is cross-boundary and not
+            // asserted here.
+            if token_limit_signal {
+                return PromptOutcome::InfoTip {
+                    session_id: session_id.to_owned(),
+                    tips: empty_turn_info_tip("ACP_EMPTY_TURN_TOKEN_LIMIT", None),
+                };
+            }
+            // The agent ended the turn producing nothing. If it advertised a
+            // login method at initialize, the most likely cause is that it
+            // isn't signed in and silently returned an empty end_turn — point
+            // the user at the login step instead of a blank tip. (Presence of
+            // authMethods is not proof of being logged out, so the client copy
+            // must stay a soft "may need sign-in" hint, not an assertion.)
+            if let Some(params) = auth_hint {
+                return PromptOutcome::InfoTip {
+                    session_id: session_id.to_owned(),
+                    tips: empty_turn_info_tip("ACP_EMPTY_TURN_NEEDS_AUTH", Some(params)),
+                };
+            }
             return PromptOutcome::InfoTip {
                 session_id: session_id.to_owned(),
                 tips: empty_turn_info_tip("ACP_EMPTY_TURN", None),
@@ -415,6 +490,28 @@ fn prompt_outcome_from_stop_reason(
     PromptOutcome::Completed {
         session_id: session_id.to_owned(),
     }
+}
+
+/// Build empty-turn tip params from the agent's advertised ACP auth methods,
+/// or `None` when the agent advertised none. `hint` is the first
+/// human-readable description/name (e.g. "Run `kilo auth login` in the
+/// terminal"); `methods` carries the full advertised list so the client can
+/// render every option. Uses the stable `authMethods` from the `initialize`
+/// handshake — no agent-specific flags or stderr scraping.
+fn auth_login_hint(methods: Option<&[AuthMethod]>) -> Option<Value> {
+    let methods = methods?;
+    let entries: Vec<Value> = methods.iter().filter_map(|m| serde_json::to_value(m).ok()).collect();
+    if entries.is_empty() {
+        return None;
+    }
+    let hint = entries.iter().find_map(|m| {
+        m.get("description")
+            .and_then(Value::as_str)
+            .or_else(|| m.get("name").and_then(Value::as_str))
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    });
+    Some(serde_json::json!({ "methods": entries, "hint": hint }))
 }
 
 fn empty_turn_info_tip(code: &str, params: Option<Value>) -> TipsEventData {
@@ -762,7 +859,7 @@ mod tests {
 
     #[test]
     fn benign_empty_turn_returns_info_tip() {
-        let outcome = super::prompt_outcome_from_stop_reason("sess-1", StopReason::EndTurn, true, None);
+        let outcome = super::prompt_outcome_from_stop_reason("sess-1", StopReason::EndTurn, true, None, None, false);
 
         match outcome {
             super::PromptOutcome::InfoTip { session_id, tips } => {
@@ -776,6 +873,144 @@ mod tests {
     }
 
     #[test]
+    fn empty_turn_with_auth_methods_emits_needs_auth_hint() {
+        // Mirrors the kilo case: the agent advertised a login method at
+        // `initialize` and then returned an empty end_turn (swallowed 401).
+        let auth_hint = serde_json::json!({
+            "methods": [{"id": "kilo-login", "name": "Login with Kilo",
+                         "description": "Run `kilo auth login` in the terminal"}],
+            "hint": "Run `kilo auth login` in the terminal",
+        });
+        let outcome =
+            super::prompt_outcome_from_stop_reason("sess-1", StopReason::EndTurn, true, None, Some(auth_hint), false);
+
+        match outcome {
+            super::PromptOutcome::InfoTip { session_id, tips } => {
+                assert_eq!(session_id, "sess-1");
+                assert_eq!(tips.tip_type, TipType::Info);
+                assert_eq!(tips.code.as_deref(), Some("ACP_EMPTY_TURN_NEEDS_AUTH"));
+                let params = tips.params.expect("needs-auth tip carries params");
+                assert_eq!(params["hint"], "Run `kilo auth login` in the terminal");
+                assert!(params["methods"].is_array());
+            }
+            other => panic!("expected InfoTip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auth_login_hint_returns_none_without_methods() {
+        assert!(super::auth_login_hint(None).is_none());
+        assert!(super::auth_login_hint(Some(&[])).is_none());
+    }
+
+    // -- token-limit signal priority (issue 136586749) ------------------------
+
+    /// B priority: a CodeBuddy dialect signal (session_end / compaction) observed
+    /// in the turn attributes the empty turn to a likely context limit — taken
+    /// *before* the auth hint even when authMethods were advertised.
+    #[test]
+    fn empty_end_turn_with_token_signal_prefers_token_limit_over_auth_hint() {
+        let auth_hint = serde_json::json!({
+            "methods": [{"id": "iOA", "name": "Login with iOA"}],
+            "hint": "Login with iOA",
+        });
+        let outcome =
+            super::prompt_outcome_from_stop_reason("sess-1", StopReason::EndTurn, true, None, Some(auth_hint), true);
+        match outcome {
+            super::PromptOutcome::InfoTip { tips, .. } => {
+                assert_eq!(tips.code.as_deref(), Some("ACP_EMPTY_TURN_TOKEN_LIMIT"));
+                assert_eq!(tips.tip_type, TipType::Info);
+                assert_eq!(
+                    tips.params, None,
+                    "token-limit tip is a possibility hint, no hint params"
+                );
+            }
+            other => panic!("expected InfoTip, got {other:?}"),
+        }
+    }
+
+    /// The reported issue's clean empty end_turn: authMethods advertised but NO
+    /// dialect signal in the turn → needs-auth fallback (its copy is softened in
+    /// the UI). Guards against mis-attributing this case to a token limit.
+    #[test]
+    fn empty_end_turn_without_token_signal_but_auth_hint_falls_back_to_needs_auth() {
+        let auth_hint = serde_json::json!({
+            "methods": [{"id": "iOA", "name": "Login with iOA"}],
+            "hint": "Login with iOA",
+        });
+        let outcome =
+            super::prompt_outcome_from_stop_reason("sess-1", StopReason::EndTurn, true, None, Some(auth_hint), false);
+        match outcome {
+            super::PromptOutcome::InfoTip { tips, .. } => {
+                assert_eq!(tips.code.as_deref(), Some("ACP_EMPTY_TURN_NEEDS_AUTH"));
+            }
+            other => panic!("expected InfoTip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_end_turn_with_token_signal_and_no_auth_hint_is_token_limit() {
+        let outcome = super::prompt_outcome_from_stop_reason("sess-1", StopReason::EndTurn, true, None, None, true);
+        match outcome {
+            super::PromptOutcome::InfoTip { tips, .. } => {
+                assert_eq!(tips.code.as_deref(), Some("ACP_EMPTY_TURN_TOKEN_LIMIT"));
+            }
+            other => panic!("expected InfoTip, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_turn_observations_flags_dialect_signal_on_empty_turn() {
+        use crate::protocol::events::{AcpDialectSignalData, AcpDialectSignalKind};
+        let (tx, _) = broadcast::channel::<AgentStreamEvent>(8);
+        let mut rx = tx.subscribe();
+        tx.send(AgentStreamEvent::Start(StartEventData::default())).unwrap();
+        tx.send(AgentStreamEvent::AcpDialectSignal(AcpDialectSignalData {
+            kind: AcpDialectSignalKind::SessionEnd,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        let obs = super::drain_turn_observations(&mut rx);
+        assert!(obs.empty, "a dialect signal is not user-visible output");
+        assert!(obs.dialect_signal, "session_end signal must be flagged");
+    }
+
+    #[tokio::test]
+    async fn drain_turn_observations_no_signal_when_only_lifecycle() {
+        let (tx, _) = broadcast::channel::<AgentStreamEvent>(8);
+        let mut rx = tx.subscribe();
+        tx.send(AgentStreamEvent::Start(StartEventData::default())).unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        let obs = super::drain_turn_observations(&mut rx);
+        assert!(obs.empty);
+        assert!(!obs.dialect_signal);
+    }
+
+    #[tokio::test]
+    async fn drain_turn_observations_text_makes_turn_non_empty() {
+        let (tx, _) = broadcast::channel::<AgentStreamEvent>(8);
+        let mut rx = tx.subscribe();
+        tx.send(AgentStreamEvent::Text(TextEventData { content: "hi".into() }))
+            .unwrap();
+
+        let obs = super::drain_turn_observations(&mut rx);
+        assert!(!obs.empty);
+        assert!(!obs.dialect_signal);
+    }
+
+    #[test]
+    fn dialect_signal_is_not_user_visible_output() {
+        use crate::protocol::events::{AcpDialectSignalData, AcpDialectSignalKind};
+        assert!(!super::event_is_user_visible_output(
+            &AgentStreamEvent::AcpDialectSignal(AcpDialectSignalData {
+                kind: AcpDialectSignalKind::TokenPressure,
+            })
+        ));
+    }
+
+    #[test]
     fn metadata_driven_command_empty_turn_uses_generic_tip_code() {
         let command = SlashCommandItem {
             command: "ctx-flush".into(),
@@ -785,7 +1020,8 @@ mod tests {
             empty_turn_tip_params: Some(serde_json::json!({ "scope": "session" })),
         };
 
-        let outcome = super::prompt_outcome_from_stop_reason("sess-1", StopReason::EndTurn, true, Some(&command));
+        let outcome =
+            super::prompt_outcome_from_stop_reason("sess-1", StopReason::EndTurn, true, Some(&command), None, false);
 
         match outcome {
             super::PromptOutcome::InfoTip { session_id, tips } => {
@@ -801,7 +1037,7 @@ mod tests {
 
     #[test]
     fn non_benign_empty_turn_can_stay_warning_tip() {
-        let outcome = super::prompt_outcome_from_stop_reason("sess-1", StopReason::MaxTokens, true, None);
+        let outcome = super::prompt_outcome_from_stop_reason("sess-1", StopReason::MaxTokens, true, None, None, false);
 
         match outcome {
             super::PromptOutcome::WarningTip { session_id, tips } => {
@@ -816,7 +1052,7 @@ mod tests {
 
     #[test]
     fn prompt_outcome_cancelled_takes_priority_over_empty_response() {
-        let outcome = super::prompt_outcome_from_stop_reason("sess-1", StopReason::Cancelled, true, None);
+        let outcome = super::prompt_outcome_from_stop_reason("sess-1", StopReason::Cancelled, true, None, None, false);
 
         match outcome {
             super::PromptOutcome::Cancelled { session_id } => {
@@ -828,7 +1064,7 @@ mod tests {
 
     #[test]
     fn prompt_outcome_completed_when_visible_output_exists() {
-        let outcome = super::prompt_outcome_from_stop_reason("sess-1", StopReason::EndTurn, false, None);
+        let outcome = super::prompt_outcome_from_stop_reason("sess-1", StopReason::EndTurn, false, None, None, false);
 
         match outcome {
             super::PromptOutcome::Completed { session_id } => {

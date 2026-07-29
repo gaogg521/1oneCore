@@ -58,6 +58,16 @@ pub struct AgentFactoryDeps {
     /// protocol natively). `None` for tests/composition paths that do not
     /// need it.
     pub claude_bridge_config_repo: Option<Arc<dyn IClaudeBridgeConfigRepository>>,
+    // NOT adopted this sync (2026-07-29): upstream's `session_spawner` field
+    // powers the new direct-CLI `SessionAgentTask` path (`session_agent.rs`),
+    // which routes claude/codex around the ACP manager entirely and — as
+    // shipped upstream — only wires the third-party cc-switch fallback, not
+    // our first-party Codex/Claude bridge above. Adopting it here would
+    // silently regress the bridge (the product's flagship differentiator) to
+    // cc-switch-only for claude/codex conversations. `factory/acp.rs` still
+    // has the early-return dispatch call site removed to match. Revisit in a
+    // dedicated follow-up that threads codex_bridge_config_repo/
+    // claude_bridge_config_repo into SessionBuildInputs first.
 }
 
 /// Build a production agent factory that dispatches to concrete agent types.

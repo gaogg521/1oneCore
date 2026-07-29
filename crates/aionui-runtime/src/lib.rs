@@ -2,10 +2,16 @@
 
 //! Managed runtime and subprocess infrastructure for aioncore.
 
-pub mod acp_tool_runtime;
 mod agent_env;
+// Fork-exclusive: on-demand npm-package download/resolution for the
+// claude-agent-acp / codex-acp wrapper CLIs, still the live path
+// `factory/acp.rs` depends on. Not adopted into upstream's `managed_cli`
+// (native-binary, prepared at package time) this sync — see the module-level
+// comment in `acp_tool_runtime/mod.rs` for why.
+pub mod acp_tool_runtime;
 mod cache;
 mod http_client;
+pub mod managed_cli;
 pub mod managed_resources;
 pub mod managed_resources_contract;
 pub mod node_runtime;
@@ -21,6 +27,7 @@ pub use acp_tool_runtime::{
 };
 pub use agent_env::agent_process_env;
 pub use cache::init;
+pub use managed_cli::{CLAUDE_CLI_VERSION, CODEX_CLI_VERSION, cli_version, resolve_bundled_cli};
 pub use managed_resources::{ManagedResourcesMode, managed_resources_mode, set_managed_resources_mode};
 pub use node_runtime::{
     DoctorRow, NodeRuntimeError, NodeRuntimeFailureKind, NodeRuntimeProgress, NodeRuntimeProgressPhase,

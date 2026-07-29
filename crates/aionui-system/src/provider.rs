@@ -64,6 +64,7 @@ impl ProviderService {
         let model_protocols_json = serialize_opt(&req.model_protocols, "model_protocols")?;
         let model_enabled_json = serialize_opt(&req.model_enabled, "model_enabled")?;
         let model_health_json = serialize_opt(&req.model_health, "model_health")?;
+        let model_settings_json = serialize_json(&req.model_settings, "model_settings")?;
         let bedrock_json = serialize_opt(&req.bedrock_config, "bedrock_config")?;
         let trimmed_id = req.id.as_deref().map(str::trim);
 
@@ -80,6 +81,7 @@ impl ProviderService {
             model_protocols: model_protocols_json.as_deref(),
             model_enabled: model_enabled_json.as_deref(),
             model_health: model_health_json.as_deref(),
+            model_settings: &model_settings_json,
             bedrock_config: bedrock_json.as_deref(),
             is_full_url: req.is_full_url,
         };
@@ -102,6 +104,7 @@ impl ProviderService {
         let model_protocols_json = serialize_opt(&req.model_protocols, "model_protocols")?;
         let model_enabled_json = serialize_opt(&req.model_enabled, "model_enabled")?;
         let model_health_json = serialize_opt(&req.model_health, "model_health")?;
+        let model_settings_json = serialize_opt(&req.model_settings, "model_settings")?;
         let bedrock_json = serialize_opt(&req.bedrock_config, "bedrock_config")?;
 
         let params = UpdateProviderParams {
@@ -116,6 +119,7 @@ impl ProviderService {
             model_protocols: model_protocols_json.as_ref().map(|s| Some(s.as_str())),
             model_enabled: model_enabled_json.as_ref().map(|s| Some(s.as_str())),
             model_health: model_health_json.as_ref().map(|s| Some(s.as_str())),
+            model_settings: model_settings_json.as_deref(),
             bedrock_config: bedrock_json.as_ref().map(|s| Some(s.as_str())),
             is_full_url: req.is_full_url,
         };
@@ -164,6 +168,8 @@ impl ProviderService {
             deserialize_opt(&row.model_protocols, "model_protocols")?;
         let model_enabled: Option<HashMap<String, bool>> = deserialize_opt(&row.model_enabled, "model_enabled")?;
         let model_health = deserialize_opt(&row.model_health, "model_health")?;
+        let model_settings = serde_json::from_str(&row.model_settings)
+            .map_err(|e| SystemError::Internal(format!("Failed to parse model_settings JSON: {e}")))?;
         let bedrock_config = deserialize_opt(&row.bedrock_config, "bedrock_config")?;
 
         Ok(ProviderResponse {
@@ -179,6 +185,7 @@ impl ProviderService {
             model_protocols,
             model_enabled,
             model_health,
+            model_settings,
             bedrock_config,
             is_full_url: row.is_full_url,
             key_status,
@@ -334,6 +341,7 @@ mod tests {
             model_protocols: None,
             model_enabled: None,
             model_health: None,
+            model_settings: HashMap::new(),
             bedrock_config: None,
             is_full_url: false,
         }
