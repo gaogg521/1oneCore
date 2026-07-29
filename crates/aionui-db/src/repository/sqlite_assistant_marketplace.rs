@@ -21,18 +21,20 @@ impl SqliteAssistantMarketplaceRepository {
 #[async_trait::async_trait]
 impl IAssistantMarketplaceRepository for SqliteAssistantMarketplaceRepository {
     async fn list(&self) -> Result<Vec<MarketplacePersonaRow>, DbError> {
-        let rows =
-            sqlx::query_as::<_, MarketplacePersonaRow>("SELECT * FROM assistant_marketplace_personas ORDER BY name ASC")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query_as::<_, MarketplacePersonaRow>(
+            "SELECT * FROM assistant_marketplace_personas ORDER BY name ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows)
     }
 
     async fn get(&self, id: &str) -> Result<Option<MarketplacePersonaRow>, DbError> {
-        let row = sqlx::query_as::<_, MarketplacePersonaRow>("SELECT * FROM assistant_marketplace_personas WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row =
+            sqlx::query_as::<_, MarketplacePersonaRow>("SELECT * FROM assistant_marketplace_personas WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row)
     }
 
@@ -175,7 +177,11 @@ mod tests {
         .unwrap();
 
         let listed = repo.list().await.unwrap();
-        assert_eq!(listed.len(), 1, "re-materializing the catalog must overwrite, not duplicate");
+        assert_eq!(
+            listed.len(),
+            1,
+            "re-materializing the catalog must overwrite, not duplicate"
+        );
         assert_eq!(listed[0].name, "A Share Advisor v2");
         assert_eq!(listed[0].rule_content, "v2 prompt");
     }

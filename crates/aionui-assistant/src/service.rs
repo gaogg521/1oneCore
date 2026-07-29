@@ -1635,7 +1635,10 @@ impl AssistantService {
     /// `AssistantSource::User` everywhere else in this service (read/update/
     /// delete/rule dispatch all fall through the generic non-builtin,
     /// non-generated branch — see `classify_source`).
-    pub async fn import_personas(&self, req: ImportAssistantsRequest) -> Result<ImportAssistantsResult, AssistantError> {
+    pub async fn import_personas(
+        &self,
+        req: ImportAssistantsRequest,
+    ) -> Result<ImportAssistantsResult, AssistantError> {
         let mut result = ImportAssistantsResult::default();
         let mut cached_default_agent_id: Option<String> = None;
 
@@ -1671,7 +1674,10 @@ impl AssistantService {
                 Ok(s) => s,
                 Err(e) => {
                     result.failed += 1;
-                    result.errors.push(ImportError { id, error: e.to_string() });
+                    result.errors.push(ImportError {
+                        id,
+                        error: e.to_string(),
+                    });
                     continue;
                 }
             };
@@ -1695,7 +1701,10 @@ impl AssistantService {
                         }
                         Err(e) => {
                             result.failed += 1;
-                            result.errors.push(ImportError { id, error: e.to_string() });
+                            result.errors.push(ImportError {
+                                id,
+                                error: e.to_string(),
+                            });
                             continue;
                         }
                     },
@@ -1703,7 +1712,10 @@ impl AssistantService {
             };
             if let Err(e) = self.resolve_runtime_backend_for_agent_id(&resolved_agent_id).await {
                 result.failed += 1;
-                result.errors.push(ImportError { id, error: e.to_string() });
+                result.errors.push(ImportError {
+                    id,
+                    error: e.to_string(),
+                });
                 continue;
             }
 
@@ -1711,7 +1723,10 @@ impl AssistantService {
                 Ok(value) => value,
                 Err(e) => {
                     result.failed += 1;
-                    result.errors.push(ImportError { id, error: e.to_string() });
+                    result.errors.push(ImportError {
+                        id,
+                        error: e.to_string(),
+                    });
                     continue;
                 }
             };
@@ -1720,7 +1735,10 @@ impl AssistantService {
                 Ok(v) => v,
                 Err(e) => {
                     result.failed += 1;
-                    result.errors.push(ImportError { id, error: e.to_string() });
+                    result.errors.push(ImportError {
+                        id,
+                        error: e.to_string(),
+                    });
                     continue;
                 }
             };
@@ -1744,33 +1762,41 @@ impl AssistantService {
                     Ok(None) => {
                         // Raced with a delete between our get() and update().
                         // Fall through to create() below by re-checking once.
-                        match self.repo.create(&CreateAssistantParams {
-                            id: &id,
-                            name: &name,
-                            description: entry.description.as_deref(),
-                            avatar: avatar.as_deref(),
-                            enabled_skills: serialized.enabled_skills.as_deref(),
-                            custom_skill_names: serialized.custom_skill_names.as_deref(),
-                            disabled_builtin_skills: serialized.disabled_builtin_skills.as_deref(),
-                            prompts: serialized.prompts.as_deref(),
-                            models: serialized.models.as_deref(),
-                            name_i18n: serialized.name_i18n.as_deref(),
-                            description_i18n: serialized.description_i18n.as_deref(),
-                            prompts_i18n: serialized.prompts_i18n.as_deref(),
-                        })
-                        .await
+                        match self
+                            .repo
+                            .create(&CreateAssistantParams {
+                                id: &id,
+                                name: &name,
+                                description: entry.description.as_deref(),
+                                avatar: avatar.as_deref(),
+                                enabled_skills: serialized.enabled_skills.as_deref(),
+                                custom_skill_names: serialized.custom_skill_names.as_deref(),
+                                disabled_builtin_skills: serialized.disabled_builtin_skills.as_deref(),
+                                prompts: serialized.prompts.as_deref(),
+                                models: serialized.models.as_deref(),
+                                name_i18n: serialized.name_i18n.as_deref(),
+                                description_i18n: serialized.description_i18n.as_deref(),
+                                prompts_i18n: serialized.prompts_i18n.as_deref(),
+                            })
+                            .await
                         {
                             Ok(row) => row,
                             Err(e) => {
                                 result.failed += 1;
-                                result.errors.push(ImportError { id, error: e.to_string() });
+                                result.errors.push(ImportError {
+                                    id,
+                                    error: e.to_string(),
+                                });
                                 continue;
                             }
                         }
                     }
                     Err(e) => {
                         result.failed += 1;
-                        result.errors.push(ImportError { id, error: e.to_string() });
+                        result.errors.push(ImportError {
+                            id,
+                            error: e.to_string(),
+                        });
                         continue;
                     }
                 }
@@ -1798,7 +1824,10 @@ impl AssistantService {
                     }
                     Err(e) => {
                         result.failed += 1;
-                        result.errors.push(ImportError { id, error: e.to_string() });
+                        result.errors.push(ImportError {
+                            id,
+                            error: e.to_string(),
+                        });
                         continue;
                     }
                 }
@@ -1809,7 +1838,10 @@ impl AssistantService {
                 .await
             {
                 result.failed += 1;
-                result.errors.push(ImportError { id, error: e.to_string() });
+                result.errors.push(ImportError {
+                    id,
+                    error: e.to_string(),
+                });
                 continue;
             }
 
@@ -1817,7 +1849,10 @@ impl AssistantService {
                 && let Err(e) = self.write_rule(&id, None, rule_content).await
             {
                 result.failed += 1;
-                result.errors.push(ImportError { id, error: e.to_string() });
+                result.errors.push(ImportError {
+                    id,
+                    error: e.to_string(),
+                });
                 continue;
             }
 
@@ -1835,7 +1870,9 @@ impl AssistantService {
     pub async fn read_rule(&self, id: &str, locale: Option<&str>) -> Result<String, AssistantError> {
         match self.classify_source(id).await {
             AssistantSource::Builtin => Ok(self.read_builtin_rule_with_fallback(id, locale)),
-            AssistantSource::Generated | AssistantSource::User | AssistantSource::Imported => Ok(self.read_user_rule_with_fallback(id, locale)),
+            AssistantSource::Generated | AssistantSource::User | AssistantSource::Imported => {
+                Ok(self.read_user_rule_with_fallback(id, locale))
+            }
         }
     }
 
@@ -5191,7 +5228,11 @@ mod tests {
             .await
             .unwrap();
 
-        let managed_avatar = fx._tmp.path().join("assistant-avatars").join("marketplace-installed.webp");
+        let managed_avatar = fx
+            ._tmp
+            .path()
+            .join("assistant-avatars")
+            .join("marketplace-installed.webp");
         assert_eq!(std::fs::read(&managed_avatar).unwrap(), b"webp-bytes");
 
         let definition = fx

@@ -209,10 +209,10 @@ async fn marketplace_install(
     // `import_personas` intentionally never sets an avatar (see above) — the
     // catalog's own avatar bytes are wired in as a separate step so the
     // marketplace module stays the sole owner of its embedded assets.
-    if entry.has_avatar {
-        if let Some(bytes) = crate::marketplace::marketplace_avatar_bytes(&entry.id) {
-            state.service.set_avatar_from_bytes(&entry.id, &bytes, "webp").await?;
-        }
+    if entry.has_avatar
+        && let Some(bytes) = crate::marketplace::marketplace_avatar_bytes(&entry.id)
+    {
+        state.service.set_avatar_from_bytes(&entry.id, &bytes, "webp").await?;
     }
 
     let installed = state.service.get(&entry.id).await?;

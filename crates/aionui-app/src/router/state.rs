@@ -230,8 +230,11 @@ pub async fn build_module_states(
     materialize_marketplace_personas(assistant.marketplace_repo.as_ref())
         .await
         .map_err(|error| {
-            RouterBuildError::new("router.assistant.marketplace.bootstrap", "failed to materialize marketplace catalog")
-                .with_source(error)
+            RouterBuildError::new(
+                "router.assistant.marketplace.bootstrap",
+                "failed to materialize marketplace catalog",
+            )
+            .with_source(error)
         })?;
     let cron = build_cron_state(services);
     // Cron builds its own ConversationService (not a clone of the shared one),
@@ -386,7 +389,10 @@ pub fn build_assistant_state(services: &AppServices) -> AssistantRouterState {
     ));
     let marketplace_repo: Arc<dyn IAssistantMarketplaceRepository> =
         Arc::new(SqliteAssistantMarketplaceRepository::new(pool));
-    AssistantRouterState { service, marketplace_repo }
+    AssistantRouterState {
+        service,
+        marketplace_repo,
+    }
 }
 
 /// Build the default `SystemRouterState` from application services.
