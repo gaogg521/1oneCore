@@ -1,11 +1,2 @@
 *.sh text eol=lf
 *.ps1 text eol=crlf
-
-# sqlx records a sha384 of each migration file's bytes in `_sqlx_migrations` and
-# refuses to start when a previously-applied migration's checksum changes. A
-# checkout under `core.autocrlf=true` (the Windows default, and what a fresh
-# clone or CI runner gets) rewrites these to CRLF, changing every checksum and
-# bricking startup for every existing install with
-# "migration N was previously applied but has been modified". Pin them to LF so
-# the bytes are identical no matter where the tree is checked out.
-*.sql text eol=lf
