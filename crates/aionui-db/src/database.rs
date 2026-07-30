@@ -407,8 +407,92 @@ async fn run_migrations_with_retry(conn: &mut sqlx::SqliteConnection) -> Result<
                 )))
             }
         }
+        Err(sqlx::migrate::MigrateError::VersionMismatch(version)) => {
+            let realigned = align_line_ending_only_checksums(&mut *conn).await?;
+            if realigned.is_empty() {
+                return Err(DbError::Migration(sqlx::migrate::MigrateError::VersionMismatch(
+                    version,
+                )));
+            }
+            warn!(
+                versions = ?realigned,
+                "Applied migrations differ from the shipped ones only by line endings; \
+                 realigned their checksums and retrying"
+            );
+            DB_MIGRATOR.run(&mut *conn).await.map_err(DbError::Migration)
+        }
         Err(e) => Err(DbError::Migration(e)),
     }
+}
+
+/// Strip `\r` so two renderings of the same migration text hash identically.
+fn normalize_line_endings(bytes: &[u8]) -> Vec<u8> {
+    bytes.iter().copied().filter(|byte| *byte != b'\r').collect()
+}
+
+/// Re-align stored checksums for already-applied migrations whose shipped text
+/// now differs **only** by line endings.
+///
+/// sqlx checksums the raw bytes of each migration, so the same commit checked
+/// out under `core.autocrlf=true` (the Windows default, and what a fresh clone
+/// or a CI runner gets) hashes differently from one checked out with LF. A
+/// build produced on a differently-configured machine therefore refuses to
+/// start on every existing install with "migration N was previously applied but
+/// has been modified", even though not a single statement changed.
+///
+/// This only rewrites a checksum when the migration's text is byte-identical
+/// after removing `\r`. Any real edit still fails the version check, so the
+/// guarantee that applied migrations are immutable is preserved.
+async fn align_line_ending_only_checksums(conn: &mut sqlx::SqliteConnection) -> Result<Vec<i64>, DbError> {
+    let applied: Vec<(i64, Vec<u8>)> = sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations")
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(DbError::Query)?;
+
+    let mut realigned = Vec::new();
+    for (version, stored_checksum) in applied {
+        let Some(migration) = DB_MIGRATOR.iter().find(|migration| migration.version == version) else {
+            continue;
+        };
+        if *migration.checksum == stored_checksum[..] {
+            continue;
+        }
+        // Only a line-ending difference may be papered over. The stored row
+        // keeps the checksum, not the text, so compare by re-hashing the
+        // shipped migration in both renderings.
+        let shipped_lf = normalize_line_endings(migration.sql.as_bytes());
+        let stored_matches_lf = {
+            use sha2::{Digest, Sha384};
+            let mut hasher = Sha384::new();
+            hasher.update(&shipped_lf);
+            hasher.finalize().to_vec() == stored_checksum
+        };
+        let stored_matches_crlf = {
+            use sha2::{Digest, Sha384};
+            let mut crlf = Vec::with_capacity(shipped_lf.len() * 2);
+            for byte in &shipped_lf {
+                if *byte == b'\n' {
+                    crlf.push(b'\r');
+                }
+                crlf.push(*byte);
+            }
+            let mut hasher = Sha384::new();
+            hasher.update(&crlf);
+            hasher.finalize().to_vec() == stored_checksum
+        };
+        if !stored_matches_lf && !stored_matches_crlf {
+            continue;
+        }
+
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+            .bind(&*migration.checksum)
+            .bind(version)
+            .execute(&mut *conn)
+            .await
+            .map_err(DbError::Query)?;
+        realigned.push(version);
+    }
+    Ok(realigned)
 }
 
 /// Detect the specific "another process inserted this version first" error.
@@ -707,6 +791,79 @@ fn is_corruption_like_error(err: &DbError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hash exactly the way sqlx does, so the fixtures below stand in for a row
+    /// that a differently-configured checkout really would have written.
+    fn sqlx_checksum(bytes: &[u8]) -> Vec<u8> {
+        use sha2::{Digest, Sha384};
+        let mut hasher = Sha384::new();
+        hasher.update(bytes);
+        hasher.finalize().to_vec()
+    }
+
+    fn to_crlf(bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            if *byte == b'\n' {
+                out.push(b'\r');
+            }
+            out.push(*byte);
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn realigns_checksums_that_differ_only_by_line_endings() {
+        let db = init_database_memory().await.expect("in-memory db");
+        let mut conn = db.pool().acquire().await.expect("conn");
+
+        // Rewrite every applied checksum to the *other* line-ending rendering,
+        // reproducing a DB written by a build from a differently-configured
+        // checkout.
+        let mut rewritten = 0usize;
+        for migration in DB_MIGRATOR.iter() {
+            let lf = normalize_line_endings(migration.sql.as_bytes());
+            let other = if *migration.checksum == sqlx_checksum(&lf)[..] {
+                sqlx_checksum(&to_crlf(&lf))
+            } else {
+                sqlx_checksum(&lf)
+            };
+            let updated = sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+                .bind(other)
+                .bind(migration.version)
+                .execute(&mut *conn)
+                .await
+                .expect("seed stale checksum");
+            rewritten += updated.rows_affected() as usize;
+        }
+        assert!(rewritten > 0, "expected applied migrations to seed");
+
+        let realigned = align_line_ending_only_checksums(&mut conn).await.expect("realign");
+        assert_eq!(realigned.len(), rewritten, "every stale checksum should realign");
+
+        // A second migrate run must now succeed rather than VersionMismatch.
+        run_migrations_with_retry(&mut conn).await.expect("migrations rerun");
+    }
+
+    #[tokio::test]
+    async fn leaves_a_genuinely_modified_migration_alone() {
+        let db = init_database_memory().await.expect("in-memory db");
+        let mut conn = db.pool().acquire().await.expect("conn");
+
+        let victim = DB_MIGRATOR.iter().next().expect("at least one migration").version;
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+            .bind(sqlx_checksum(b"-- a real edit, not a line-ending difference\n"))
+            .bind(victim)
+            .execute(&mut *conn)
+            .await
+            .expect("seed edited checksum");
+
+        let realigned = align_line_ending_only_checksums(&mut conn).await.expect("realign");
+        assert!(
+            !realigned.contains(&victim),
+            "a semantically changed migration must never be silently realigned"
+        );
+    }
 
     #[test]
     fn recovery_skips_migration_version_mismatch() {

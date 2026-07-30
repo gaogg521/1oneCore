@@ -1,2 +1,9 @@
 *.sh text eol=lf
 *.ps1 text eol=crlf
+
+# Keep migration bytes identical across checkouts. This is belt-and-braces:
+# `align_line_ending_only_checksums` (aionui-db/src/database.rs) already repairs
+# databases written by a build from a differently-configured checkout, so
+# flipping this line can no longer brick existing installs — it just stops the
+# drift from happening in the first place.
+*.sql text eol=lf

@@ -10,6 +10,10 @@ async-trait.workspace = true
 fs2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Re-hash shipped migrations to tell a line-ending-only difference apart from a
+# real edit (see align_line_ending_only_checksums). Must stay sha384 to match
+# what sqlx stores in `_sqlx_migrations`.
+sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
