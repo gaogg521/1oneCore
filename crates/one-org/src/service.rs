@@ -1197,6 +1197,127 @@ impl OrgService {
         Ok(())
     }
 
+    // --- backup / restore (P1-1) ---
+
+    /// Export the deployment's enterprise configuration (see `backup` module).
+    pub async fn export_backup(
+        &self,
+        tenant_id: &str,
+        actor_user_id: &str,
+    ) -> Result<crate::backup::BackupBundle, OrgError> {
+        let bundle = crate::backup::export_bundle(&self.pool, tenant_id, now_ms() as i64).await?;
+        // Exports are worth an audit trail: the file leaves the deployment, and
+        // "who took a copy of the org config, when" is a question a security
+        // review will ask.
+        let actor_username = self.lookup_username(actor_user_id).await;
+        self.audit(
+            tenant_id,
+            Some(actor_user_id),
+            actor_username.as_deref(),
+            "org.backup.export",
+            Some(&format!("{} tables", bundle.tables.len())),
+        )
+        .await;
+        Ok(bundle)
+    }
+
+    /// Restore an exported bundle. Idempotent; see the `backup` module.
+    pub async fn import_backup(
+        &self,
+        tenant_id: &str,
+        actor_user_id: &str,
+        bundle: &crate::backup::BackupBundle,
+    ) -> Result<crate::backup::ImportReport, OrgError> {
+        let report = crate::backup::import_bundle(&self.pool, bundle).await?;
+        let actor_username = self.lookup_username(actor_user_id).await;
+        self.audit(
+            tenant_id,
+            Some(actor_user_id),
+            actor_username.as_deref(),
+            "org.backup.import",
+            Some(&format!(
+                "{} tables / {} rows",
+                report.tables_applied, report.rows_applied
+            )),
+        )
+        .await;
+        Ok(report)
+    }
+
+    /// Admin-initiated removal of another member from `tenant_id` (P0-2).
+    ///
+    /// This is `leave()` performed *by an administrator on someone else*, and
+    /// it deliberately mirrors that method's cleanup so a removed member is
+    /// left in exactly the same state as one who quit: the membership row is
+    /// deleted, a dangling active-tenant pointer is repointed, and the target's
+    /// JWT secret is rotated so **existing sessions stop working immediately**
+    /// rather than lingering until token expiry. Without that rotation a
+    /// just-offboarded employee would keep a working client — the whole point
+    /// of having this endpoint.
+    ///
+    /// Differs from `leave()` in that no exit password is required (the admin
+    /// is the authority here, not the member) and three guards apply instead.
+    pub async fn remove_member(
+        &self,
+        tenant_id: &str,
+        actor_user_id: &str,
+        target_user_id: &str,
+    ) -> Result<(), OrgError> {
+        // Removing yourself would let an admin bypass the exit-password gate
+        // that `leave()` enforces. Send them through the front door.
+        if actor_user_id == target_user_id {
+            return Err(OrgError::BadRequest(
+                "cannot remove yourself; use leave to exit the project group".into(),
+            ));
+        }
+
+        let membership = self
+            .membership_row(target_user_id, tenant_id)
+            .await?
+            .ok_or_else(|| OrgError::BadRequest(format!("user {target_user_id} not in tenant {tenant_id}")))?;
+
+        // A system_admin outranks an org_admin; only a peer may remove one.
+        // Otherwise any org_admin could unseat the machine owner.
+        if is_system_admin_role(&membership.role) {
+            let actor_role = self
+                .membership_row(actor_user_id, tenant_id)
+                .await?
+                .map(|m| m.role)
+                .unwrap_or_default();
+            if !is_system_admin_role(&actor_role) {
+                return Err(OrgError::Forbidden(
+                    "only system_admin can remove a system_admin".into(),
+                ));
+            }
+        }
+
+        if is_admin_role(&membership.role) {
+            self.ensure_not_last_admin(tenant_id, target_user_id).await?;
+        }
+
+        sqlx::query("DELETE FROM one_user_org WHERE user_id = ? AND tenant_id = ?")
+            .bind(target_user_id)
+            .bind(tenant_id)
+            .execute(&self.pool)
+            .await?;
+        self.reselect_active_after_leave(target_user_id, tenant_id).await?;
+        self.invalidate_user_tokens(target_user_id).await?;
+
+        // Attributed to the ACTOR, with the target in `resource` — same
+        // rationale as `set_user_role`: attributing it to the target would
+        // make every removal read as a voluntary exit and hide who did it.
+        let actor_username = self.lookup_username(actor_user_id).await;
+        self.audit(
+            tenant_id,
+            Some(actor_user_id),
+            actor_username.as_deref(),
+            "org.member.remove",
+            Some(target_user_id),
+        )
+        .await;
+        Ok(())
+    }
+
     /// After leaving `left_tenant`, if the active pointer named it, move the
     /// pointer to any remaining membership (most-recently-joined) or delete it
     /// (so resolution falls back to the personal-edition default). Keeps

@@ -54,6 +54,12 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         )
         .route("/api/one/devops/rag/config", get(get_rag_config).put(set_rag_config))
         .route("/api/one/devops/rag/search", axum::routing::post(search_rag))
+        // P1-2 offboarding: inspect and hand over a departing member's assets.
+        .route("/api/one/devops/ownership/{user_id}/count", get(count_owned_resources))
+        .route(
+            "/api/one/devops/ownership/transfer",
+            axum::routing::post(transfer_ownership),
+        )
         .route(
             "/api/one/devops/milestones",
             get(list_milestones).post(create_milestone),
@@ -827,6 +833,45 @@ async fn search_rag(
         .search_rag(&user.id, &body.query, body.top_k.unwrap_or(5))
         .await?;
     Ok(Json(ApiResponse::ok(hits)))
+}
+
+// -- ownership transfer (P1-2 offboarding) --------------------------------
+
+/// How many team resources a member owns, so the offboarding UI can warn
+/// before removal instead of silently orphaning them.
+async fn count_owned_resources(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(target_user_id): Path<String>,
+) -> Result<Json<ApiResponse<i64>>, DevopsError> {
+    state.service.ensure_privileged(&user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let count = state.service.count_owned_resources(&target_user_id, &tenant).await?;
+    Ok(Json(ApiResponse::ok(count)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TransferOwnershipBody {
+    from_user_id: String,
+    to_user_id: String,
+}
+
+/// Hand a departing member's team resources to another member of the same
+/// project group. Admin-only; the tenant is the caller's own, never a
+/// client-supplied one, so an admin cannot reach into another group.
+async fn transfer_ownership(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<TransferOwnershipBody>,
+) -> Result<Json<ApiResponse<i64>>, DevopsError> {
+    state.service.ensure_privileged(&user.id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let moved = state
+        .service
+        .transfer_ownership(&body.from_user_id, &body.to_user_id, &tenant)
+        .await?;
+    Ok(Json(ApiResponse::ok(moved)))
 }
 
 // -- milestones -----------------------------------------------------------

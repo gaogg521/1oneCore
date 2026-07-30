@@ -9,13 +9,16 @@ aionui-auth.workspace = true
 aionui-common.workspace = true
 one-employee = { path = "../one-employee" }
 axum.workspace = true
+futures-util.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio.workspace = true

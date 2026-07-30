@@ -9,6 +9,7 @@
 //! membership, a route merge in aionui-app, and read-only use of public
 //! aionui-auth / aionui-db APIs.
 
+pub mod backup;
 pub mod bridge;
 pub mod email;
 pub mod error;
