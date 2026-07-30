@@ -21,6 +21,22 @@ use crate::types::{
 /// Maximum number of files returned by `list_workspace_files`.
 const MAX_WORKSPACE_FILES: usize = 20_000;
 
+/// Render a workspace-relative path with the `/` separators the wire protocol
+/// requires.
+///
+/// The renderer treats `relative_path` as always `/`-delimited (see
+/// `explorer/explorerModel.ts`) and splits on `/` to rebuild the tree. Emitting
+/// a native separator on Windows made every nested entry look like a single
+/// top-level node with a backslash in its name.
+fn to_relative_path_string(path: &Path, root: &Path) -> String {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Maximum file size for read operations (256 MB).
 const MAX_FILE_SIZE: u64 = 256 * 1024 * 1024;
 
@@ -144,7 +160,7 @@ fn build_dir_tree_sync(dir: &Path, root: &Path) -> Result<Vec<DirOrFile>, FileEr
         let name = entry.file_name().to_string_lossy().into_owned();
 
         let full_path = path.to_string_lossy().into_owned();
-        let relative_path = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
+        let relative_path = to_relative_path_string(&path, root);
 
         let is_dir = metadata.is_dir();
 
@@ -191,7 +207,7 @@ fn read_children_sync(dir: &Path, root: &Path) -> Result<Vec<DirOrFile>, FileErr
         let name = entry.file_name().to_string_lossy().into_owned();
 
         let full_path = path.to_string_lossy().into_owned();
-        let relative_path = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
+        let relative_path = to_relative_path_string(&path, root);
 
         children.push(DirOrFile {
             name,
@@ -248,7 +264,7 @@ fn list_workspace_files_sync(root: &Path) -> Result<Vec<WorkspaceFlatFile>, File
             .unwrap_or_default();
 
         let full_path = path.to_string_lossy().into_owned();
-        let relative_path = path.strip_prefix(root).unwrap_or(path).to_string_lossy().into_owned();
+        let relative_path = to_relative_path_string(path, root);
 
         files.push(WorkspaceFlatFile {
             name,
@@ -707,13 +723,10 @@ impl crate::traits::IFileService for FileService {
             .await
             .map_err(|e| FileError::Internal(format!("write file task failed: {e}")))??;
 
-        // Compute relative path from workspace
+        // Compute relative path from workspace (always `/`-delimited on the wire)
         let workspace_path = Path::new(workspace);
-        let relative_path = canonical
-            .strip_prefix(std::fs::canonicalize(workspace_path).unwrap_or_else(|_| workspace_path.to_path_buf()))
-            .unwrap_or(&canonical)
-            .to_string_lossy()
-            .into_owned();
+        let workspace_root = std::fs::canonicalize(workspace_path).unwrap_or_else(|_| workspace_path.to_path_buf());
+        let relative_path = to_relative_path_string(&canonical, &workspace_root);
 
         // Build and broadcast contentUpdate event
         let content = String::from_utf8(data.to_vec()).ok();
@@ -815,13 +828,10 @@ impl crate::traits::IFileService for FileService {
             .await
             .map_err(|e| FileError::Internal(format!("remove entry task failed: {e}")))??;
 
-        // Compute relative path from workspace
+        // Compute relative path from workspace (always `/`-delimited on the wire)
         let workspace_path = Path::new(workspace);
-        let relative_path = canonical
-            .strip_prefix(std::fs::canonicalize(workspace_path).unwrap_or_else(|_| workspace_path.to_path_buf()))
-            .unwrap_or(&canonical)
-            .to_string_lossy()
-            .into_owned();
+        let workspace_root = std::fs::canonicalize(workspace_path).unwrap_or_else(|_| workspace_path.to_path_buf());
+        let relative_path = to_relative_path_string(&canonical, &workspace_root);
 
         // Broadcast contentUpdate delete event
         let event = ContentUpdateEvent {

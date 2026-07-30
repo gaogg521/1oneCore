@@ -176,14 +176,34 @@ fn build_windows_terminal_command(path: &str) -> String {
 ///
 /// Without `gdbus`, fall back to opening the parent directory with `xdg-open`
 /// (no highlight, but still the file manager rather than the file's handler).
+/// Percent-encode the characters that are illegal in a `file:` URI path.
+///
+/// Only used on the fallback branch below, where `Url::from_file_path` refused
+/// the path because it isn't absolute for the *host* platform. Path separators
+/// and the usual unreserved set are left alone.
+fn percent_encode_uri_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 fn linux_show_item_command(path: &Path, gdbus_available: bool) -> (String, Vec<String>) {
     if gdbus_available {
-        // `from_file_path` percent-encodes spaces and other reserved characters;
-        // fall back to a raw `file://` URI only if it rejects the path (it
-        // requires an absolute path — always true here since `path` is canonical).
+        // `from_file_path` percent-encodes spaces and other reserved characters.
+        // It rejects paths that aren't absolute *for the host platform*, which
+        // on a non-Linux host includes the POSIX paths this function is built
+        // for — so the fallback must percent-encode too, or a path with a space
+        // would produce a URI the file manager can't parse.
         let uri = reqwest::Url::from_file_path(path)
             .map(|u| u.to_string())
-            .unwrap_or_else(|_| format!("file://{}", path.to_string_lossy()));
+            .unwrap_or_else(|_| format!("file://{}", percent_encode_uri_path(&path.to_string_lossy())));
         (
             "gdbus".to_owned(),
             vec![
