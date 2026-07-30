@@ -1035,7 +1035,21 @@ async fn replace_existing_path(path: &Path) -> Result<(), ExtensionError> {
         Err(e) => return Err(e.into()),
     };
 
-    if metadata.file_type().is_symlink() || metadata.is_file() {
+    if metadata.file_type().is_symlink() {
+        // A Windows *directory* link (junction, or a privileged symlink_dir) is
+        // a directory-flavoured reparse point: `remove_file` rejects it with
+        // ERROR_ACCESS_DENIED (os error 5), and `remove_dir_all` would try to
+        // walk a target that may no longer exist. `remove_dir` unlinks the
+        // reparse point itself without touching the target, which is what we
+        // want — this is also the path a dangling link from a deleted source
+        // takes, where every other primitive fails.
+        #[cfg(windows)]
+        if metadata.is_dir() {
+            tokio::fs::remove_dir(path).await?;
+            return Ok(());
+        }
+        tokio::fs::remove_file(path).await?;
+    } else if metadata.is_file() {
         tokio::fs::remove_file(path).await?;
     } else {
         tokio::fs::remove_dir_all(path).await?;
@@ -2193,29 +2207,55 @@ async fn create_symlink_for_link(src: &Path, dst: &Path) -> Result<(), Extension
 mod test_overrides {
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    use std::sync::{Mutex, MutexGuard};
+
     static FORCE_SYMLINK_FAILURE: AtomicBool = AtomicBool::new(false);
 
     pub fn should_force_symlink_failure() -> bool {
         FORCE_SYMLINK_FAILURE.load(Ordering::SeqCst)
     }
 
-    /// RAII guard that flips `FORCE_SYMLINK_FAILURE` on creation and
-    /// resets it on drop. Tests using this guard must be marked
-    /// `#[serial_test::serial]` if any other test in the binary also
-    /// flips the flag — at present only one test uses it, so a guard
-    /// is enough.
-    pub struct ForceFailureGuard;
+    /// Serializes the whole "flag is meaningful" window.
+    ///
+    /// The flag is process-global while `cargo test` runs cases in parallel, so
+    /// holding it makes *every* concurrently-running test take the failure
+    /// branch — that is what made
+    /// `link_workspace_skills_uses_junction_on_windows` intermittently see a
+    /// copied directory instead of a junction. Both the test that flips the
+    /// flag and the tests that depend on it being clear must take this lock.
+    static SYMLINK_BEHAVIOUR_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Acquire the lock without inheriting a poisoned state — a panic in an
+    /// unrelated assertion must not cascade into every later test.
+    fn lock() -> MutexGuard<'static, ()> {
+        SYMLINK_BEHAVIOUR_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// RAII guard that flips `FORCE_SYMLINK_FAILURE` on creation and resets it
+    /// on drop, holding [`SYMLINK_BEHAVIOUR_LOCK`] for its lifetime.
+    pub struct ForceFailureGuard(#[allow(dead_code)] MutexGuard<'static, ()>);
 
     impl ForceFailureGuard {
         pub fn new() -> Self {
+            let guard = lock();
             FORCE_SYMLINK_FAILURE.store(true, Ordering::SeqCst);
-            Self
+            Self(guard)
         }
     }
 
     impl Drop for ForceFailureGuard {
         fn drop(&mut self) {
             FORCE_SYMLINK_FAILURE.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Guard for tests that require the *real* symlink primitive. Blocks while
+    /// a `ForceFailureGuard` is alive.
+    pub struct RealSymlinkGuard(#[allow(dead_code)] MutexGuard<'static, ()>);
+
+    impl RealSymlinkGuard {
+        pub fn new() -> Self {
+            Self(lock())
         }
     }
 }
@@ -2815,6 +2855,9 @@ mod tests {
 
     #[tokio::test]
     async fn import_skills_replaces_dangling_link_with_copy() {
+        // Serialize against the forced-failure test: that flag is process-global
+        // and would push this case onto the copy fallback.
+        let _real_symlink = test_overrides::RealSymlinkGuard::new();
         let tmp = TempDir::new().unwrap();
         let paths = make_test_paths(tmp.path());
 
@@ -3705,6 +3748,9 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[tokio::test]
     async fn link_workspace_skills_uses_junction_on_windows() {
+        // Serialize against the forced-failure test: that flag is process-global
+        // and would push this case onto the copy fallback.
+        let _real_symlink = test_overrides::RealSymlinkGuard::new();
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path().join("workspace");
         let source_root = tmp.path().join("sources");
