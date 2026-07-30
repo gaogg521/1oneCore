@@ -5,7 +5,7 @@
 //! prefix keeps our namespace disjoint from upstream `/api/*` routes.
 
 use axum::extract::{Path, Query, State};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -62,11 +62,15 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         )
         // M2e: user management + audit + runtime nodes
         .route("/api/one/admin/users", get(admin_list_users))
+        .route("/api/one/admin/users/{user_id}", delete(admin_remove_user))
         .route("/api/one/admin/users/{user_id}/role", put(admin_set_user_role))
         .route(
             "/api/one/admin/users/{user_id}/department",
             put(admin_assign_member_department),
         )
+        // P1-1 backup / restore of enterprise configuration.
+        .route("/api/one/admin/backup/export", get(admin_export_backup))
+        .route("/api/one/admin/backup/import", post(admin_import_backup))
         .route(
             "/api/one/admin/departments",
             get(admin_list_departments).post(admin_create_department),
@@ -705,6 +709,22 @@ async fn admin_list_users(
     Ok(Json(ApiResponse::ok(users)))
 }
 
+/// Remove a member from the caller's project group (P0-2), freeing their seat
+/// and killing their sessions. Admin-gated by `RequireOrgAdmin`; the remaining
+/// guards (self-removal, last admin, system_admin) live in the service so they
+/// hold for every caller, not just this route.
+async fn admin_remove_user(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Path(user_id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, OrgError> {
+    state
+        .service
+        .remove_member(&actor.tenant_id, &actor.user_id, &user_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SetRoleBody {
@@ -732,6 +752,34 @@ async fn admin_set_user_role(
         .set_user_role(&actor.tenant_id, &actor.user_id, &user_id, role)
         .await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+// --- backup / restore (P1-1) ---
+
+/// Export the deployment's enterprise configuration as a versioned bundle.
+///
+/// Secrets are stripped inside `backup::export_bundle` — this endpoint hands the
+/// operator a file, so it must never be a credential-exfiltration path even for
+/// a legitimate admin.
+async fn admin_export_backup(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+) -> Result<Json<ApiResponse<crate::backup::BackupBundle>>, OrgError> {
+    let bundle = state.service.export_backup(&actor.tenant_id, &actor.user_id).await?;
+    Ok(Json(ApiResponse::ok(bundle)))
+}
+
+/// Restore a bundle produced by the export endpoint.
+async fn admin_import_backup(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Json(bundle): Json<crate::backup::BackupBundle>,
+) -> Result<Json<ApiResponse<crate::backup::ImportReport>>, OrgError> {
+    let report = state
+        .service
+        .import_backup(&actor.tenant_id, &actor.user_id, &bundle)
+        .await?;
+    Ok(Json(ApiResponse::ok(report)))
 }
 
 // --- departments / organizational hierarchy (P2-3) ---

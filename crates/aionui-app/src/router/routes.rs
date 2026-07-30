@@ -555,11 +555,27 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
 
     // one-devops routes (/api/one/devops/*) — requirements board +
     // collaboration registries, member-writable behind auth.
-    let one_devops_state = one_devops::OneDevopsRouterState::new(std::sync::Arc::new(one_devops::DevopsService::new(
-        services.database.pool().clone(),
-    )))
-    .with_employee(one_employee_service.clone())
-    .with_tenant_resolver(tenant_resolver.clone());
+    let one_devops_service = std::sync::Arc::new(one_devops::DevopsService::new(services.database.pool().clone()));
+    // Installs whose knowledge base predates hybrid retrieval have chunks in
+    // SQLite but no lexical index yet. The rebuild reads only text already
+    // stored, so it costs no embedding-API calls, and it self-skips once
+    // populated — a no-op on every subsequent boot and on personal installs
+    // with no knowledge base at all.
+    {
+        let service = one_devops_service.clone();
+        tokio::spawn(async move {
+            match service.rebuild_lexical_index().await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(chunks = n, "team knowledge lexical index built"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "lexical index build failed; retrieval stays vector-only")
+                }
+            }
+        });
+    }
+    let one_devops_state = one_devops::OneDevopsRouterState::new(one_devops_service)
+        .with_employee(one_employee_service.clone())
+        .with_tenant_resolver(tenant_resolver.clone());
     let one_devops_authenticated = one_devops::one_devops_routes(one_devops_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 

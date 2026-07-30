@@ -462,6 +462,57 @@ impl EnterpriseService {
         Ok(())
     }
 
+    /// Remove a member from the company, releasing their seat (P0-2).
+    ///
+    /// Seats are counted as `one_enterprise_members` rows (see `seat_used` /
+    /// the licence check in this file), so deleting the row *is* the seat
+    /// reclamation — there is no separate counter to decrement.
+    ///
+    /// Note this only detaches the user from the **company**; project-group
+    /// membership lives in `one_user_org` and is removed separately by
+    /// `OrgService::remove_member`. The two tiers are deliberately independent
+    /// (企业 ⊃ 项目组), so an offboarding flow calls both.
+    pub async fn remove_member(
+        &self,
+        enterprise_id: &str,
+        actor_user_id: &str,
+        target_user_id: &str,
+    ) -> Result<(), EnterpriseError> {
+        if actor_user_id == target_user_id {
+            return Err(EnterpriseError::Forbidden(
+                "cannot remove yourself from the company".into(),
+            ));
+        }
+        let current: Option<String> =
+            sqlx::query_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?")
+                .bind(target_user_id)
+                .bind(enterprise_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some(current) = current else {
+            return Err(EnterpriseError::MemberNotFound);
+        };
+        // Same guard as demoting the last admin: a company with zero admins
+        // can never be administered again.
+        if is_company_admin_role(&current) {
+            let admin_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND role = ?")
+                    .bind(enterprise_id)
+                    .bind(ROLE_COMPANY_ADMIN)
+                    .fetch_one(&self.pool)
+                    .await?;
+            if admin_count <= 1 {
+                return Err(EnterpriseError::LastCompanyAdmin);
+            }
+        }
+        sqlx::query("DELETE FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?")
+            .bind(target_user_id)
+            .bind(enterprise_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// The caller's own enterprise-org identity, or `None` if they have no
     /// enterprise membership (local/LDAP account, or hasn't logged in via an
     /// SSO company since this feature landed).

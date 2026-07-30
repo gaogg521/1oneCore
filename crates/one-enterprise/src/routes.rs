@@ -4,7 +4,7 @@
 //! member-admin routes require the company `admin` role.
 
 use axum::extract::{Path, State};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
 
@@ -22,6 +22,10 @@ pub fn one_enterprise_routes(state: OneEnterpriseRouterState) -> Router {
         .route("/api/one/enterprise/company", get(company_overview))
         .route("/api/one/enterprise/company/setup", post(company_setup))
         .route("/api/one/enterprise/company/members", get(company_members))
+        .route(
+            "/api/one/enterprise/company/members/{user_id}",
+            delete(company_remove_member),
+        )
         .route(
             "/api/one/enterprise/company/members/{user_id}/role",
             put(company_set_member_role),
@@ -80,6 +84,19 @@ async fn company_members(
 #[serde(rename_all = "camelCase")]
 struct SetMemberRoleBody {
     role: String,
+}
+
+/// Remove a member from the company, releasing their seat (P0-2).
+async fn company_remove_member(
+    State(state): State<OneEnterpriseRouterState>,
+    admin: RequireCompanyAdmin,
+    Path(user_id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, EnterpriseError> {
+    state
+        .service
+        .remove_member(&admin.enterprise_id, &admin.user_id, &user_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 async fn company_set_member_role(

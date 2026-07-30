@@ -10,15 +10,21 @@
 //! tables managed by our own migrator; the only upstream touch point is a
 //! route merge in aionui-app.
 //!
-//! RAG (A2): `one_rag_documents` + `one_rag_chunks` + `one_rag_config` back a
-//! chunk → embed → store → cosine-search pipeline over an OpenAI-compatible
+//! RAG: `one_rag_documents` + `one_rag_chunks` + `one_rag_config` back a
+//! chunk → embed → store → retrieve pipeline over an OpenAI-compatible
 //! embedding endpoint (see `embedding` module).
+//!
+//! Retrieval is hybrid (see `retrieval`): the dense vector ranking is fused
+//! with a BM25 ranking from SQLite's built-in FTS5. The lexical index is a
+//! derived structure that can be rebuilt from `one_rag_chunks` at any time,
+//! which is what makes the startup backfill and any re-index safe.
 
 pub mod breakdown;
 pub mod embedding;
 pub mod error;
 pub mod migrate;
 pub mod models;
+pub mod retrieval;
 pub mod routes;
 pub mod service;
 pub mod state;

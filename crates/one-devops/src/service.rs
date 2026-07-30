@@ -452,6 +452,170 @@ impl DevopsService {
         }
     }
 
+    // -- ownership transfer (P1-2 offboarding) ----------------------------
+
+    /// Gate for admin-only devops operations. Reuses `viewer_is_privileged`,
+    /// so a standalone/personal owner (no `one_user_org` row) passes — they own
+    /// the machine — while a plain enterprise member is refused.
+    pub async fn ensure_privileged(&self, user_id: &str) -> Result<(), DevopsError> {
+        if self.viewer_is_privileged(user_id).await? {
+            return Ok(());
+        }
+        Err(DevopsError::Forbidden(
+            "only an administrator can perform this operation".into(),
+        ))
+    }
+
+    /// Tables whose owner column is `created_by`. These are the three shared
+    /// registries and they carry the full P0-4 ACL triple
+    /// (`scope`/`team_id`/`visibility`), so a transfer can — and must — be
+    /// restricted to the tenant being offboarded from.
+    const REGISTRY_OWNER_TABLES: [&'static str; 3] = ["one_skill_registry", "one_mcp_registry", "one_rag_documents"];
+
+    /// Tables whose owner column is `creator_id`, plus a denormalized
+    /// `creator_name` that has to move with it — otherwise the boards keep
+    /// displaying the departed employee's name next to the new owner's id.
+    ///
+    /// These are deployment-global: they have **no** `scope`/`team_id` columns,
+    /// so there is no tenant dimension to scope the transfer by (see
+    /// `transfer_ownership`'s doc comment).
+    const BOARD_OWNER_TABLES: [&'static str; 5] = [
+        "one_requirements",
+        "one_milestones",
+        "one_test_plans",
+        "one_test_cases",
+        "one_pipelines",
+    ];
+
+    /// How many team resources `user_id` currently owns, so the UI can ask
+    /// "this member owns N team resources — hand them to whom?" *before*
+    /// removing them.
+    pub async fn count_owned_resources(&self, user_id: &str, tenant_id: &str) -> Result<i64, DevopsError> {
+        let mut total = 0i64;
+        for table in Self::REGISTRY_OWNER_TABLES {
+            let n: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM {table} WHERE created_by = ? AND (scope = 'org' OR team_id = ?)"
+            ))
+            .bind(user_id)
+            .bind(tenant_id)
+            .fetch_one(&self.pool)
+            .await?;
+            total += n;
+        }
+        for table in Self::BOARD_OWNER_TABLES {
+            let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE creator_id = ?"))
+                .bind(user_id)
+                .fetch_one(&self.pool)
+                .await?;
+            total += n;
+        }
+        Ok(total)
+    }
+
+    /// Reassign every team resource owned by `from_user` to `to_user` (P1-2).
+    ///
+    /// Team assets must not walk out the door with a departing employee: the
+    /// three registries plus the boards all record an owner, and once that
+    /// owner is gone nobody can administer those rows.
+    ///
+    /// **Tenant safety.** `to_user` must be a member of `tenant_id`, so assets
+    /// can never be handed to someone outside the project group. For the three
+    /// registries the update is additionally filtered to rows that belong to
+    /// this tenant (`scope = 'org' OR team_id = ?`), so an admin of group A
+    /// cannot reassign group B's resources. The board tables have no tenant
+    /// columns at all — they are global to the deployment — so there is no
+    /// cross-tenant boundary to enforce there, and all of the user's rows move.
+    ///
+    /// Runs in a single transaction: a partial transfer would leave assets
+    /// split between a departed user and their successor.
+    pub async fn transfer_ownership(
+        &self,
+        from_user: &str,
+        to_user: &str,
+        tenant_id: &str,
+    ) -> Result<i64, DevopsError> {
+        if from_user == to_user {
+            return Err(DevopsError::BadRequest(
+                "source and target owner are the same user".into(),
+            ));
+        }
+
+        // The recipient must be inside the tenant we are transferring within.
+        // Missing table = standalone/personal edition, where there is no
+        // membership model and thus nothing to enforce.
+        let recipient_in_tenant =
+            match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM one_user_org WHERE user_id = ? AND tenant_id = ?")
+                .bind(to_user)
+                .bind(tenant_id)
+                .fetch_one(&self.pool)
+                .await
+            {
+                Ok(n) => n > 0,
+                Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => true,
+                Err(e) => return Err(e.into()),
+            };
+        if !recipient_in_tenant {
+            return Err(DevopsError::BadRequest(format!(
+                "target owner {to_user} is not a member of project group {tenant_id}"
+            )));
+        }
+
+        // `updated_at` is deliberately left alone: an ownership handover is not
+        // a content edit, and bumping it would reshuffle every list that sorts
+        // by recency.
+        let to_name = self.lookup_creator_name(to_user).await;
+        let mut tx = self.pool.begin().await?;
+        let mut moved = 0i64;
+
+        for table in Self::REGISTRY_OWNER_TABLES {
+            let res = sqlx::query(&format!(
+                "UPDATE {table} SET created_by = ? WHERE created_by = ? AND (scope = 'org' OR team_id = ?)"
+            ))
+            .bind(to_user)
+            .bind(from_user)
+            .bind(tenant_id)
+            .execute(&mut *tx)
+            .await?;
+            moved += res.rows_affected() as i64;
+        }
+
+        for table in Self::BOARD_OWNER_TABLES {
+            // `creator_name` is denormalized for display; move it with the id
+            // or the board shows the departed employee as the owner.
+            let res = sqlx::query(&format!(
+                "UPDATE {table} SET creator_id = ?, creator_name = ? WHERE creator_id = ?"
+            ))
+            .bind(to_user)
+            .bind(to_name.as_deref())
+            .bind(from_user)
+            .execute(&mut *tx)
+            .await?;
+            moved += res.rows_affected() as i64;
+        }
+
+        tx.commit().await?;
+        tracing::info!(
+            from_user,
+            to_user,
+            tenant_id,
+            moved,
+            "transferred team resource ownership"
+        );
+        Ok(moved)
+    }
+
+    /// Display name for a user id, for the denormalized `creator_name` columns.
+    /// A missing `users` table (standalone) or absent row just yields `None`.
+    async fn lookup_creator_name(&self, user_id: &str) -> Option<String> {
+        sqlx::query_scalar::<_, Option<String>>("SELECT username FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()
+            .flatten()
+    }
+
     // -- registry read ACL (P0-4 fine-grained RBAC) -----------------------
 
     /// WHERE fragment restricting registry reads for a non-privileged member:
@@ -894,6 +1058,13 @@ impl DevopsService {
     }
 
     pub async fn delete_rag_document(&self, id: &str) -> Result<(), DevopsError> {
+        // Drop the lexical rows FIRST: they are located through
+        // `one_rag_chunks`, so once the chunks are gone there is no way left to
+        // find them and the document's full text would sit in the FTS index
+        // forever. Retrieval would not surface it (the join filters orphans),
+        // but "deleted" has to mean the text is actually gone from disk.
+        crate::retrieval::delete_document(&self.pool, id).await?;
+
         let mut tx = self.pool.begin().await?;
         let deleted = sqlx::query("DELETE FROM one_rag_documents WHERE id = ?")
             .bind(id)
@@ -1141,12 +1312,14 @@ impl DevopsService {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        let mut lexical_rows: Vec<(String, String)> = Vec::with_capacity(chunks.len());
         for (idx, (chunk, vector)) in chunks.iter().zip(vectors.iter()).enumerate() {
+            let chunk_id = new_id("ragc");
             sqlx::query(
                 "INSERT INTO one_rag_chunks (id, document_id, chunk_index, content, embedding, created_at) \
                  VALUES (?, ?, ?, ?, ?, ?)",
             )
-            .bind(new_id("ragc"))
+            .bind(&chunk_id)
             .bind(id)
             .bind(idx as i64)
             .bind(chunk)
@@ -1154,6 +1327,7 @@ impl DevopsService {
             .bind(now)
             .execute(&mut *tx)
             .await?;
+            lexical_rows.push((chunk_id, chunk.clone()));
         }
         let count = chunks.len() as i64;
         sqlx::query("UPDATE one_rag_documents SET status = 'ready', last_error = NULL, chunk_count = ? WHERE id = ?")
@@ -1162,6 +1336,14 @@ impl DevopsService {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+
+        // The lexical index is derived, so it is refreshed only after the
+        // chunk rows commit. A failure here leaves the index stale, not the
+        // data wrong, and is recoverable by re-processing — hence a warning
+        // rather than failing the upload the user just waited on.
+        if let Err(e) = crate::retrieval::sync_document(&self.pool, id, &lexical_rows).await {
+            tracing::warn!(error = %e, document_id = id, "lexical index update failed; keyword search may be stale");
+        }
 
         if let Some(dims) = dims {
             let _ = sqlx::query("UPDATE one_rag_config SET dimensions = ? WHERE id = 'default'")
@@ -1172,7 +1354,26 @@ impl DevopsService {
         Ok(count)
     }
 
-    /// Embed the query and return the top-k chunks by cosine similarity.
+    /// Rebuild the lexical (BM25) index from the SQLite chunk table.
+    ///
+    /// Runs at startup for installs whose knowledge base predates hybrid
+    /// retrieval. Reads only text already in SQLite — no embedding calls, so it
+    /// costs nothing and works even with the embedding endpoint unreachable.
+    /// Self-skips once the index is populated, so it is safe on every boot.
+    pub async fn rebuild_lexical_index(&self) -> Result<usize, DevopsError> {
+        crate::retrieval::rebuild_index(&self.pool).await
+    }
+
+    /// Retrieve the top-k knowledge-base chunks visible to `viewer_user_id`.
+    ///
+    /// Hybrid: a dense-vector ranking (cosine over the stored embeddings) is
+    /// fused with a BM25 ranking from FTS5 using Reciprocal Rank Fusion. Dense
+    /// retrieval alone reliably misses rare literal tokens — error codes,
+    /// ticket ids, product names — which is most of what people actually type
+    /// into a company knowledge base.
+    ///
+    /// Both rankers apply the viewer's visibility predicate in SQL before
+    /// ranking, so an invisible document can never take a top-k slot.
     pub async fn search_rag(
         &self,
         viewer_user_id: &str,
@@ -1183,6 +1384,15 @@ impl DevopsService {
         if query.is_empty() {
             return Err(DevopsError::BadRequest("query is required".into()));
         }
+        let limit = top_k.max(1);
+        let privileged = self.viewer_is_privileged(viewer_user_id).await?;
+        let acl_predicate = if privileged {
+            None
+        } else {
+            Some(Self::member_visibility_where("d."))
+        };
+
+        // Dense half. The ACL lives in the join, exactly as before.
         let config = self.load_embedding_config().await?;
         let query_vec = crate::embedding::embed(&config, &[query.to_owned()])
             .await?
@@ -1190,38 +1400,80 @@ impl DevopsService {
             .next()
             .ok_or_else(|| DevopsError::Internal("empty query embedding".into()))?;
 
-        // ACL: a member only retrieves chunks of documents visible to them (org
-        // + their project groups, visibility='all'); admins/owner retrieve all.
-        // Enforced in the join so an invisible document's chunks never surface.
-        const BASE: &str = "SELECT c.document_id, c.chunk_index, c.content, c.embedding, d.title \
-                            FROM one_rag_chunks c JOIN one_rag_documents d ON d.id = c.document_id";
-        let privileged = self.viewer_is_privileged(viewer_user_id).await?;
-        let sql = if privileged {
-            BASE.to_string()
-        } else {
-            format!("{BASE} WHERE {}", Self::member_visibility_where("d."))
+        const BASE: &str = "SELECT c.id, c.document_id, c.chunk_index, c.content, c.embedding, d.title                             FROM one_rag_chunks c JOIN one_rag_documents d ON d.id = c.document_id";
+        let sql = match acl_predicate.as_deref() {
+            None => BASE.to_string(),
+            Some(predicate) => format!("{BASE} WHERE {predicate}"),
         };
-        let mut q = sqlx::query_as::<_, (String, i64, String, Vec<u8>, String)>(&sql);
-        if !privileged {
+        let mut q = sqlx::query_as::<_, (String, String, i64, String, Vec<u8>, String)>(&sql);
+        if acl_predicate.is_some() {
             q = q.bind(viewer_user_id);
         }
-        let rows: Vec<(String, i64, String, Vec<u8>, String)> = q.fetch_all(&self.pool).await?;
+        let rows: Vec<(String, String, i64, String, Vec<u8>, String)> = q.fetch_all(&self.pool).await?;
 
-        let mut hits: Vec<RagSearchHit> = rows
-            .into_iter()
-            .map(|(document_id, chunk_index, content, blob, document_title)| {
-                let score = crate::embedding::cosine_similarity(&query_vec, &crate::embedding::unpack_embedding(&blob));
-                RagSearchHit {
-                    document_id,
-                    document_title,
-                    chunk_index,
-                    content,
-                    score,
-                }
-            })
-            .collect();
-        hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        hits.truncate(top_k.max(1));
+        let mut by_id: HashMap<String, (RagSearchHit, f32)> = HashMap::with_capacity(rows.len());
+        let mut dense: Vec<(String, f32)> = Vec::with_capacity(rows.len());
+        for (chunk_id, document_id, chunk_index, content, blob, document_title) in rows {
+            let cosine = crate::embedding::cosine_similarity(&query_vec, &crate::embedding::unpack_embedding(&blob));
+            dense.push((chunk_id.clone(), cosine));
+            by_id.insert(
+                chunk_id,
+                (
+                    RagSearchHit {
+                        document_id,
+                        document_title,
+                        chunk_index,
+                        content,
+                        score: cosine,
+                    },
+                    cosine,
+                ),
+            );
+        }
+        dense.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let candidates = crate::retrieval::candidate_limit(limit);
+        let dense_ranked: Vec<String> = dense.into_iter().take(candidates).map(|(id, _)| id).collect();
+
+        // Lexical half. Best-effort: with FTS5 absent or the query unparseable
+        // this returns empty and the result degrades to dense-only.
+        let lexical_ranked: Vec<String> = crate::retrieval::lexical_candidates(
+            &self.pool,
+            query,
+            acl_predicate.as_deref(),
+            viewer_user_id,
+            candidates,
+        )
+        .await?
+        .into_iter()
+        .map(|hit| hit.chunk_id)
+        .collect();
+
+        if lexical_ranked.is_empty() {
+            // Nothing to fuse — keep the dense scores, which callers already
+            // threshold on (e.g. the task-dispatch injection uses >= 0.35).
+            let mut hits: Vec<RagSearchHit> = dense_ranked
+                .into_iter()
+                .filter_map(|id| by_id.remove(&id).map(|(hit, _)| hit))
+                .collect();
+            hits.truncate(limit);
+            return Ok(hits);
+        }
+
+        let mut hits = Vec::with_capacity(limit);
+        for (chunk_id, _fused_score) in crate::retrieval::rrf_fuse(&dense_ranked, &lexical_ranked) {
+            let Some((hit, cosine)) = by_id.remove(&chunk_id) else {
+                // A lexical hit whose chunk the dense query did not return —
+                // only possible if the two queries raced a concurrent write.
+                continue;
+            };
+            // Report the cosine, not the RRF score: RRF values are tiny
+            // rank-derived numbers with no absolute meaning, and callers
+            // threshold `score` as a similarity.
+            hits.push(RagSearchHit { score: cosine, ..hit });
+            if hits.len() >= limit {
+                break;
+            }
+        }
         Ok(hits)
     }
 
@@ -2475,6 +2727,51 @@ mod tests {
         // Delete plan cascades to remaining cases
         svc.delete_test_plan(&plan.id).await.unwrap();
         assert!(svc.list_test_plans().await.unwrap().is_empty());
+    }
+
+    /// Deleting a knowledge-base document must also erase its text from the
+    /// lexical index. Retrieval already filters orphaned FTS rows out via the
+    /// join, so this is about data retention rather than leakage: a document
+    /// the operator deleted must not leave its full text sitting on disk.
+    #[tokio::test]
+    async fn deleting_a_rag_document_erases_its_lexical_rows() {
+        let svc = service().await;
+        let doc = svc
+            .register_rag_document("Confidential", None, None, None, "org", None, "all", "admin1")
+            .await
+            .unwrap();
+
+        // Stand in for `process_rag_document`, whose embedding call needs a
+        // live endpoint: write the chunk and its lexical mirror directly.
+        sqlx::query(
+            "INSERT INTO one_rag_chunks (id, document_id, chunk_index, content, embedding, created_at) \
+             VALUES ('c1', ?, 0, 'the merger closes on the third of March', X'', 0)",
+        )
+        .bind(&doc.id)
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+        crate::retrieval::sync_document(
+            &svc.pool,
+            &doc.id,
+            &[("c1".to_string(), "the merger closes on the third of March".to_string())],
+        )
+        .await
+        .unwrap();
+
+        let indexed = || async {
+            sqlx::query_scalar::<_, i64>(&format!(
+                "SELECT COUNT(*) FROM {} WHERE content MATCH '\"merger\"'",
+                crate::retrieval::FTS_TABLE
+            ))
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap()
+        };
+        assert_eq!(indexed().await, 1, "precondition: the text is in the lexical index");
+
+        svc.delete_rag_document(&doc.id).await.unwrap();
+        assert_eq!(indexed().await, 0, "deleted document text must not remain on disk");
     }
 
     #[tokio::test]
