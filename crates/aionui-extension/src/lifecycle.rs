@@ -81,6 +81,15 @@ fn build_hook_command(script: &Path) -> Result<CmdBuilder, String> {
                 "this hook is a shell script but no POSIX shell (bash/sh) was found on PATH".to_owned()
             })?;
             let mut builder = CmdBuilder::clean_cli(shell);
+            // The POSIX shells available on Windows (Git for Windows / MSYS2)
+            // re-parse the raw command line with POSIX escaping rules, so the
+            // backslashes in `C:\Users\…\hook.sh` are consumed as escapes and
+            // the script name arrives as `C:Users…`. Measured on a real run:
+            // `/bin/bash: C:Usersallenzhao…: No such file or directory`.
+            // Forward slashes are accepted just as well and survive that pass.
+            #[cfg(windows)]
+            builder.arg(script.to_string_lossy().replace('\\', "/"));
+            #[cfg(not(windows))]
             builder.arg(script);
             Ok(builder)
         }
@@ -100,8 +109,8 @@ fn build_hook_command(script: &Path) -> Result<CmdBuilder, String> {
 /// Locate a POSIX shell to run `.sh` hooks with.
 ///
 /// Unix always has `/bin/sh`. On Windows this depends on whatever the user has
-/// installed (Git for Windows ships `bash.exe`); when nothing is found the
-/// caller reports that rather than failing with an opaque OS error.
+/// installed; when nothing is found the caller reports that rather than
+/// failing with an opaque OS error.
 fn posix_shell() -> Option<std::path::PathBuf> {
     #[cfg(unix)]
     {
@@ -109,8 +118,31 @@ fn posix_shell() -> Option<std::path::PathBuf> {
     }
     #[cfg(not(unix))]
     {
-        aionui_runtime::resolve_command_path("bash").or_else(|| aionui_runtime::resolve_command_path("sh"))
+        // `sh` first: on Windows that name is only ever supplied by a real
+        // POSIX toolchain (Git for Windows / MSYS2). `bash` is riskier —
+        // it commonly resolves to
+        // `%LOCALAPPDATA%\Microsoft\WindowsApps\bash.exe`, which is the WSL
+        // launcher, not a Windows-side shell. WSL runs in its own filesystem
+        // namespace (`/mnt/c/...`), so the Windows path we hand it comes back
+        // as "No such file or directory" — measured on a real run before this
+        // ordering was in place.
+        aionui_runtime::resolve_command_path("sh")
+            .or_else(|| aionui_runtime::resolve_command_path("bash").filter(|path| !is_wsl_launcher(path)))
     }
+}
+
+/// Whether a resolved executable is a Microsoft Store execution alias.
+///
+/// Everything under `WindowsApps` is an alias stub; for `bash` that stub is
+/// the WSL launcher, which cannot accept Windows-side paths.
+#[cfg(not(unix))]
+fn is_wsl_launcher(path: &Path) -> bool {
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case("WindowsApps")
+    })
 }
 
 /// Execute a lifecycle hook script in a child process.
@@ -338,6 +370,21 @@ mod tests {
             on_uninstall: None,
         };
         assert_eq!(resolve_hook_path(&hooks, HookKind::OnInstall), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // posix_shell
+    // -----------------------------------------------------------------------
+
+    #[cfg(windows)]
+    #[test]
+    fn wsl_launcher_stub_is_not_treated_as_a_posix_shell() {
+        // The Store execution alias for `bash` is the WSL launcher; handing it
+        // a Windows path fails, so it must never be picked as the hook shell.
+        assert!(is_wsl_launcher(Path::new(
+            r"C:\Users\someone\AppData\Local\Microsoft\WindowsApps\bash.exe"
+        )));
+        assert!(!is_wsl_launcher(Path::new(r"C:\Program Files\Git\usr\bin\sh.exe")));
     }
 
     // -----------------------------------------------------------------------
