@@ -193,7 +193,15 @@ async fn orphan_folder_is_adopted_on_next_create() {
 #[tokio::test]
 async fn create_standard_missing_dir_is_folder_not_found() {
     let (svc, _db) = service().await;
-    let missing = uri_of(std::path::Path::new("/nonexistent-aionui-xyz-8f3a2b1c"));
+    // Must be absolute *and* valid for the host platform: a drive-less path
+    // like `/nonexistent` is not a Windows path, so `to_file_uri` fails there
+    // and the test would assert on the wrong error.
+    let missing_path = if cfg!(windows) {
+        std::path::PathBuf::from(r"C:\nonexistent-aionui-xyz-8f3a2b1c")
+    } else {
+        std::path::PathBuf::from("/nonexistent-aionui-xyz-8f3a2b1c")
+    };
+    let missing = uri_of(&missing_path);
     let err = svc.create_standard(missing).await.unwrap_err();
     assert_eq!(err.code(), "folder_not_found");
 }
