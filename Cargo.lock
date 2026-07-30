@@ -117,6 +117,7 @@ dependencies = [
 [[package]]
 name = "aion-agent"
 version = "0.2.8"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#8bb0e0bb72e467372730b47235b0c9bb3464e6de"
 dependencies = [
  "aion-compact",
  "aion-config",
@@ -147,6 +148,7 @@ dependencies = [
 [[package]]
 name = "aion-compact"
 version = "0.2.8"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#8bb0e0bb72e467372730b47235b0c9bb3464e6de"
 dependencies = [
  "regex",
  "serde",
@@ -158,6 +160,7 @@ dependencies = [
 [[package]]
 name = "aion-config"
 version = "0.2.8"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#8bb0e0bb72e467372730b47235b0c9bb3464e6de"
 dependencies = [
  "aion-compact",
  "aion-process",
@@ -182,6 +185,7 @@ dependencies = [
 [[package]]
 name = "aion-mcp"
 version = "0.2.8"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#8bb0e0bb72e467372730b47235b0c9bb3464e6de"
 dependencies = [
  "aion-config",
  "aion-protocol",
@@ -202,6 +206,7 @@ dependencies = [
 [[package]]
 name = "aion-memory"
 version = "0.2.8"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#8bb0e0bb72e467372730b47235b0c9bb3464e6de"
 dependencies = [
  "aion-config",
  "chrono",
@@ -215,6 +220,7 @@ dependencies = [
 [[package]]
 name = "aion-process"
 version = "0.2.8"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#8bb0e0bb72e467372730b47235b0c9bb3464e6de"
 dependencies = [
  "libc",
  "tokio",
@@ -225,6 +231,7 @@ dependencies = [
 [[package]]
 name = "aion-protocol"
 version = "0.2.8"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#8bb0e0bb72e467372730b47235b0c9bb3464e6de"
 dependencies = [
  "aion-types",
  "serde",
@@ -237,6 +244,7 @@ dependencies = [
 [[package]]
 name = "aion-providers"
 version = "0.2.8"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#8bb0e0bb72e467372730b47235b0c9bb3464e6de"
 dependencies = [
  "aion-config",
  "aion-types",
@@ -250,7 +258,7 @@ dependencies = [
  "chrono",
  "dirs",
  "futures",
- "http 1.4.2",
+ "http 1.5.0",
  "jsonwebtoken 10.4.0",
  "reqwest",
  "serde",
@@ -265,6 +273,7 @@ dependencies = [
 [[package]]
 name = "aion-skills"
 version = "0.2.8"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#8bb0e0bb72e467372730b47235b0c9bb3464e6de"
 dependencies = [
  "aion-config",
  "aion-mcp",
@@ -291,6 +300,7 @@ dependencies = [
 [[package]]
 name = "aion-tools"
 version = "0.2.8"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#8bb0e0bb72e467372730b47235b0c9bb3464e6de"
 dependencies = [
  "aion-config",
  "aion-process",
@@ -312,6 +322,7 @@ dependencies = [
 [[package]]
 name = "aion-types"
 version = "0.2.8"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#8bb0e0bb72e467372730b47235b0c9bb3464e6de"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -353,7 +364,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.2.17",
  "hex",
- "http 1.4.2",
+ "http 1.5.0",
  "libc",
  "regex",
  "rusqlite",
@@ -454,7 +465,7 @@ version = "0.1.53-one.1"
 dependencies = [
  "aionui-common",
  "axum",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body-util",
  "mime_guess",
  "rust-embed",
@@ -533,7 +544,7 @@ dependencies = [
  "prost",
  "regex",
  "reqwest",
- "rustls 0.23.42",
+ "rustls 0.23.43",
  "rustls-native-certs 0.8.4",
  "serde",
  "serde_json",
@@ -902,7 +913,7 @@ dependencies = [
  "http-body-util",
  "open",
  "reqwest",
- "rustls 0.23.42",
+ "rustls 0.23.43",
  "rustls-native-certs 0.8.4",
  "serde",
  "serde_json",
@@ -1187,7 +1198,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "hex",
- "http 1.4.2",
+ "http 1.5.0",
  "sha1",
  "time",
  "tokio",
@@ -1248,7 +1259,7 @@ dependencies = [
  "bytes",
  "bytes-utils",
  "fastrand",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "percent-encoding",
  "pin-project-lite",
@@ -1277,7 +1288,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "regex-lite",
  "tracing",
 ]
@@ -1303,7 +1314,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "regex-lite",
  "tracing",
 ]
@@ -1329,7 +1340,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "regex-lite",
  "tracing",
 ]
@@ -1356,7 +1367,7 @@ dependencies = [
  "aws-types",
  "fastrand",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "regex-lite",
  "tracing",
 ]
@@ -1377,7 +1388,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "p256",
  "percent-encoding",
  "sha2 0.11.0",
@@ -1410,7 +1421,7 @@ dependencies = [
  "bytes-utils",
  "futures-core",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "percent-encoding",
@@ -1429,12 +1440,12 @@ dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "h2",
- "http 1.4.2",
+ "http 1.5.0",
  "hyper",
  "hyper-rustls",
  "hyper-util",
  "pin-project-lite",
- "rustls 0.23.42",
+ "rustls 0.23.43",
  "rustls-native-certs 0.8.4",
  "rustls-pki-types",
  "tokio",
@@ -1492,7 +1503,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 0.4.6",
  "http-body 1.1.0",
  "http-body-util",
@@ -1513,7 +1524,7 @@ dependencies = [
  "aws-smithy-types",
  "bytes",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "pin-project-lite",
  "tokio",
  "tracing",
@@ -1539,7 +1550,7 @@ checksum = "7d56e0a4e53127a632224e43633b0fe045fa9e1e3cfc68b9830f1115e103f910"
 dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-types",
- "http 1.4.2",
+ "http 1.5.0",
 ]
 
 [[package]]
@@ -1553,7 +1564,7 @@ dependencies = [
  "bytes-utils",
  "futures-core",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 0.4.6",
  "http-body 1.1.0",
  "http-body-util",
@@ -1606,7 +1617,7 @@ dependencies = [
  "bytes",
  "form_urlencoded",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "hyper",
@@ -1640,7 +1651,7 @@ checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
 dependencies = [
  "bytes",
  "futures-core",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "mime",
@@ -2957,7 +2968,7 @@ dependencies = [
  "fnv",
  "futures-core",
  "futures-sink",
- "http 1.4.2",
+ "http 1.5.0",
  "indexmap 2.14.0",
  "slab",
  "tokio",
@@ -3087,9 +3098,9 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "1.4.2"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6970f50e31d6fc17d3fa27329444bfa74e196cf62e95052a3f6fee181dba6425"
+checksum = "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0"
 dependencies = [
  "bytes",
  "itoa",
@@ -3113,7 +3124,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c"
 dependencies = [
  "bytes",
- "http 1.4.2",
+ "http 1.5.0",
 ]
 
 [[package]]
@@ -3124,7 +3135,7 @@ checksum = "e9f41fd6a08e4d4ec69df65976da761afd5ad5e58a9d4acb46bd1c953a9e3ff2"
 dependencies = [
  "bytes",
  "futures-core",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "pin-project-lite",
 ]
@@ -3161,7 +3172,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "h2",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "httparse",
  "httpdate",
@@ -3178,10 +3189,10 @@ version = "0.27.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
 dependencies = [
- "http 1.4.2",
+ "http 1.5.0",
  "hyper",
  "hyper-util",
- "rustls 0.23.42",
+ "rustls 0.23.43",
  "rustls-native-certs 0.8.4",
  "tokio",
  "tokio-rustls 0.26.4",
@@ -3199,7 +3210,7 @@ dependencies = [
  "bytes",
  "futures-channel",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "hyper",
  "ipnet",
@@ -3840,7 +3851,7 @@ dependencies = [
  "bytes",
  "encoding_rs",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "httparse",
  "memchr",
  "mime",
@@ -3974,7 +3985,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "getrandom 0.2.17",
- "http 1.4.2",
+ "http 1.5.0",
  "rand 0.8.7",
  "reqwest",
  "serde",
@@ -4486,7 +4497,7 @@ dependencies = [
  "quinn-proto",
  "quinn-udp",
  "rustc-hash",
- "rustls 0.23.42",
+ "rustls 0.23.43",
  "socket2",
  "thiserror 2.0.19",
  "tokio",
@@ -4507,7 +4518,7 @@ dependencies = [
  "rand_pcg",
  "ring 0.17.14",
  "rustc-hash",
- "rustls 0.23.42",
+ "rustls 0.23.43",
  "rustls-pki-types",
  "slab",
  "thiserror 2.0.19",
@@ -4739,7 +4750,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "hyper",
@@ -4751,7 +4762,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "quinn",
- "rustls 0.23.42",
+ "rustls 0.23.43",
  "rustls-native-certs 0.8.4",
  "rustls-pki-types",
  "serde",
@@ -4975,9 +4986,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.42"
+version = "0.23.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"
+checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -5965,13 +5976,13 @@ dependencies = [
 
 [[package]]
 name = "tokio-macros"
-version = "2.7.1"
+version = "2.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6328af13490e73a9b4694030fafd93f8c8c6a9dede33e821c3fc63eddf8042ba"
+checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -5990,7 +6001,7 @@ version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
- "rustls 0.23.42",
+ "rustls 0.23.43",
  "tokio",
 ]
 
@@ -6013,7 +6024,7 @@ checksum = "7a9daff607c6d2bf6c16fd681ccb7eecc83e4e2cdc1ca067ffaadfca5de7f084"
 dependencies = [
  "futures-util",
  "log",
- "rustls 0.23.42",
+ "rustls 0.23.43",
  "rustls-native-certs 0.8.4",
  "rustls-pki-types",
  "tokio",
@@ -6153,7 +6164,7 @@ dependencies = [
  "bitflags",
  "bytes",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "pin-project-lite",
@@ -6278,11 +6289,11 @@ checksum = "4793cb5e56680ecbb1d843515b23b6de9a75eb04b66643e256a396d43be33c13"
 dependencies = [
  "bytes",
  "data-encoding",
- "http 1.4.2",
+ "http 1.5.0",
  "httparse",
  "log",
  "rand 0.9.5",
- "rustls 0.23.42",
+ "rustls 0.23.43",
  "rustls-pki-types",
  "sha1",
  "thiserror 2.0.19",
@@ -6297,7 +6308,7 @@ checksum = "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8"
 dependencies = [
  "bytes",
  "data-encoding",
- "http 1.4.2",
+ "http 1.5.0",
  "httparse",
  "log",
  "rand 0.9.5",
@@ -7007,7 +7018,7 @@ dependencies = [
  "base64 0.22.1",
  "deadpool",
  "futures",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -7029,6 +7040,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 [[package]]
 name = "workspace-hack"
 version = "0.1.0"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#8bb0e0bb72e467372730b47235b0c9bb3464e6de"
 dependencies = [
  "bitflags",
  "cc",
@@ -7052,7 +7064,7 @@ dependencies = [
  "regex-automata",
  "regex-syntax",
  "rustix",
- "rustls 0.23.42",
+ "rustls 0.23.43",
  "rustls-webpki 0.103.13",
  "serde_core",
  "slab",

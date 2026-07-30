@@ -231,17 +231,3 @@ debug = "line-tables-only"
 split-debuginfo = "unpacked"
 incremental = false
 
-# TEMPORARY (2026-07-29 upstream sync, remove before final push): aionrs Phase 1
-# sync (merge commit 8bb0e0b on aionrs-local master) hasn't been pushed to
-# gaogg521/aionrs yet, so the git deps above still resolve to the pre-sync
-# commit. Patch to the local worktree so this workspace builds/tests against
-# the actual merged aionrs code. Once aionrs is pushed, delete this section and
-# run `cargo update -p aion-mcp` (or similar) against the real remote commit.
-[patch."https://github.com/gaogg521/aionrs.git"]
-aion-agent = { path = "../aionrs-local/crates/aion-agent" }
-aion-providers = { path = "../aionrs-local/crates/aion-providers" }
-aion-types = { path = "../aionrs-local/crates/aion-types" }
-aion-protocol = { path = "../aionrs-local/crates/aion-protocol" }
-aion-config = { path = "../aionrs-local/crates/aion-config" }
-aion-mcp = { path = "../aionrs-local/crates/aion-mcp" }
-
