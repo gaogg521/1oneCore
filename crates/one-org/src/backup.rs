@@ -462,4 +462,39 @@ mod tests {
             .unwrap();
         assert_eq!(name, "Group One");
     }
+
+    /// The bundle is deployment-wide, not per-project-group — it deliberately
+    /// carries every tenant's rows so a restore can rebuild the whole
+    /// deployment.
+    ///
+    /// That is exactly why the route must be gated on `RequireSystemAdmin`
+    /// rather than `RequireOrgAdmin`: an org_admin only administers their own
+    /// group, so exposing this to them would hand group A's admin the full
+    /// roster of group B. This test pins the scope so nobody "fixes" the guard
+    /// back down without noticing what the payload actually contains.
+    #[tokio::test]
+    async fn bundle_spans_every_tenant_not_just_the_callers() {
+        let pool = pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO one_tenants (id, name) VALUES ('t1', 'Group One');
+             INSERT INTO one_tenants (id, name) VALUES ('t2', 'Group Two');
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('a', 't1', 'org_admin');
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('b', 't2', 'member');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Exported *as* t1's admin — yet t2's rows are in the bundle.
+        let bundle = export_bundle(&pool, "t1", 0).await.unwrap();
+        let tenant_ids: Vec<&str> = bundle.tables["one_tenants"]
+            .iter()
+            .filter_map(|row| row["id"].as_str())
+            .collect();
+        assert!(
+            tenant_ids.contains(&"t1") && tenant_ids.contains(&"t2"),
+            "backup is deployment-wide, so it must not be reachable by a mere org_admin"
+        );
+        assert_eq!(bundle.tables["one_user_org"].len(), 2);
+    }
 }

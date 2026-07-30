@@ -19,7 +19,7 @@ use crate::models::{
     MyTenantDto, OrgContextDto, ResetLocalResult, RuntimeNodeDto, SmtpConfigDto, TenantSummaryDto,
     is_enterprise_tenant_id, is_system_admin_role,
 };
-use crate::rbac::{OrgActor, RequireOrgAdmin};
+use crate::rbac::{OrgActor, RequireOrgAdmin, RequireSystemAdmin};
 use crate::state::OneOrgRouterState;
 
 pub fn one_org_routes(state: OneOrgRouterState) -> Router {
@@ -761,18 +761,32 @@ async fn admin_set_user_role(
 /// Secrets are stripped inside `backup::export_bundle` — this endpoint hands the
 /// operator a file, so it must never be a credential-exfiltration path even for
 /// a legitimate admin.
+///
+/// # Why system_admin and not org_admin
+///
+/// The bundle spans the **whole deployment**: every project group's members,
+/// invites and departments, plus the company licence and SSO wiring. An
+/// `org_admin` only administers their own project group, so gating this on
+/// `RequireOrgAdmin` would let the admin of group A walk away with group B's
+/// roster — a privilege escalation dressed up as a backup. The guard has to
+/// match the data's scope, and deployment-wide data means the deployment's
+/// system administrator.
 async fn admin_export_backup(
     State(state): State<OneOrgRouterState>,
-    RequireOrgAdmin(actor): RequireOrgAdmin,
+    RequireSystemAdmin(actor): RequireSystemAdmin,
 ) -> Result<Json<ApiResponse<crate::backup::BackupBundle>>, OrgError> {
     let bundle = state.service.export_backup(&actor.tenant_id, &actor.user_id).await?;
     Ok(Json(ApiResponse::ok(bundle)))
 }
 
 /// Restore a bundle produced by the export endpoint.
+///
+/// Same reasoning as the export above, and then some: a restore *overwrites*
+/// deployment-wide rows, so a group admin could otherwise rewrite another
+/// group's membership.
 async fn admin_import_backup(
     State(state): State<OneOrgRouterState>,
-    RequireOrgAdmin(actor): RequireOrgAdmin,
+    RequireSystemAdmin(actor): RequireSystemAdmin,
     Json(bundle): Json<crate::backup::BackupBundle>,
 ) -> Result<Json<ApiResponse<crate::backup::ImportReport>>, OrgError> {
     let report = state
