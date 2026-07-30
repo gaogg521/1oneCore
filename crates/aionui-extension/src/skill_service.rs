@@ -1036,18 +1036,25 @@ async fn replace_existing_path(path: &Path) -> Result<(), ExtensionError> {
     };
 
     if metadata.file_type().is_symlink() {
-        // A Windows *directory* link (junction, or a privileged symlink_dir) is
-        // a directory-flavoured reparse point: `remove_file` rejects it with
-        // ERROR_ACCESS_DENIED (os error 5), and `remove_dir_all` would try to
-        // walk a target that may no longer exist. `remove_dir` unlinks the
-        // reparse point itself without touching the target, which is what we
-        // want — this is also the path a dangling link from a deleted source
-        // takes, where every other primitive fails.
+        // A Windows *directory* link (a junction, which is what `create_symlink`
+        // makes here, or a privileged symlink_dir) is a directory-flavoured
+        // reparse point: `remove_file` rejects it with ERROR_ACCESS_DENIED
+        // (os error 5) and only `remove_dir` unlinks it — without following the
+        // link, so it works even when the target is gone. A link to a *file* is
+        // the exact opposite.
+        //
+        // The two cannot be told apart up front: `Metadata::is_dir()` is false
+        // for *any* link on Windows (measured on a dangling junction:
+        // `is_symlink=true, is_dir=false, file_type().is_dir()=false`), so
+        // branching on it silently never fires. Try one form and fall back.
         #[cfg(windows)]
-        if metadata.is_dir() {
-            tokio::fs::remove_dir(path).await?;
-            return Ok(());
+        {
+            return match tokio::fs::remove_file(path).await {
+                Ok(()) => Ok(()),
+                Err(_) => tokio::fs::remove_dir(path).await.map_err(Into::into),
+            };
         }
+        #[cfg(not(windows))]
         tokio::fs::remove_file(path).await?;
     } else if metadata.is_file() {
         tokio::fs::remove_file(path).await?;
@@ -2874,8 +2881,8 @@ mod tests {
 
         let outcome = import_skills(&paths, &fresh_source).await.unwrap();
 
-        assert_eq!(outcome.imported, vec!["dangling"]);
-        assert!(outcome.failed.is_empty());
+        assert_eq!(outcome.imported, vec!["dangling"], "outcome: {outcome:?}");
+        assert!(outcome.failed.is_empty(), "outcome: {outcome:?}");
         assert!(!target.is_symlink());
         assert!(target.join(SKILL_MANIFEST_FILE).exists());
         assert!(

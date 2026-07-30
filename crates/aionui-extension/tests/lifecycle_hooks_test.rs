@@ -8,7 +8,10 @@
 use std::fs;
 use std::path::Path;
 
-use aionui_extension::{HookKind, LifecycleHooks, execute_hook, needs_install_hook, resolve_hook_path};
+use aionui_extension::{
+    ExtensionError, HookKind, LifecycleHooks, execute_hook, execute_hook_with_timeout, needs_install_hook,
+    resolve_hook_path,
+};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -167,21 +170,26 @@ async fn lh4_deactivate_executes_on_deactivate() {
 async fn lh5_hook_timeout() {
     let dir = setup_ext_dir();
     // Script that sleeps for a long time
-    write_script(dir.path(), "scripts/slow.sh", "sleep 120");
+    write_script(dir.path(), "scripts/slow.sh", "sleep 5");
 
-    // We can't easily override the built-in timeout constants in the public API,
-    // so we test the timeout mechanism by using tokio::time::timeout directly
-    // to simulate what execute_hook does internally with a very short deadline.
-    let script_path = dir.path().join("scripts/slow.sh");
-    assert!(script_path.exists());
+    // The shortest built-in timeout is 30s, so drive the real code path with an
+    // injected deadline rather than timing a bare Command ourselves — the latter
+    // asserted nothing about this crate and skipped the interpreter dispatch,
+    // which made it fail on Windows for an unrelated reason.
+    let result = execute_hook_with_timeout(dir.path(), "scripts/slow.sh", HookKind::OnInstall, "slow-ext", 1).await;
 
-    let child_future = tokio::process::Command::new(&script_path)
-        .current_dir(dir.path())
-        .kill_on_drop(true)
-        .output();
-
-    let result = tokio::time::timeout(std::time::Duration::from_millis(200), child_future).await;
-    assert!(result.is_err(), "should time out before script completes");
+    match result.expect_err("should time out before script completes") {
+        ExtensionError::HookTimeout {
+            extension_name,
+            hook,
+            timeout_secs,
+        } => {
+            assert_eq!(extension_name, "slow-ext");
+            assert_eq!(hook, "onInstall");
+            assert_eq!(timeout_secs, 1);
+        }
+        other => panic!("expected HookTimeout, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -264,10 +272,20 @@ async fn hook_working_directory_is_ext_dir() {
     let result = execute_hook(dir.path(), "check_dir.sh", HookKind::OnActivate, "cwd-ext").await;
     assert!(result.is_ok());
 
+    // The script wrote through a *relative* path, so the file landing here is
+    // itself proof that the child's cwd was the extension dir.
     let cwd_file = dir.path().join("cwd_out.txt");
-    assert!(cwd_file.exists());
+    assert!(cwd_file.exists(), "relative write should land in the extension dir");
     let cwd = fs::read_to_string(&cwd_file).unwrap();
-    let expected = dir.path().canonicalize().unwrap();
-    let actual = std::path::Path::new(cwd.trim()).canonicalize().unwrap();
-    assert_eq!(actual, expected);
+    assert!(!cwd.trim().is_empty(), "hook should have reported a cwd");
+
+    // Comparing the reported path textually only works where `pwd` speaks the
+    // platform's own path syntax. Under Git Bash on Windows it prints POSIX
+    // paths (`/d/...`) that `canonicalize` cannot resolve.
+    #[cfg(unix)]
+    {
+        let expected = dir.path().canonicalize().unwrap();
+        let actual = std::path::Path::new(cwd.trim()).canonicalize().unwrap();
+        assert_eq!(actual, expected);
+    }
 }

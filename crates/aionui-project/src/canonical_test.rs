@@ -122,7 +122,18 @@ fn fs_path_roundtrips_canonical() {
 #[test]
 fn to_file_uri_does_not_fold_casing() {
     // to_file_uri is raw capture, not identity: casing is preserved.
-    let input = if cfg!(windows) { r"C:\Users\Me\Aion" } else { "/Users/Me/Aion" };
+    let input = if cfg!(windows) {
+        r"C:\Users\Me\Aion"
+    } else {
+        "/Users/Me/Aion"
+    };
     let captured = to_file_uri(std::path::Path::new(input)).unwrap();
-    assert_eq!(captured, if cfg!(windows) { "file:///C:/Users/Me/Aion" } else { "file:///Users/Me/Aion" });
+    assert_eq!(
+        captured,
+        if cfg!(windows) {
+            "file:///C:/Users/Me/Aion"
+        } else {
+            "file:///Users/Me/Aion"
+        }
+    );
 }

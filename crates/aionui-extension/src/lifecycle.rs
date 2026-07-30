@@ -52,6 +52,67 @@ pub fn resolve_hook_path(hooks: &LifecycleHooks, kind: HookKind) -> Option<&str>
     value.filter(|s| !s.is_empty())
 }
 
+/// Build the child-process command for a hook script.
+///
+/// Scripts are dispatched to an interpreter by file extension instead of being
+/// spawned directly, because a direct spawn is unreliable on every platform:
+///
+/// - `.sh` / `.bash`: Windows' `CreateProcess` refuses a shell script outright
+///   (`ERROR_BAD_EXE_FORMAT`, os error 193), so hooks written as shell scripts
+///   never ran there at all. On Unix a direct spawn needs the executable bit,
+///   which archive-based extension distribution routinely strips.
+/// - `.ps1`: PowerShell will not run a script file passed as the program
+///   either — it has to come in through `-File`.
+///
+/// Anything else (native binaries, `.cmd`/`.bat`, extensionless files carrying
+/// a shebang) is spawned directly, as before.
+///
+/// Returns `Err(reason)` when the required interpreter is not installed; the
+/// caller turns that into a `HookFailed` carrying the extension context.
+fn build_hook_command(script: &Path) -> Result<CmdBuilder, String> {
+    let extension = script
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase);
+
+    match extension.as_deref() {
+        Some("sh") | Some("bash") => {
+            let shell = posix_shell().ok_or_else(|| {
+                "this hook is a shell script but no POSIX shell (bash/sh) was found on PATH".to_owned()
+            })?;
+            let mut builder = CmdBuilder::clean_cli(shell);
+            builder.arg(script);
+            Ok(builder)
+        }
+        Some("ps1") => {
+            let powershell = aionui_runtime::resolve_command_path("powershell")
+                .or_else(|| aionui_runtime::resolve_command_path("pwsh"))
+                .ok_or_else(|| "this hook is a PowerShell script but PowerShell was not found on PATH".to_owned())?;
+            let mut builder = CmdBuilder::clean_cli(powershell);
+            builder.args(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+            builder.arg(script);
+            Ok(builder)
+        }
+        _ => Ok(CmdBuilder::clean_cli(script)),
+    }
+}
+
+/// Locate a POSIX shell to run `.sh` hooks with.
+///
+/// Unix always has `/bin/sh`. On Windows this depends on whatever the user has
+/// installed (Git for Windows ships `bash.exe`); when nothing is found the
+/// caller reports that rather than failing with an opaque OS error.
+fn posix_shell() -> Option<std::path::PathBuf> {
+    #[cfg(unix)]
+    {
+        return Some(std::path::PathBuf::from("/bin/sh"));
+    }
+    #[cfg(not(unix))]
+    {
+        aionui_runtime::resolve_command_path("bash").or_else(|| aionui_runtime::resolve_command_path("sh"))
+    }
+}
+
 /// Execute a lifecycle hook script in a child process.
 ///
 /// - `ext_dir`: absolute path to the extension root directory (used as cwd).
@@ -67,6 +128,24 @@ pub async fn execute_hook(
     kind: HookKind,
     extension_name: &str,
 ) -> Result<(), ExtensionError> {
+    execute_hook_with_timeout(ext_dir, hook_path, kind, extension_name, kind.timeout_secs()).await
+}
+
+/// Same as [`execute_hook`], but with an explicit timeout instead of the one
+/// implied by `kind`.
+///
+/// Exists so the timeout path can be exercised for real: the shortest built-in
+/// timeout is 30s, so tests previously reached around `execute_hook` and
+/// timed a bare `tokio::process::Command` themselves — which asserted nothing
+/// about this module and skipped the interpreter dispatch in
+/// [`build_hook_command`] entirely.
+pub async fn execute_hook_with_timeout(
+    ext_dir: &Path,
+    hook_path: &str,
+    kind: HookKind,
+    extension_name: &str,
+    timeout_secs: u64,
+) -> Result<(), ExtensionError> {
     let script = ext_dir.join(hook_path);
 
     if !script.exists() {
@@ -79,7 +158,6 @@ pub async fn execute_hook(
         return Err(ExtensionError::HookNotFound(script.display().to_string()));
     }
 
-    let timeout_secs = kind.timeout_secs();
     let label = kind.label();
 
     info!(
@@ -90,7 +168,20 @@ pub async fn execute_hook(
         "executing lifecycle hook"
     );
 
-    let mut builder = CmdBuilder::clean_cli(&script);
+    let mut builder = build_hook_command(&script).map_err(|reason| {
+        warn!(
+            extension = extension_name,
+            hook = label,
+            path = %script.display(),
+            reason = %reason,
+            "lifecycle hook interpreter unavailable"
+        );
+        ExtensionError::HookFailed {
+            extension_name: extension_name.to_owned(),
+            hook: label.to_owned(),
+            reason,
+        }
+    })?;
     builder.current_dir(ext_dir);
     let child_future = builder.output();
 
@@ -169,7 +260,6 @@ pub fn needs_install_hook(current_version: &str, persisted_version: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::process::Command;
 
     // -----------------------------------------------------------------------
     // needs_install_hook
@@ -315,7 +405,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let script_path = dir.path().join("slow.sh");
         // Script that sleeps longer than we allow
-        std::fs::write(&script_path, "#!/bin/sh\nsleep 60\n").unwrap();
+        std::fs::write(&script_path, "#!/bin/sh\nsleep 5\n").unwrap();
 
         #[cfg(unix)]
         {
@@ -323,18 +413,23 @@ mod tests {
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        // Use a very short timeout override via a direct timeout wrapper
-        let ext_dir = dir.path().to_owned();
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            Command::new(ext_dir.join("slow.sh"))
-                .current_dir(&ext_dir)
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await;
+        // Drive the real code path with an injected deadline instead of timing a
+        // bare Command, which bypassed both the interpreter dispatch and every
+        // assertion this module owns.
+        let result = execute_hook_with_timeout(dir.path(), "slow.sh", HookKind::OnActivate, "test-ext", 1).await;
 
-        assert!(result.is_err(), "should have timed out");
+        match result.expect_err("should have timed out") {
+            ExtensionError::HookTimeout {
+                extension_name,
+                hook,
+                timeout_secs,
+            } => {
+                assert_eq!(extension_name, "test-ext");
+                assert_eq!(hook, "onActivate");
+                assert_eq!(timeout_secs, 1);
+            }
+            other => panic!("expected HookTimeout, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -354,13 +449,19 @@ mod tests {
         let result = execute_hook(dir.path(), "check_cwd.sh", HookKind::OnActivate, "test-ext").await;
 
         assert!(result.is_ok());
-        assert!(marker.exists());
+        // Written through a relative path, so landing here already proves the cwd.
+        assert!(marker.exists(), "relative write should land in the extension dir");
         let cwd_content = std::fs::read_to_string(&marker).unwrap();
-        // The cwd written by the script should match the extension dir
-        // (may have symlink resolution differences, compare canonical)
-        let expected = dir.path().canonicalize().unwrap();
-        let actual_trimmed = cwd_content.trim();
-        let actual = Path::new(actual_trimmed).canonicalize().unwrap();
-        assert_eq!(actual, expected);
+        assert!(!cwd_content.trim().is_empty(), "hook should have reported a cwd");
+
+        // Textual comparison only holds where `pwd` speaks the platform's own
+        // path syntax; Git Bash on Windows reports POSIX paths (`/d/...`).
+        #[cfg(unix)]
+        {
+            // (may have symlink resolution differences, compare canonical)
+            let expected = dir.path().canonicalize().unwrap();
+            let actual = Path::new(cwd_content.trim()).canonicalize().unwrap();
+            assert_eq!(actual, expected);
+        }
     }
 }
