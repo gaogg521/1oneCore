@@ -61,12 +61,20 @@ impl AcpAgentManager {
         }
         self.emit_snapshot_events().await;
 
-        // Notify session_sync consumer so the new id hits the DB and
-        // future rebuilds can take the resume path.
-        self.runtime
-            .emit(AgentStreamEvent::SessionAssigned(SessionAssignedEventData {
-                session_id: sid.clone(),
-            }));
+        // Deliberately NOT announcing the id for persistence here.
+        //
+        // Persisting it at this point is what made stale-resume
+        // self-perpetuating: a session the CLI opened but was never prompted
+        // leaves nothing to resume, yet its id would be stored and the next
+        // warmup would spend a full session build discovering that. The
+        // rebuilt id then inherited the same fate. `announce_session_id_after_prompt`
+        // does it once the session has actually carried a turn.
+        //
+        // Crash recovery is unaffected in any way that matters: an unprompted
+        // session has no history to come back to, so falling through to a
+        // fresh `session/new` after a crash is both cheaper and the only thing
+        // that can succeed.
+        self.mark_session_id_unpersisted();
 
         // Best-effort reconcile on a freshly-opened session. SessionNotFound
         // here would be pathological (we just created the session) but is
@@ -264,6 +272,11 @@ impl AcpAgentManager {
             ))
             .await
             .map_err(AcpSendFailure::from)?;
+
+        // The session has now carried a turn, so its id is worth resuming.
+        // See `announce_session_id_after_prompt` for why this is not done at
+        // session/new time.
+        self.announce_session_id_after_prompt(sid);
 
         // Drain the turn-scoped receiver once: detect both the empty-turn
         // condition and any CodeBuddy dialect signal (session_end / token

@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::agent_runtime::AgentRuntime;
 use crate::capability::PromptCtx;
 use crate::capability::cli_process::CliAgentProcess;
@@ -519,6 +521,46 @@ pub struct AcpAgentManager {
 
     /// Mutex for serializing session operations (new/load/send).
     session_lock: Mutex<()>,
+
+    /// Whether the current session id has been handed to the persistence
+    /// consumer. See [`SessionIdPersistence`].
+    session_id_persisted: SessionIdPersistence,
+}
+
+/// Tracks whether the current CLI-issued session id has been announced for
+/// persistence, so it is announced exactly once and only when it is worth
+/// resuming.
+///
+/// A freshly-issued id is deliberately **not** persisted until the session has
+/// carried at least one prompt. A session the CLI opened but was never
+/// prompted leaves nothing to resume, so persisting its id only guarantees
+/// that the next warmup spends a full session build discovering that — and
+/// the id rebuilt by the rescue path inherits the same fate, which is what
+/// made this self-perpetuating.
+#[derive(Debug)]
+pub(super) struct SessionIdPersistence(AtomicBool);
+
+impl SessionIdPersistence {
+    /// Nothing issued yet; the first announcement will go through.
+    fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    /// A newly issued id that has not carried a turn yet.
+    fn mark_unpersisted(&self) {
+        self.0.store(false, Ordering::Release);
+    }
+
+    /// An id that arrived already stored (loaded from the DB).
+    fn mark_persisted(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    /// Claim the right to announce this id. Returns `true` exactly once per
+    /// id; later calls (further turns on the same session) return `false`.
+    fn claim_announcement(&self) -> bool {
+        !self.0.swap(true, Ordering::AcqRel)
+    }
 }
 
 impl AcpAgentManager {
@@ -611,6 +653,7 @@ impl AcpAgentManager {
             skill_manager,
             domain_event_tx,
             pipeline,
+            session_id_persisted: SessionIdPersistence::new(),
         };
         Ok((manager, domain_event_rx, notification_rx))
     }
@@ -1134,6 +1177,31 @@ impl AcpAgentManager {
         let mut session = self.session.write().await;
         session.set_session_id(DomainSessionId::new(sid));
         session.drain_events();
+        // This id came out of the DB, so it is already persisted — a later
+        // prompt must not re-announce it.
+        self.session_id_persisted.mark_persisted();
+    }
+
+    /// Mark a freshly-issued id as not yet persisted, so the first successful
+    /// prompt announces it. See the field doc on `session_id_persisted`.
+    pub(super) fn mark_session_id_unpersisted(&self) {
+        self.session_id_persisted.mark_unpersisted();
+    }
+
+    /// Announce the current session id for persistence, once per id.
+    ///
+    /// Called after a prompt has actually reached the CLI: see the field doc
+    /// on `session_id_persisted` for why an unprompted session's id is worth
+    /// less than nothing.
+    pub(super) fn announce_session_id_after_prompt(&self, sid: &str) {
+        if !self.session_id_persisted.claim_announcement() {
+            return;
+        }
+        self.runtime.emit(AgentStreamEvent::SessionAssigned(
+            crate::protocol::events::SessionAssignedEventData {
+                session_id: sid.to_owned(),
+            },
+        ));
     }
 
     /// Vendor label this session was spawned as (e.g. "claude"), if any.
@@ -1617,7 +1685,8 @@ impl AcpAgentManager {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_acp_final_input_dump_value, exit_status_parts, normalize_config_option_request_value, user_facing_message,
+        SessionIdPersistence, build_acp_final_input_dump_value, exit_status_parts,
+        normalize_config_option_request_value, user_facing_message,
     };
     use crate::agent_runtime::AgentRuntime;
     use crate::error::AgentError;
@@ -2131,4 +2200,54 @@ mod tests {
     // Close-reason compositional tests live in `agent_close.rs` so that
     // (a) `agent.rs` stays under the 1000-line budget, and (b) the test
     // suite for the close-path helpers sits next to the production logic.
+}
+
+#[cfg(test)]
+mod session_id_persistence_tests {
+    use super::SessionIdPersistence;
+
+    /// The first turn on a freshly-opened session is what makes the id worth
+    /// storing, so exactly that turn gets to announce it.
+    #[test]
+    fn a_fresh_id_is_announced_by_the_first_turn_and_never_again() {
+        let p = SessionIdPersistence::new();
+        p.mark_unpersisted();
+
+        assert!(p.claim_announcement(), "the first successful prompt must announce");
+        assert!(
+            !p.claim_announcement(),
+            "later turns on the same session must not re-announce"
+        );
+        assert!(!p.claim_announcement());
+    }
+
+    /// An id loaded from the DB is already stored. Re-announcing it would be
+    /// a redundant write on every single turn.
+    #[test]
+    fn an_id_loaded_from_the_db_is_never_announced() {
+        let p = SessionIdPersistence::new();
+        p.mark_persisted();
+
+        assert!(
+            !p.claim_announcement(),
+            "an already-persisted id must not be announced again"
+        );
+    }
+
+    /// The rescue path (`SessionNotFound` -> clear -> session/new) issues a
+    /// brand new id. It must get its own announcement slot, otherwise a
+    /// recovered session could never persist and would rebuild forever.
+    #[test]
+    fn a_rebuilt_id_gets_its_own_announcement_slot() {
+        let p = SessionIdPersistence::new();
+        p.mark_unpersisted();
+        assert!(p.claim_announcement());
+
+        // CLI rejected the id; open_session_new issued a replacement.
+        p.mark_unpersisted();
+        assert!(
+            p.claim_announcement(),
+            "the replacement id must be announceable on its own first turn"
+        );
+    }
 }
