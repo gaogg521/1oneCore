@@ -1035,6 +1035,8 @@ mod tests {
                 output_tokens: 1,
                 total_tokens: 2,
                 cost_usd: Some(0.5),
+                context_window: None,
+                breakdown: Default::default(),
             },
             // use the payload-carrying phase (stronger than the proptest's nullary ToolsReady)
             SessionEvent::Provisioning {
@@ -1182,6 +1184,8 @@ mod tests {
                 output_tokens: 1,
                 total_tokens: 2,
                 cost_usd: None,
+                context_window: None,
+                breakdown: Default::default(),
             },
             SessionEvent::Provisioning {
                 phase: ProvisioningPhase::ToolsWaiting,
@@ -2183,6 +2187,8 @@ mod proptest_totality {
                 output_tokens: 1,
                 total_tokens: 2,
                 cost_usd: None,
+                context_window: None,
+                breakdown: Default::default(),
             }),
             Just(SessionEvent::Provisioning {
                 phase: ProvisioningPhase::ToolsReady
