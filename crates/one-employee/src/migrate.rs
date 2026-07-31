@@ -15,6 +15,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "employee_003_visibility",
         include_str!("../migrations/003_visibility.sql"),
     ),
+    (
+        "employee_004_persona_model",
+        include_str!("../migrations/004_persona_and_model.sql"),
+    ),
 ];
 
 /// Run all pending one-employee migrations. Idempotent.
@@ -93,5 +97,16 @@ mod tests {
         .await
         .unwrap();
         assert!(has_next_run, "one_personal_agents.next_run_at column should exist");
+
+        // 004 added the persona + model binding.
+        for column in ["assistant_id", "agent_id_override", "model_id", "model"] {
+            let exists: bool =
+                sqlx::query_scalar("SELECT COUNT(*) > 0 FROM pragma_table_info('one_personal_agents') WHERE name = ?")
+                    .bind(column)
+                    .fetch_one(db.pool())
+                    .await
+                    .unwrap();
+            assert!(exists, "one_personal_agents.{column} column should exist");
+        }
     }
 }

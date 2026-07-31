@@ -22,12 +22,14 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use aionui_ai_agent::AgentRegistry;
-use aionui_api_types::{CreateConversationRequest, CronScheduleDto};
-use aionui_common::{AgentType, now_ms};
+use aionui_api_types::{
+    AssistantConversationOverridesRequest, AssistantConversationRequest, CreateConversationRequest, CronScheduleDto,
+};
+use aionui_common::{AgentType, ProviderWithModel, now_ms};
 use aionui_conversation::{ConversationAgentTurnRequest, ConversationAgentTurnStatus, ConversationService};
 use aionui_cron::scheduler::compute_next_run;
 use aionui_cron::types::schedule_from_dto;
-use aionui_db::{ConversationRowUpdate, IConversationRepository};
+use aionui_db::{ConversationRowUpdate, IConversationRepository, IProviderRepository};
 use aionui_team::TeamSessionService;
 
 use crate::error::EmployeeError;
@@ -59,6 +61,11 @@ pub struct EmployeeService {
     conversation_repo: Arc<dyn IConversationRepository>,
     agent_registry: Arc<AgentRegistry>,
     team_session_service: Option<Arc<TeamSessionService>>,
+    /// Optional so personal-only deployments and unit tests can build the
+    /// service without it. When wired, save-time validation additionally
+    /// checks that an aionrs employee's model is offered by an *enabled*
+    /// provider; when absent only the shape check runs.
+    provider_repo: Option<Arc<dyn IProviderRepository>>,
     work_dir: PathBuf,
 }
 
@@ -68,12 +75,24 @@ pub struct CreateEmployeeInput {
     pub agent_type: String,
     pub custom_agent_id: Option<String>,
     pub cli_path: Option<String>,
+    pub assistant_id: Option<String>,
+    pub agent_id_override: Option<String>,
+    pub model_id: Option<String>,
+    pub model: Option<ProviderWithModel>,
     pub automation_config: Option<serde_json::Value>,
 }
 
+/// `None` on any field means "leave unchanged". For the nullable persona/model
+/// fields an explicitly-supplied empty string clears the column back to NULL,
+/// so a client can detach a persona or a model without deleting the employee.
 pub struct UpdateEmployeeInput {
     pub name: Option<String>,
     pub description: Option<String>,
+    pub agent_type: Option<String>,
+    pub assistant_id: Option<String>,
+    pub agent_id_override: Option<String>,
+    pub model_id: Option<String>,
+    pub model: Option<ProviderWithModel>,
     pub automation_config: Option<serde_json::Value>,
 }
 
@@ -203,6 +222,85 @@ fn truncate_summary(reply: &str) -> String {
     }
 }
 
+/// Whether a stored `agent_type` label denotes the aionrs backend — the only
+/// one that takes a top-level conversation model. Compares against the enum's
+/// own serde name rather than a literal so a rename can't silently drift.
+fn is_aionrs(agent_type: &str) -> bool {
+    agent_type.trim() == AgentType::Aionrs.serde_name()
+}
+
+/// Trim an incoming optional string, treating blank as absent. Used so a
+/// client sending `""` never writes a whitespace-only id into the DB.
+fn normalize_optional(value: Option<&str>) -> Option<String> {
+    value.map(str::trim).filter(|s| !s.is_empty()).map(ToOwned::to_owned)
+}
+
+/// Update-time merge for a nullable column: field absent → keep `existing`;
+/// field present and blank → clear to `None`; otherwise take the new value.
+fn merge_optional(incoming: Option<&str>, existing: Option<String>) -> Option<String> {
+    match incoming {
+        None => existing,
+        Some(value) => normalize_optional(Some(value)),
+    }
+}
+
+fn serialize_model(model: Option<&ProviderWithModel>) -> Result<Option<String>, EmployeeError> {
+    model
+        .map(|model| {
+            serde_json::to_string(model).map_err(|e| EmployeeError::Internal(format!("serialize employee model: {e}")))
+        })
+        .transpose()
+}
+
+/// Only aionrs conversations carry a meaningful top-level model. Verbatim port
+/// of `aionui_cron::executor::resolve_model` so the employee and cron paths
+/// derive the same `(provider_id, model)` — see the divergence warning in
+/// `aionui_conversation::task_options`.
+fn resolve_model(agent: &PersonalAgentRow) -> Option<ProviderWithModel> {
+    if !is_aionrs(&agent.agent_type) {
+        return None;
+    }
+    agent
+        .model
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<ProviderWithModel>(raw).ok())
+}
+
+/// Build the persona binding for a run. Mirrors
+/// `aionui_cron::executor::build_assistant_request`: `assistant_id` wins, the
+/// legacy `custom_agent_id` column is the fallback (which is what finally makes
+/// that previously write-only column mean something).
+///
+/// `conversation_overrides.agent_id` is the *only* channel that can move a
+/// persona onto a different backend — once `assistant` is set,
+/// `CreateConversationRequest.type` is ignored and the effective agent type
+/// comes from the assistant snapshot.
+fn build_assistant_request(agent: &PersonalAgentRow) -> Option<AssistantConversationRequest> {
+    let assistant_id = normalize_optional(agent.assistant_id.as_deref())
+        .or_else(|| normalize_optional(agent.custom_agent_id.as_deref()))?;
+
+    let agent_id = normalize_optional(agent.agent_id_override.as_deref());
+    // ACP backends carry the model through the assistant overrides; aionrs uses
+    // the top-level `model` instead (see `resolve_model`).
+    let model = if is_aionrs(&agent.agent_type) {
+        None
+    } else {
+        normalize_optional(agent.model_id.as_deref())
+    };
+
+    let overrides = (agent_id.is_some() || model.is_some()).then(|| AssistantConversationOverridesRequest {
+        agent_id,
+        model,
+        ..Default::default()
+    });
+
+    Some(AssistantConversationRequest {
+        id: assistant_id,
+        locale: None,
+        conversation_overrides: overrides,
+    })
+}
+
 /// Append an optional task context (e.g. a dispatched requirement) under the
 /// employee's base run prompt. Empty/whitespace context is a no-op.
 fn append_task_context(mut prompt: String, task_context: Option<&str>) -> String {
@@ -227,8 +325,18 @@ impl EmployeeService {
             conversation_repo,
             agent_registry,
             team_session_service: None,
+            provider_repo: None,
             work_dir,
         }
+    }
+
+    /// Wire the provider repository so `validate_model_binding` can reject an
+    /// aionrs model that no enabled provider offers at save time, instead of
+    /// letting the run fail later. Optional, same rationale as
+    /// [`Self::with_team_session`].
+    pub fn with_provider_repo(mut self, provider_repo: Arc<dyn IProviderRepository>) -> Self {
+        self.provider_repo = Some(provider_repo);
+        self
     }
 
     /// Wire the team session service. Optional so personal-only deployments
@@ -244,6 +352,65 @@ impl EmployeeService {
         self.team_session_service
             .as_ref()
             .ok_or_else(|| EmployeeError::Internal("team session service not configured".into()))
+    }
+
+    /// Reject `(agent_type, model)` combinations the conversation layer would
+    /// refuse, at save time rather than at run time.
+    ///
+    /// Three rules:
+    /// 1. An aionrs employee *needs* a model — without one `provision_run`
+    ///    resolves the empty provider sentinel and the run dies with
+    ///    `Provider '' not found`, which is the whole bug this binding exists to
+    ///    fix. Only enforced when the caller is actually setting the binding
+    ///    (`require_model`), so renaming a legacy backend-only employee still
+    ///    works.
+    /// 2. A top-level model is aionrs-only — `ConversationService::create`
+    ///    returns a hard 400 for any other agent type that carries one.
+    /// 3. For aionrs the model must be offered by an *enabled* provider.
+    ///    Same check as `aionui_team::provisioning::resolve_provider_for_model`;
+    ///    skipped when no provider repo is wired.
+    async fn validate_model_binding(
+        &self,
+        agent_type: &str,
+        model: Option<&ProviderWithModel>,
+        require_model: bool,
+    ) -> Result<(), EmployeeError> {
+        let Some(model) = model else {
+            if require_model && is_aionrs(agent_type) {
+                return Err(EmployeeError::BadRequest(
+                    "an aionrs employee requires a model; pick one from an enabled provider".into(),
+                ));
+            }
+            return Ok(());
+        };
+
+        if !is_aionrs(agent_type) {
+            return Err(EmployeeError::BadRequest(format!(
+                "a model may only be bound to an aionrs employee; '{agent_type}' resolves its model through its own backend"
+            )));
+        }
+        if model.provider_id.trim().is_empty() || model.model.trim().is_empty() {
+            return Err(EmployeeError::BadRequest(
+                "model requires both providerId and model".into(),
+            ));
+        }
+
+        let Some(provider_repo) = self.provider_repo.as_ref() else {
+            return Ok(());
+        };
+        let provider = provider_repo
+            .find_by_id(&model.provider_id)
+            .await
+            .map_err(|e| EmployeeError::Internal(format!("load provider: {e}")))?
+            .ok_or_else(|| EmployeeError::BadRequest(format!("provider '{}' no longer exists", model.provider_id)))?;
+        if !provider.enabled {
+            return Err(EmployeeError::BadRequest(format!(
+                "provider '{}' is disabled; pick a model from an enabled provider",
+                model.provider_id
+            )));
+        }
+
+        Ok(())
     }
 
     /// Same resolution chain as the cron executor's `parse_agent_type` +
@@ -346,22 +513,32 @@ impl EmployeeService {
             .unwrap_or_else(|| serde_json::json!({}))
             .to_string();
 
+        let agent_type = input.agent_type.trim();
+        self.validate_model_binding(agent_type, input.model.as_ref(), true)
+            .await?;
+        let model = serialize_model(input.model.as_ref())?;
+
         let id = short_id("pa");
         let now = now_ms() as i64;
         sqlx::query(
             "INSERT INTO one_personal_agents \
              (id, owner_user_id, tenant_id, name, description, agent_type, custom_agent_id, cli_path, \
+              assistant_id, agent_id_override, model_id, model, \
               automation_config, schedule_enabled, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
         )
         .bind(&id)
         .bind(owner_user_id)
         .bind(tenant_id)
         .bind(name)
         .bind(&input.description)
-        .bind(input.agent_type.trim())
+        .bind(agent_type)
         .bind(&input.custom_agent_id)
         .bind(&input.cli_path)
+        .bind(normalize_optional(input.assistant_id.as_deref()))
+        .bind(normalize_optional(input.agent_id_override.as_deref()))
+        .bind(normalize_optional(input.model_id.as_deref()))
+        .bind(&model)
         .bind(&automation_config)
         .bind(now)
         .bind(now)
@@ -389,12 +566,45 @@ impl EmployeeService {
             .map(|v| v.to_string())
             .unwrap_or(existing.automation_config);
 
+        let agent_type = match input.agent_type.as_deref().map(str::trim) {
+            Some("") => return Err(EmployeeError::BadRequest("agentType must not be empty".into())),
+            Some(value) => value.to_owned(),
+            None => existing.agent_type,
+        };
+        // Absent field → keep stored value; explicit empty string → clear to NULL.
+        let assistant_id = merge_optional(input.assistant_id.as_deref(), existing.assistant_id);
+        let agent_id_override = merge_optional(input.agent_id_override.as_deref(), existing.agent_id_override);
+        let model_id = merge_optional(input.model_id.as_deref(), existing.model_id);
+        let model = match input.model.as_ref() {
+            Some(model) => serialize_model(Some(model))?,
+            None => existing.model,
+        };
+
+        // Re-validate against the *resulting* pair, not the incoming one: changing
+        // only the backend on an employee that already stores a model must not
+        // leave behind a combination the conversation layer would reject.
+        // "aionrs needs a model" is only enforced when this request actually
+        // touches the binding, so renaming a legacy backend-only employee (which
+        // predates migration 004 and has no model) is still allowed.
+        let effective_model = model
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<ProviderWithModel>(raw).ok());
+        let touches_binding = input.agent_type.is_some() || input.model.is_some();
+        self.validate_model_binding(&agent_type, effective_model.as_ref(), touches_binding)
+            .await?;
+
         sqlx::query(
-            "UPDATE one_personal_agents SET name = ?, description = ?, automation_config = ?, updated_at = ? \
+            "UPDATE one_personal_agents SET name = ?, description = ?, agent_type = ?, assistant_id = ?, \
+             agent_id_override = ?, model_id = ?, model = ?, automation_config = ?, updated_at = ? \
              WHERE id = ? AND owner_user_id = ?",
         )
         .bind(&name)
         .bind(&description)
+        .bind(&agent_type)
+        .bind(&assistant_id)
+        .bind(&agent_id_override)
+        .bind(&model_id)
+        .bind(&model)
         .bind(&automation_config)
         .bind(now_ms() as i64)
         .bind(agent_id)
@@ -546,11 +756,19 @@ impl EmployeeService {
 
         let now = now_ms() as i64;
         let conversation_name = format!("{} - {}", agent.name, format_run_timestamp(now));
+        let assistant = build_assistant_request(agent);
         let req = CreateConversationRequest {
-            r#type: Some(agent_type),
+            // With a persona attached the effective agent type is derived from
+            // the assistant snapshot (and can be redirected by
+            // `conversation_overrides.agent_id`), so an explicit type here would
+            // be ignored at best and misleading at worst. Same rule as the cron
+            // executor.
+            r#type: if assistant.is_some() { None } else { Some(agent_type) },
             name: Some(conversation_name),
-            model: None,
-            assistant: None,
+            // Was hardcoded `None`, which made every aionrs employee resolve to
+            // the empty provider sentinel and fail with `Provider '' not found`.
+            model: resolve_model(agent),
+            assistant,
             source: None,
             channel_chat_id: None,
             extra: serde_json::Value::Object(extra),
@@ -1034,39 +1252,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn run_prompt_prefers_instructions() {
-        let agent = PersonalAgentRow {
+    fn agent_row(agent_type: &str) -> PersonalAgentRow {
+        PersonalAgentRow {
             id: "pa_1".into(),
             owner_user_id: "u".into(),
             tenant_id: "default".into(),
             name: "调研员".into(),
             description: Some("每日调研".into()),
-            agent_type: "claude".into(),
+            agent_type: agent_type.into(),
             custom_agent_id: None,
             cli_path: None,
-            automation_config: r#"{"instructions":"  调研今日热点并输出简报  "}"#.into(),
-            schedule: None,
-            schedule_enabled: 0,
-            next_run_at: None,
-            visibility: "private".into(),
-            created_at: 0,
-            updated_at: 0,
-        };
-        assert_eq!(build_run_prompt(&agent), "调研今日热点并输出简报");
-    }
-
-    #[test]
-    fn run_prompt_falls_back_to_description_then_generic() {
-        let mut agent = PersonalAgentRow {
-            id: "pa_1".into(),
-            owner_user_id: "u".into(),
-            tenant_id: "default".into(),
-            name: "调研员".into(),
-            description: Some("每日调研".into()),
-            agent_type: "claude".into(),
-            custom_agent_id: None,
-            cli_path: None,
+            assistant_id: None,
+            agent_id_override: None,
+            model_id: None,
+            model: None,
             automation_config: "{}".into(),
             schedule: None,
             schedule_enabled: 0,
@@ -1074,11 +1273,130 @@ mod tests {
             visibility: "private".into(),
             created_at: 0,
             updated_at: 0,
-        };
+        }
+    }
+
+    #[test]
+    fn run_prompt_prefers_instructions() {
+        let mut agent = agent_row("claude");
+        agent.automation_config = r#"{"instructions":"  调研今日热点并输出简报  "}"#.into();
+        assert_eq!(build_run_prompt(&agent), "调研今日热点并输出简报");
+    }
+
+    #[test]
+    fn run_prompt_falls_back_to_description_then_generic() {
+        let mut agent = agent_row("claude");
         assert!(build_run_prompt(&agent).contains("每日调研"));
 
         agent.description = None;
         assert!(build_run_prompt(&agent).contains("日常职责"));
+    }
+
+    // ── persona + model binding (migration 004) ────────────────────────
+
+    /// The reported bug: an aionrs employee used to reach the factory with an
+    /// empty provider id and fail with `Provider '' not found`. A bound model
+    /// must now survive the round-trip through the stored column.
+    #[test]
+    fn aionrs_agent_resolves_stored_model() {
+        let mut agent = agent_row("aionrs");
+        agent.model = Some(
+            serde_json::to_string(&ProviderWithModel {
+                provider_id: "prov_1".into(),
+                model: "glm-5-2".into(),
+                use_model: None,
+            })
+            .unwrap(),
+        );
+
+        let resolved = resolve_model(&agent).expect("aionrs must carry a top-level model");
+        assert_eq!(resolved.provider_id, "prov_1");
+        assert_eq!(resolved.model, "glm-5-2");
+    }
+
+    /// Top-level model is aionrs-only — `ConversationService::create` returns a
+    /// hard 400 otherwise, so ACP employees must never send one even if the
+    /// column somehow holds a value.
+    #[test]
+    fn non_aionrs_agent_never_sends_a_top_level_model() {
+        let mut agent = agent_row("claude");
+        agent.model = Some(r#"{"provider_id":"prov_1","model":"x","use_model":null}"#.into());
+        assert!(resolve_model(&agent).is_none());
+    }
+
+    #[test]
+    fn unparseable_model_column_degrades_to_none() {
+        let mut agent = agent_row("aionrs");
+        agent.model = Some("not-json".into());
+        assert!(resolve_model(&agent).is_none());
+    }
+
+    #[test]
+    fn assistant_request_is_absent_without_a_persona() {
+        assert!(build_assistant_request(&agent_row("claude")).is_none());
+    }
+
+    /// The legacy `custom_agent_id` column was write-only dead data; it now
+    /// serves as the fallback persona source, matching the cron executor.
+    #[test]
+    fn assistant_request_prefers_assistant_id_then_custom_agent_id() {
+        let mut agent = agent_row("claude");
+        agent.custom_agent_id = Some("legacy_persona".into());
+        assert_eq!(build_assistant_request(&agent).unwrap().id, "legacy_persona");
+
+        agent.assistant_id = Some("persona_1".into());
+        assert_eq!(build_assistant_request(&agent).unwrap().id, "persona_1");
+    }
+
+    /// A manual backend override only takes effect through
+    /// `conversation_overrides.agent_id` — once `assistant` is set the
+    /// conversation type is derived from the assistant snapshot.
+    #[test]
+    fn backend_override_travels_as_conversation_override() {
+        let mut agent = agent_row("aionrs");
+        agent.assistant_id = Some("persona_1".into());
+        agent.agent_id_override = Some("agent_meta_9".into());
+
+        let overrides = build_assistant_request(&agent)
+            .unwrap()
+            .conversation_overrides
+            .expect("override must be forwarded");
+        assert_eq!(overrides.agent_id.as_deref(), Some("agent_meta_9"));
+        // aionrs takes its model from the top level, not the assistant override.
+        assert!(overrides.model.is_none());
+    }
+
+    #[test]
+    fn acp_persona_carries_model_id_through_the_override() {
+        let mut agent = agent_row("claude");
+        agent.assistant_id = Some("persona_1".into());
+        agent.model_id = Some("claude-sonnet-4-6".into());
+
+        let overrides = build_assistant_request(&agent).unwrap().conversation_overrides.unwrap();
+        assert_eq!(overrides.model.as_deref(), Some("claude-sonnet-4-6"));
+    }
+
+    #[test]
+    fn blank_persona_fields_are_treated_as_absent() {
+        let mut agent = agent_row("claude");
+        agent.assistant_id = Some("   ".into());
+        assert!(build_assistant_request(&agent).is_none());
+
+        agent.assistant_id = Some("persona_1".into());
+        agent.agent_id_override = Some("  ".into());
+        assert!(
+            build_assistant_request(&agent)
+                .unwrap()
+                .conversation_overrides
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn merge_optional_keeps_clears_and_replaces() {
+        assert_eq!(merge_optional(None, Some("kept".into())), Some("kept".into()));
+        assert_eq!(merge_optional(Some(""), Some("kept".into())), None);
+        assert_eq!(merge_optional(Some("new"), Some("kept".into())), Some("new".into()));
     }
 
     async fn insert_agent(pool: &SqlitePool, id: &str, owner: &str, tenant: &str, visibility: &str) {

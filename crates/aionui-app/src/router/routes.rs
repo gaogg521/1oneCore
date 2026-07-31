@@ -489,7 +489,12 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             services.agent_registry.clone(),
             services.work_dir.clone(),
         )
-        .with_team_session(team_session_service),
+        .with_team_session(team_session_service)
+        // Lets an employee's aionrs model be validated against enabled
+        // providers at save time instead of failing the run.
+        .with_provider_repo(std::sync::Arc::new(aionui_db::SqliteProviderRepository::new(
+            services.database.pool().clone(),
+        ))),
     );
     one_employee_service.spawn_scheduler();
     let one_employee_state = one_employee::OneEmployeeRouterState::new(one_employee_service.clone())

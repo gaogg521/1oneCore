@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use aionui_api_types::{ApiResponse, CronScheduleDto};
 use aionui_auth::CurrentUser;
+use aionui_common::ProviderWithModel;
 
 use crate::error::EmployeeError;
 use crate::models::{EmployeeRunRow, PersonalAgentDto};
@@ -50,6 +51,17 @@ struct CreateAgentBody {
     agent_type: String,
     custom_agent_id: Option<String>,
     cli_path: Option<String>,
+    /// Persona / assistant definition id.
+    assistant_id: Option<String>,
+    /// `agent_metadata.id` to run the persona under, when the user overrode the
+    /// backend the persona would otherwise imply.
+    agent_id_override: Option<String>,
+    /// Plain model id — ACP backends.
+    model_id: Option<String>,
+    /// aionrs only. `ProviderWithModel` has no `rename_all`, so its own keys
+    /// stay snake_case (`provider_id` / `use_model`) despite this body being
+    /// camelCase — same shape the frontend already sends for cron jobs.
+    model: Option<ProviderWithModel>,
     automation_config: Option<serde_json::Value>,
 }
 
@@ -72,6 +84,10 @@ async fn create_agent(
                 agent_type: body.agent_type,
                 custom_agent_id: body.custom_agent_id,
                 cli_path: body.cli_path,
+                assistant_id: body.assistant_id,
+                agent_id_override: body.agent_id_override,
+                model_id: body.model_id,
+                model: body.model,
                 automation_config: body.automation_config,
             },
         )
@@ -111,9 +127,16 @@ async fn get_agent(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+/// Omitted field → leave unchanged. For the nullable persona/model fields an
+/// explicit `""` clears the column, so a client can detach a persona or model.
 struct UpdateAgentBody {
     name: Option<String>,
     description: Option<String>,
+    agent_type: Option<String>,
+    assistant_id: Option<String>,
+    agent_id_override: Option<String>,
+    model_id: Option<String>,
+    model: Option<ProviderWithModel>,
     automation_config: Option<serde_json::Value>,
 }
 
@@ -131,6 +154,11 @@ async fn update_agent(
             UpdateEmployeeInput {
                 name: body.name,
                 description: body.description,
+                agent_type: body.agent_type,
+                assistant_id: body.assistant_id,
+                agent_id_override: body.agent_id_override,
+                model_id: body.model_id,
+                model: body.model,
                 automation_config: body.automation_config,
             },
         )
