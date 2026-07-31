@@ -551,22 +551,31 @@ fn map_conversation_update_error(error: ConversationError) -> TeamError {
         ConversationError::ActiveAgentNotFound { conversation_id } => TeamError::RuntimeNotReady { conversation_id },
         ConversationError::NotFound { id } => TeamError::InvalidRequest(format!("conversation not found: {id}")),
         ConversationError::NotFoundReason { reason } => TeamError::InvalidRequest(reason),
-        ConversationError::BadRequest { reason } if is_stale_provider_binding(&reason) => TeamError::InvalidRequest(
-            "this teammate has no valid model/provider configured; please remove and re-add it with a model selected"
-                .to_owned(),
-        ),
+        // A teammate whose provider was deleted or reconfigured fails here on
+        // every warmup. Without this arm the typed variant falls through to
+        // `other` and its Display — `Provider '<id>' not found` — is handed to
+        // the user verbatim: an internal id they cannot act on.
+        ConversationError::ProviderNotFound { .. } => TeamError::InvalidRequest(STALE_PROVIDER_BINDING_HINT.to_owned()),
+        ConversationError::BadRequest { reason } if is_stale_provider_binding(&reason) => {
+            TeamError::InvalidRequest(STALE_PROVIDER_BINDING_HINT.to_owned())
+        }
         other => TeamError::InvalidRequest(other.to_string()),
     }
 }
 
-/// Heuristic: detects the "Provider '{id}' not found" message produced when a
-/// team member's persisted `top_level_model.provider_id` no longer resolves
-/// to a real provider (e.g. it was written from an unresolvable model value
-/// before `create_team_conversation_for_agent` started rejecting those).
-/// String-matching is a compromise — `ConversationError::BadRequest` is a
-/// shared catch-all for many unrelated validation failures, and giving this
-/// one case its own typed variant would require threading a new error
-/// variant through `AgentError` -> `ConversationError` -> `TeamError`.
+/// Shown when a team member's model/provider binding no longer resolves. It
+/// has to name the remedy, because nothing the user can see explains why an
+/// otherwise healthy-looking teammate refuses to start.
+const STALE_PROVIDER_BINDING_HINT: &str =
+    "this teammate has no valid model/provider configured; please remove and re-add it with a model selected";
+
+/// Detects the same failure when it arrives as a `BadRequest` string rather
+/// than the typed `ProviderNotFound` variant.
+///
+/// The typed variant is the main path and is matched directly above; this
+/// stays for the validation sites that still fold the failure into
+/// `BadRequest`'s shared catch-all, where the message is all there is to go
+/// on. Keep both until no producer reports it as a bare string.
 fn is_stale_provider_binding(reason: &str) -> bool {
     reason.starts_with("Provider '") && reason.ends_with("' not found")
 }
@@ -632,6 +641,30 @@ mod tests {
         assert!(
             !message.contains("Provider 'aionrs' not found"),
             "internal error detail should not leak to the user, got: {message}"
+        );
+    }
+
+    /// The real warmup path reports this as the typed variant, not as a
+    /// `BadRequest` string — `warmup` -> `AgentError::ProviderNotFound` ->
+    /// `ConversationError::ProviderNotFound`. The pre-existing tests only
+    /// built `BadRequest`, so this arm could go missing without any of them
+    /// failing, and the raw `Provider '<id>' not found` reached the user.
+    #[test]
+    fn typed_provider_not_found_maps_to_friendly_invalid_request() {
+        let err = map_conversation_update_error(ConversationError::ProviderNotFound {
+            provider_id: "ff9e8905".into(),
+        });
+
+        let TeamError::InvalidRequest(message) = err else {
+            panic!("expected TeamError::InvalidRequest, got {err:?}");
+        };
+        assert!(
+            message.contains("remove and re-add"),
+            "expected an actionable message, got: {message}"
+        );
+        assert!(
+            !message.contains("ff9e8905"),
+            "the provider id is an internal detail and must not reach the user, got: {message}"
         );
     }
 
