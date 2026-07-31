@@ -7,25 +7,53 @@ fn write_file(path: &Path) {
     std::fs::write(path, b"").expect("write file");
 }
 
+/// Lay out a managed Node runtime the way the current platform's archive does.
+///
+/// The Windows archive puts `node.exe` at the root with npm/npx as CLI scripts
+/// under `node_modules/npm/bin`; every other platform uses `bin/`. Fixtures
+/// that hard-code the Unix shape make `runtime_from_root` fail on Windows with
+/// "managed node executable missing" long before reaching whatever the test is
+/// actually about.
+fn write_runtime_layout(root: &Path, with_npm: bool) {
+    if cfg!(windows) {
+        write_file(&root.join("node.exe"));
+        if with_npm {
+            let npm_bin = root.join("node_modules").join("npm").join("bin");
+            write_file(&npm_bin.join("npm-cli.js"));
+            write_file(&npm_bin.join("npx-cli.js"));
+        }
+    } else {
+        let bin = root.join("bin");
+        write_file(&bin.join("node"));
+        if with_npm {
+            write_file(&bin.join("npm"));
+            write_file(&bin.join("npx"));
+        }
+    }
+}
+
 #[tokio::test]
 async fn managed_runtime_validation_uses_real_commands() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("node-v24.11.0-test");
-    let bin = root.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
+    // node present, npm/npx deliberately absent — validation must name npm.
+    write_runtime_layout(&root, false);
 
-    let node = bin.join("node");
-    std::fs::write(&node, "#!/bin/sh\necho v24.11.0\n").unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        let node = root.join("bin").join("node");
+        std::fs::write(&node, "#!/bin/sh\necho v24.11.0\n").unwrap();
         let mut perms = std::fs::metadata(&node).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&node, perms).unwrap();
     }
 
     let err = validate_managed_runtime(&root, None).await.unwrap_err();
-    assert!(err.to_string().to_ascii_lowercase().contains("npm"));
+    assert!(
+        err.to_string().to_ascii_lowercase().contains("npm"),
+        "expected the failure to name npm, got: {err}"
+    );
 }
 
 #[test]
@@ -165,11 +193,7 @@ fn managed_runtime_checksum_verification_detects_mismatch() {
 fn managed_runtime_injects_npm_state_under_runtime_root() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("node-v24.11.0-test");
-    let bin = root.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(bin.join("node"), b"").unwrap();
-    std::fs::write(bin.join("npm"), b"").unwrap();
-    std::fs::write(bin.join("npx"), b"").unwrap();
+    write_runtime_layout(&root, true);
 
     let runtime = runtime_from_root(&root, ResolvedNodeSource::Managed).expect("runtime");
     let env: std::collections::HashMap<_, _> = runtime

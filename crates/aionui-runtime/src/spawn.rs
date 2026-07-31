@@ -458,7 +458,14 @@ mod tests {
             preview.contains("hello"),
             "preview should include args prefix: {preview}"
         );
-        assert!(preview.contains("NO_COLOR=\"1\"") || preview.contains("NO_COLOR=1"));
+        // Only std's Unix `Command` Debug renders the env section; on Windows the
+        // preview carries just program + args, so assert the env pass-through
+        // where it is observable.
+        #[cfg(unix)]
+        assert!(
+            preview.contains("NO_COLOR=\"1\"") || preview.contains("NO_COLOR=1"),
+            "NO_COLOR missing: {preview}"
+        );
     }
 
     #[test]
@@ -469,19 +476,25 @@ mod tests {
             .args(["x", "--flag", "with space"]);
 
         let preview = format!("{b}");
-        // Format inherited from std Command Debug: `cd "..." && env -u X K=V "prog" "args"...`
-        assert!(
-            preview.starts_with(r#"cd "/tmp/work dir" &&"#),
-            "missing cwd prefix: {preview}"
-        );
-        assert!(preview.contains("env "), "expected env section: {preview}");
-        assert!(preview.contains(r#"FOO="bar baz""#), "FOO missing: {preview}");
-        // strip_pollution unsets these
-        assert!(
-            preview.contains("-u NODE_OPTIONS"),
-            "missing -u NODE_OPTIONS: {preview}"
-        );
-        assert!(preview.contains("-u CLAUDECODE"), "missing -u CLAUDECODE: {preview}");
+        // The preview is std `Command`'s Debug output, and that rendering is
+        // platform-specific: only the Unix impl prefixes `cd "..." &&` and an
+        // `env -u X K=V` section. The Windows impl prints just the program and
+        // its arguments, so the cwd/env assertions can only run on Unix.
+        #[cfg(unix)]
+        {
+            assert!(
+                preview.starts_with(r#"cd "/tmp/work dir" &&"#),
+                "missing cwd prefix: {preview}"
+            );
+            assert!(preview.contains("env "), "expected env section: {preview}");
+            assert!(preview.contains(r#"FOO="bar baz""#), "FOO missing: {preview}");
+            // strip_pollution unsets these
+            assert!(
+                preview.contains("-u NODE_OPTIONS"),
+                "missing -u NODE_OPTIONS: {preview}"
+            );
+            assert!(preview.contains("-u CLAUDECODE"), "missing -u CLAUDECODE: {preview}");
+        }
         assert!(
             preview.contains(r#""/usr/local/bin/node""#),
             "program missing: {preview}"
