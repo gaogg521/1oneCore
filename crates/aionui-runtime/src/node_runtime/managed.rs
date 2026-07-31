@@ -190,6 +190,26 @@ pub async fn install_and_validate_with_reporter(
     }
 }
 
+/// Re-resolve an already-validated managed runtime against the filesystem
+/// without spawning `--version` probes.
+///
+/// A full validation costs three child processes (node, npm, npx); on Windows
+/// that measured ~6.6s and it runs on every agent cold start. This checks the
+/// same thing a deleted, moved, or half-removed runtime would fail —
+/// `runtime_from_root` verifies the root directory, the node executable, and
+/// both npm/npx entrypoints — and reuses the version the earlier full probe
+/// already proved. What it cannot catch is a runtime whose files are present
+/// but corrupt; that is bounded by the caller's revalidation window and would
+/// surface as a spawn failure anyway.
+pub(crate) fn revalidate_managed_runtime_files(
+    root: &Path,
+    version: semver::Version,
+) -> Result<ResolvedNodeRuntime, NodeRuntimeError> {
+    let mut runtime = runtime_from_root(root, ResolvedNodeSource::Managed)?;
+    runtime.version = version;
+    Ok(runtime)
+}
+
 pub(crate) async fn validate_managed_runtime(
     root: &Path,
     reporter: Option<&dyn NodeRuntimeProgressReporter>,

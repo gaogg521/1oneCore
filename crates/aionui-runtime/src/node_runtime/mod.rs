@@ -3,6 +3,7 @@ mod system;
 mod types;
 
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
 
@@ -17,8 +18,25 @@ pub use types::{
     ResolvedNodeSource, RuntimeCommandProbe, SharedNodeRuntimeProgressReporter,
 };
 
-static MANAGED_RUNTIME_CACHE: OnceLock<tokio::sync::Mutex<Option<ResolvedNodeRuntime>>> = OnceLock::new();
+static MANAGED_RUNTIME_CACHE: OnceLock<tokio::sync::Mutex<Option<CachedManagedRuntime>>> = OnceLock::new();
 static MANAGED_RUNTIME_INSTALL_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+/// How long a full `--version` validation stays trusted before it is redone.
+///
+/// Every agent cold start resolves the node runtime, and re-probing spawns
+/// three child processes (node, npm, npx). Inside this window a filesystem
+/// re-check stands in for the probe; see
+/// `managed::revalidate_managed_runtime_files` for what that does and does not
+/// cover.
+const MANAGED_RUNTIME_VALIDATION_TTL: Duration = Duration::from_secs(300);
+
+#[derive(Clone)]
+struct CachedManagedRuntime {
+    runtime: ResolvedNodeRuntime,
+    /// When the last *full* validation succeeded — deliberately not refreshed
+    /// by a filesystem-only re-check, so the probe still reruns on schedule.
+    validated_at: Instant,
+}
 
 pub fn probe_runtime_command(command: &str) -> RuntimeCommandProbe {
     let trimmed = command.trim();
@@ -73,7 +91,10 @@ pub async fn ensure_node_runtime_with_reporter(
     }
 
     let runtime = install_managed_runtime_with_reporter(reporter).await?;
-    *managed_runtime_cache().lock().await = Some(runtime.clone());
+    *managed_runtime_cache().lock().await = Some(CachedManagedRuntime {
+        runtime: runtime.clone(),
+        validated_at: Instant::now(),
+    });
     log_runtime_selected(&runtime);
     Ok(runtime)
 }
@@ -139,7 +160,7 @@ fn log_runtime_selected(runtime: &ResolvedNodeRuntime) {
     );
 }
 
-fn managed_runtime_cache() -> &'static tokio::sync::Mutex<Option<ResolvedNodeRuntime>> {
+fn managed_runtime_cache() -> &'static tokio::sync::Mutex<Option<CachedManagedRuntime>> {
     MANAGED_RUNTIME_CACHE.get_or_init(|| tokio::sync::Mutex::new(None))
 }
 
@@ -150,16 +171,43 @@ async fn cached_managed_runtime_unreported() -> Option<ResolvedNodeRuntime> {
 async fn cached_managed_runtime(reporter: Option<&dyn NodeRuntimeProgressReporter>) -> Option<ResolvedNodeRuntime> {
     let cached = managed_runtime_cache().lock().await.clone()?;
 
-    match managed::validate_managed_runtime(&cached.root, reporter).await {
+    if cached.validated_at.elapsed() < MANAGED_RUNTIME_VALIDATION_TTL {
+        match managed::revalidate_managed_runtime_files(&cached.runtime.root, cached.runtime.version.clone()) {
+            Ok(runtime) => {
+                emit_runtime_ready(reporter, &runtime);
+                *managed_runtime_cache().lock().await = Some(CachedManagedRuntime {
+                    runtime: runtime.clone(),
+                    // Carry the original timestamp forward: this path skipped the
+                    // `--version` probe, so it must not extend the trust window.
+                    validated_at: cached.validated_at,
+                });
+                return Some(runtime);
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    root = %cached.runtime.root.display(),
+                    "managed node runtime cache invalidated"
+                );
+                *managed_runtime_cache().lock().await = None;
+                return None;
+            }
+        }
+    }
+
+    match managed::validate_managed_runtime(&cached.runtime.root, reporter).await {
         Ok(runtime) => {
             emit_runtime_ready(reporter, &runtime);
-            *managed_runtime_cache().lock().await = Some(runtime.clone());
+            *managed_runtime_cache().lock().await = Some(CachedManagedRuntime {
+                runtime: runtime.clone(),
+                validated_at: Instant::now(),
+            });
             Some(runtime)
         }
         Err(error) => {
             warn!(
                 error = %error,
-                root = %cached.root.display(),
+                root = %cached.runtime.root.display(),
                 "managed node runtime cache invalidated"
             );
             *managed_runtime_cache().lock().await = None;
@@ -359,23 +407,44 @@ mod tests {
         }
     }
 
-    fn fake_managed_runtime(root: &std::path::Path) -> ResolvedNodeRuntime {
-        let bin = root.join("bin");
-        fs::create_dir_all(&bin).expect("create runtime bin");
-        write_executable(&bin.join("node"), "#!/bin/sh\necho v24.11.0\n");
-        write_executable(&bin.join("npm"), "#!/bin/sh\necho 24.11.0\n");
-        write_executable(&bin.join("npx"), "#!/bin/sh\necho 24.11.0\n");
+    /// Lay out a managed runtime on disk in whatever shape the current platform
+    /// expects. The Windows archive puts `node.exe` at the root with npm/npx as
+    /// CLI scripts under `node_modules/npm/bin`; Unix uses `bin/`. Hard-coding
+    /// the Unix shape here is what left these tests failing on Windows.
+    fn write_managed_layout(root: &std::path::Path) {
+        if cfg!(windows) {
+            fs::create_dir_all(root).expect("create runtime root");
+            write_executable(&root.join("node.exe"), "");
+            let npm_bin = root.join("node_modules").join("npm").join("bin");
+            fs::create_dir_all(&npm_bin).expect("create npm bin");
+            fs::write(npm_bin.join("npm-cli.js"), "").expect("write npm cli");
+            fs::write(npm_bin.join("npx-cli.js"), "").expect("write npx cli");
+        } else {
+            let bin = root.join("bin");
+            fs::create_dir_all(&bin).expect("create runtime bin");
+            write_executable(&bin.join("node"), "#!/bin/sh\necho v24.11.0\n");
+            write_executable(&bin.join("npm"), "#!/bin/sh\necho 24.11.0\n");
+            write_executable(&bin.join("npx"), "#!/bin/sh\necho 24.11.0\n");
+        }
+    }
 
-        ResolvedNodeRuntime {
-            source: ResolvedNodeSource::Managed,
-            root: root.to_path_buf(),
-            version: semver::Version::new(0, 0, 0),
-            node_path: bin.join("node"),
-            npm_path: bin.join("npm"),
-            npm_args_prefix: vec![],
-            npx_path: bin.join("npx"),
-            npx_args_prefix: vec![],
-            env: vec![],
+    /// Resolve the on-disk layout through the same code the runtime itself
+    /// uses, so the fixture cannot drift from production path resolution.
+    fn fake_managed_runtime(root: &std::path::Path) -> ResolvedNodeRuntime {
+        write_managed_layout(root);
+        managed::revalidate_managed_runtime_files(root, semver::Version::new(0, 0, 0))
+            .expect("fake managed runtime layout should resolve")
+    }
+
+    /// Build a cache entry whose last full validation happened `age` ago.
+    /// `age` under the TTL exercises the filesystem-only path; over it forces
+    /// the full `--version` probe.
+    fn cache_entry(runtime: &ResolvedNodeRuntime, age: Duration) -> CachedManagedRuntime {
+        CachedManagedRuntime {
+            runtime: runtime.clone(),
+            validated_at: Instant::now()
+                .checked_sub(age)
+                .expect("test clock offset must be representable"),
         }
     }
 
@@ -512,7 +581,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("node-v24.11.0-test");
         let runtime = fake_managed_runtime(&root);
-        *managed_runtime_cache().lock().await = Some(runtime.clone());
+        // Fresh entry: eviction must still work on the filesystem-only path,
+        // which is what nearly every cold start now takes.
+        *managed_runtime_cache().lock().await = Some(cache_entry(&runtime, Duration::ZERO));
 
         let cached = cached_managed_runtime_unreported()
             .await
@@ -532,12 +603,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fresh_cache_reuses_validation_instead_of_probing_versions() {
+        let _guard = test_managed_runtime_cache_lock().lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("node-v24.11.0-test");
+        let mut runtime = fake_managed_runtime(&root);
+        runtime.version = semver::Version::new(24, 11, 0);
+
+        // Truncate the executables. They still exist, so the filesystem check
+        // passes, but any `--version` probe against them would fail — which is
+        // what makes a pass here proof that no probe ran.
+        for path in [&runtime.node_path, &runtime.npm_path, &runtime.npx_path] {
+            fs::write(path, "").expect("truncate executable");
+        }
+
+        let entry = cache_entry(&runtime, Duration::ZERO);
+        let stamped_at = entry.validated_at;
+        *managed_runtime_cache().lock().await = Some(entry);
+
+        let phases = Arc::new(Mutex::new(Vec::<NodeRuntimeProgressPhase>::new()));
+        let reporter = {
+            let phases = Arc::clone(&phases);
+            move |update: NodeRuntimeProgress| {
+                phases.lock().expect("lock").push(update.phase);
+            }
+        };
+
+        let cached = cached_managed_runtime(Some(&reporter))
+            .await
+            .expect("fresh cache should be reused without probing versions");
+
+        assert_eq!(
+            cached.version,
+            semver::Version::new(24, 11, 0),
+            "version proven by the earlier full validation must carry over"
+        );
+        assert_eq!(
+            *phases.lock().expect("lock"),
+            vec![NodeRuntimeProgressPhase::Ready],
+            "skipping the probe must not report a validating phase"
+        );
+        assert_eq!(
+            managed_runtime_cache()
+                .lock()
+                .await
+                .as_ref()
+                .expect("cache retained")
+                .validated_at,
+            stamped_at,
+            "a filesystem-only re-check must not extend the trust window"
+        );
+
+        *managed_runtime_cache().lock().await = None;
+    }
+
+    // Unix-only: the full path actually runs `node --version`, and the fixture
+    // fakes that with a shell script. There is no equivalently cheap stand-in
+    // for a real `node.exe`, so Windows coverage stops at the filesystem-only
+    // path above — which is the one every cold start now takes anyway.
+    #[cfg(unix)]
+    #[tokio::test]
     async fn cached_managed_runtime_emits_ready_after_validation() {
         let _guard = test_managed_runtime_cache_lock().lock().await;
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("node-v24.11.0-test");
         let runtime = fake_managed_runtime(&root);
-        *managed_runtime_cache().lock().await = Some(runtime.clone());
+        // Past the TTL, so this exercises the full `--version` probe and its
+        // `Validating` progress phase.
+        *managed_runtime_cache().lock().await = Some(cache_entry(
+            &runtime,
+            MANAGED_RUNTIME_VALIDATION_TTL + Duration::from_secs(1),
+        ));
 
         let phases = Arc::new(Mutex::new(Vec::<NodeRuntimeProgressPhase>::new()));
         let reporter = {
