@@ -28,6 +28,22 @@ use aionui_db::{
 };
 use aionui_realtime::EventBroadcaster;
 
+/// Assert that `workspace` contains `segments` as consecutive path components.
+///
+/// Workspace paths are built with `Path::join`, so the separator is the
+/// platform's — `\` on Windows. Asserting on a literal `"/conversations/..."`
+/// substring therefore only ever passed on Unix and made these tests
+/// permanently red on Windows, which is exactly the kind of noise that hides a
+/// real regression.
+fn assert_workspace_contains(workspace: &str, segments: &str) {
+    let sep = std::path::MAIN_SEPARATOR;
+    let expected = segments.replace('/', &sep.to_string());
+    assert!(
+        workspace.replace('/', &sep.to_string()).contains(&expected),
+        "expected workspace to contain {expected:?}, got: {workspace}"
+    );
+}
+
 use aionui_team::ports::{
     AgentTurnCancellationPort, AgentTurnExecutionError, AgentTurnExecutionPort, AgentTurnOutcome, AgentTurnRequest,
     AgentTurnStarted, AgentTurnStatus, TeamAssistantCatalogEntry, TeamAssistantCatalogPort,
@@ -2388,11 +2404,7 @@ async fn create_team_without_workspace_uses_leader_auto_workspace_for_all_initia
 
     let got = svc.get_team("user1", &created.id).await.unwrap();
     assert!(!got.workspace.trim().is_empty(), "teams.workspace must be set");
-    assert!(
-        got.workspace.contains("/conversations/acp-temp-"),
-        "unexpected auto workspace: {}",
-        got.workspace
-    );
+    assert_workspace_contains(&got.workspace, "/conversations/acp-temp-");
 
     for agent in &got.assistants {
         let extra = conv_repo.get_extra(&agent.conversation_id).unwrap();
@@ -4398,12 +4410,7 @@ async fn add_agent_uses_team_temp_workspace_when_team_and_leader_workspaces_are_
         .unwrap();
 
     let got = svc.get_team("user1", &created.id).await.unwrap();
-    assert!(
-        got.workspace
-            .contains(&format!("/conversations/team-temp-{}", created.id)),
-        "unexpected team temp workspace: {}",
-        got.workspace
-    );
+    assert_workspace_contains(&got.workspace, &format!("/conversations/team-temp-{}", created.id));
     let added_extra = conv_repo.get_extra(&added.conversation_id).unwrap();
     assert_eq!(
         added_extra.get("workspace").and_then(serde_json::Value::as_str),
@@ -4512,10 +4519,7 @@ async fn add_agent_continues_when_team_temp_leader_patch_fails() {
         .unwrap();
 
     let got = svc.get_team("user1", &created.id).await.unwrap();
-    assert!(
-        got.workspace
-            .contains(&format!("/conversations/team-temp-{}", created.id))
-    );
+    assert_workspace_contains(&got.workspace, &format!("/conversations/team-temp-{}", created.id));
     let added_extra = conv_repo.get_extra(&added.conversation_id).unwrap();
     assert_eq!(
         added_extra.get("workspace").and_then(serde_json::Value::as_str),
