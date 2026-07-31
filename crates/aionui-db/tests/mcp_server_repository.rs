@@ -344,22 +344,47 @@ async fn delete_one_does_not_affect_others() {
 }
 
 #[tokio::test]
-async fn list_by_ids_any_includes_soft_deleted_rows() {
+/// "any" is about the `enabled` flag, not about deletion.
+///
+/// A conversation records the ids it selected, and those ids outlive a global
+/// disable on purpose — the conversation keeps its server. Deletion is a
+/// terminal state though: before this was enforced here, a server deleted from
+/// the UI kept getting injected into every conversation whose
+/// `mcp_server_ids` still listed it, so the user saw a server they had removed
+/// still loading (and, when it was broken, still costing them the startup
+/// timeout).
+async fn list_by_ids_any_keeps_disabled_rows_but_drops_deleted_ones() {
     let (r, _db) = repo().await;
     let active = r.create(stdio_params()).await.unwrap();
+    let disabled = r.create(sse_params()).await.unwrap();
     let deleted = r.create(http_params()).await.unwrap();
+    r.update(
+        &disabled.id,
+        UpdateMcpServerParams {
+            enabled: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     r.delete(&deleted.id).await.unwrap();
 
     let rows = r
-        .list_by_ids_any(&[deleted.id.clone(), active.id.clone()])
+        .list_by_ids_any(&[deleted.id.clone(), disabled.id.clone(), active.id.clone()])
         .await
         .unwrap();
 
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].id, deleted.id);
-    assert!(rows[0].deleted_at.is_some());
-    assert_eq!(rows[1].id, active.id);
-    assert!(rows[1].deleted_at.is_none());
+    let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+    assert!(
+        !ids.contains(&deleted.id.as_str()),
+        "a deleted server must not come back through an id a conversation still holds"
+    );
+    assert!(
+        ids.contains(&disabled.id.as_str()),
+        "a globally disabled server stays available to the conversations that selected it"
+    );
+    assert!(ids.contains(&active.id.as_str()));
+    assert!(rows.iter().all(|row| row.deleted_at.is_none()));
 }
 
 // -- B-1/B-2/B-3: Batch upsert --

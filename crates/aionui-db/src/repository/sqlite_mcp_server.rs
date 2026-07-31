@@ -73,7 +73,7 @@ impl IMcpServerRepository for SqliteMcpServerRepository {
             return Ok(Vec::new());
         }
 
-        let mut query = QueryBuilder::new("SELECT * FROM mcp_servers WHERE id IN (");
+        let mut query = QueryBuilder::new("SELECT * FROM mcp_servers WHERE deleted_at IS NULL AND id IN (");
         let mut separated = query.separated(", ");
         for id in ids {
             separated.push_bind(id);

@@ -30,7 +30,12 @@ pub trait IMcpServerRepository: Send + Sync {
         self.find_by_name(name).await
     }
 
-    /// Finds a set of MCP servers by ID, including soft-deleted rows.
+    /// Finds a set of MCP servers by ID regardless of their `enabled` flag.
+    ///
+    /// "any" refers to the enabled state only: a conversation that explicitly
+    /// selected a server keeps it even after the server is globally disabled.
+    /// Deletion is not the same thing — a deleted server must not come back,
+    /// so soft-deleted rows are excluded.
     async fn list_by_ids_any(&self, ids: &[String]) -> Result<Vec<McpServerRow>, DbError> {
         let mut rows = Vec::with_capacity(ids.len());
         for id in ids {
