@@ -24,7 +24,20 @@ use super::config_option_catalog::extract_config_options_from_value;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcpSessionEvent {
     SessionOpened,
+    /// A session id is now in effect in memory. Does **not** mean it is worth
+    /// storing — see `SessionIdDurable`.
     SessionAssigned {
+        session_id: SessionId,
+    },
+    /// The session has carried a turn, so its id is worth resuming and may be
+    /// persisted.
+    ///
+    /// Split from `SessionAssigned` because the two answer different
+    /// questions. A session the CLI opened but was never prompted has nothing
+    /// to resume: storing its id only guarantees that the next warmup spends a
+    /// full session build discovering that, and the id rebuilt by the rescue
+    /// path inherits the same state — which is what made stale-resume recur.
+    SessionIdDurable {
         session_id: SessionId,
     },
     DesiredModeChanged {

@@ -224,7 +224,7 @@ async fn domain_event_consumer(
 
         match recv {
             Some(event) => {
-                if let AcpSessionEvent::SessionAssigned { session_id } = &event {
+                if let AcpSessionEvent::SessionIdDurable { session_id } = &event {
                     match repo.update_session_id(&conversation_id, session_id.as_str()).await {
                         Ok(true) => {}
                         Ok(false) => debug!(
@@ -484,17 +484,18 @@ mod tests {
         assert_eq!(parsed["size"], 200000);
     }
 
-    /// SessionAssigned must write the session_id immediately, bypassing
-    /// the debounce window used for runtime-state updates.
+    /// `SessionIdDurable` must write the session_id immediately, bypassing
+    /// the debounce window used for runtime-state updates: once a session has
+    /// carried a turn, a crash must not lose the id it can be resumed from.
     #[tokio::test(flavor = "current_thread")]
-    async fn session_assigned_writes_session_id_immediately() {
+    async fn durable_session_id_is_written_immediately() {
         let (_svc, repo) = setup().await;
         let (tx, rx) = mpsc::channel(64);
 
         let cid = "conv-1".to_owned();
         tokio::spawn(domain_event_consumer(cid, rx, repo.clone()));
 
-        tx.send(AcpSessionEvent::SessionAssigned {
+        tx.send(AcpSessionEvent::SessionIdDurable {
             session_id: SessionId::new("sess-42"),
         })
         .await
@@ -505,5 +506,32 @@ mod tests {
         sleep(Duration::from_millis(100)).await;
         let row = repo.get("conv-1").await.unwrap().unwrap();
         assert_eq!(row.session_id.as_deref(), Some("sess-42"));
+    }
+
+    /// Merely assigning an id must NOT persist it.
+    ///
+    /// This is the whole point of the split: an id issued by `session/new`
+    /// belongs to a session that has not been prompted yet, and persisting it
+    /// makes the next warmup pay for a resume the CLI cannot honour.
+    #[tokio::test(flavor = "current_thread")]
+    async fn assigning_an_id_does_not_persist_it() {
+        let (_svc, repo) = setup().await;
+        let (tx, rx) = mpsc::channel(64);
+
+        let cid = "conv-1".to_owned();
+        tokio::spawn(domain_event_consumer(cid, rx, repo.clone()));
+
+        tx.send(AcpSessionEvent::SessionAssigned {
+            session_id: SessionId::new("sess-unprompted"),
+        })
+        .await
+        .unwrap();
+
+        sleep(Duration::from_millis(100)).await;
+        let row = repo.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(
+            row.session_id, None,
+            "an id that has not carried a turn must stay out of the DB"
+        );
     }
 }

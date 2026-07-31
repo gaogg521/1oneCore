@@ -215,6 +215,20 @@ impl AcpSession {
             .push(AcpSessionEvent::SessionAssigned { session_id: sid });
     }
 
+    /// Declare the current session id worth persisting.
+    ///
+    /// Emitted once the session has actually carried a turn. Assigning an id
+    /// is not the same as earning the right to be resumed — see
+    /// `AcpSessionEvent::SessionIdDurable`. No-op when no id is set, and
+    /// callers are expected to invoke it at most once per id.
+    pub fn mark_session_id_durable(&mut self) {
+        let Some(sid) = self.session_id.clone() else {
+            return;
+        };
+        self.pending_events
+            .push(AcpSessionEvent::SessionIdDurable { session_id: sid });
+    }
+
     /// Drop a stale session id so the aggregate can be re-seeded with a
     /// freshly-issued one. Used when the CLI rejects the persisted sid
     /// with `SessionNotFound` (ELECTRON-1HQ): the resume helpers fall

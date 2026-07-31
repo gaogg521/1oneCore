@@ -1188,20 +1188,24 @@ impl AcpAgentManager {
         self.session_id_persisted.mark_unpersisted();
     }
 
-    /// Announce the current session id for persistence, once per id.
+    /// Record that the current id is already stored, so no later turn
+    /// re-announces it.
+    pub(super) fn mark_session_id_persisted(&self) {
+        self.session_id_persisted.mark_persisted();
+    }
+
+    /// Declare the current session id worth persisting, once per id.
     ///
-    /// Called after a prompt has actually reached the CLI: see the field doc
-    /// on `session_id_persisted` for why an unprompted session's id is worth
+    /// Called after a prompt has actually reached the CLI: see
+    /// [`SessionIdPersistence`] for why an unprompted session's id is worth
     /// less than nothing.
-    pub(super) fn announce_session_id_after_prompt(&self, sid: &str) {
+    pub(super) async fn announce_session_id_after_prompt(&self) {
         if !self.session_id_persisted.claim_announcement() {
             return;
         }
-        self.runtime.emit(AgentStreamEvent::SessionAssigned(
-            crate::protocol::events::SessionAssignedEventData {
-                session_id: sid.to_owned(),
-            },
-        ));
+        let mut session = self.session.write().await;
+        session.mark_session_id_durable();
+        self.commit_session_changes(&mut session).await;
     }
 
     /// Vendor label this session was spawned as (e.g. "claude"), if any.

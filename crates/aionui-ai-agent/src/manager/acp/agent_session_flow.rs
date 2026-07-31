@@ -61,19 +61,14 @@ impl AcpAgentManager {
         }
         self.emit_snapshot_events().await;
 
-        // Deliberately NOT announcing the id for persistence here.
-        //
-        // Persisting it at this point is what made stale-resume
-        // self-perpetuating: a session the CLI opened but was never prompted
-        // leaves nothing to resume, yet its id would be stored and the next
-        // warmup would spend a full session build discovering that. The
-        // rebuilt id then inherited the same fate. `announce_session_id_after_prompt`
-        // does it once the session has actually carried a turn.
-        //
-        // Crash recovery is unaffected in any way that matters: an unprompted
-        // session has no history to come back to, so falling through to a
-        // fresh `session/new` after a crash is both cheaper and the only thing
-        // that can succeed.
+        // Notify the stream consumers that a session id is now in effect.
+        // Persistence is deliberately NOT triggered here — that is what
+        // `AcpSessionEvent::SessionIdDurable` is for, emitted once the session
+        // has carried a turn. See `mark_session_id_unpersisted`.
+        self.runtime
+            .emit(AgentStreamEvent::SessionAssigned(SessionAssignedEventData {
+                session_id: sid.clone(),
+            }));
         self.mark_session_id_unpersisted();
 
         // Best-effort reconcile on a freshly-opened session. SessionNotFound
@@ -164,6 +159,15 @@ impl AcpAgentManager {
                     .emit(AgentStreamEvent::SessionAssigned(SessionAssignedEventData {
                         session_id: new_sid.clone(),
                     }));
+                // We only got here by resuming, so this session already has
+                // history — the replacement id has to reach the DB right away
+                // or the next warmup would resume the id we just replaced.
+                {
+                    let mut session = self.session.write().await;
+                    session.mark_session_id_durable();
+                    self.commit_session_changes(&mut session).await;
+                }
+                self.mark_session_id_persisted();
             }
 
             return match self.reconcile_session(&new_sid).await {
@@ -276,7 +280,7 @@ impl AcpAgentManager {
         // The session has now carried a turn, so its id is worth resuming.
         // See `announce_session_id_after_prompt` for why this is not done at
         // session/new time.
-        self.announce_session_id_after_prompt(sid);
+        self.announce_session_id_after_prompt().await;
 
         // Drain the turn-scoped receiver once: detect both the empty-turn
         // condition and any CodeBuddy dialect signal (session_end / token
