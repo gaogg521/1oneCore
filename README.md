@@ -52,10 +52,13 @@
 | **Cron** | 定时任务调度与 Keep-awake |
 | **Team** | 多 Agent 编队（Leader / Teammate） |
 | **扩展** | Extension 生命周期与沙箱 |
-| **one-org** | 企业、租户、成员、邀请码 |
-| **one-sso** | LDAP、飞书等 SSO |
-| **one-employee** | 数字员工、协作看板 API |
-| **one-devops** | 需求树、里程碑、RAG、派活、测试计划域 |
+| **one-org** | 项目组、租户、成员与角色、邀请码、组织架构、审计日志、备份恢复 |
+| **one-enterprise** | 企业层（跨项目组治理、企业成员与席位） |
+| **one-sso** | LDAP、飞书 / 钉钉 / 企业微信、标准 OIDC（Okta / Azure AD / Google） |
+| **one-billing** | 授权许可离线激活、三档订阅与席位、功能门控、模型成本管控与用量 |
+| **one-employee** | 数字员工（专家人设 + 后端 + 模型绑定）、协作看板 API |
+| **one-devops** | 需求树、里程碑、RAG 混合检索知识库、派活、测试计划域 |
+| **one-platform** | 容器化运行时、实时协作后端等平台级预留适配器 |
 
 ---
 
@@ -72,10 +75,13 @@ crates/
 ├── aionui-cron/
 ├── aionui-mcp/
 ├── aionui-team/
-├── one-org/             # 1ONE fork 扩展
-├── one-sso/
-├── one-employee/
-└── one-devops/
+├── one-org/             # 1ONE fork 扩展：项目组
+├── one-enterprise/      #   企业层
+├── one-sso/             #   SSO（含 OIDC）
+├── one-billing/         #   授权 / 订阅 / 席位 / 模型管控
+├── one-employee/        #   数字员工
+├── one-devops/          #   需求 / 知识库 / 流水线
+└── one-platform/        #   平台级预留适配器
 ```
 
 数据库迁移位于 `crates/aionui-db/migrations/`；应用启动时自动执行。
