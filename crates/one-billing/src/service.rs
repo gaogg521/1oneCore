@@ -507,9 +507,23 @@ impl BillingService {
         self.provider.create_checkout(enterprise_id, target_tier)
     }
 
-    /// Whether the caller may see the usage dashboard / provision a tier: a
-    /// company admin (`one_enterprise_members.role='admin'`) or a server
-    /// org/system admin. Tolerant of absent tables (personal mode → false).
+    /// Whether the caller may see the usage dashboard / provision a tier.
+    ///
+    /// Billing is **enterprise-scoped** (`one_enterprise_license` and
+    /// `one_usage_events` are keyed by `enterprise_id`), so the guard has to be
+    /// enterprise-scoped too: a company admin, or the deployment's
+    /// `system_admin`.
+    ///
+    /// A plain `org_admin` is deliberately NOT enough. An org_admin administers
+    /// one project group, but the tier, seat cap, spend cap and model allowlist
+    /// they would be changing apply to the whole company — so in a company with
+    /// several project groups, accepting org_admin would let group A's admin
+    /// raise (or cut) the budget for everyone. The `system_admin` arm is what
+    /// keeps personal / single-machine deployments working, where the machine
+    /// owner holds that role and there is no company row at all.
+    ///
+    /// Tolerant of absent tables (personal mode → falls through to the role
+    /// read, which itself tolerates a missing `one_user_org`).
     pub async fn is_billing_admin(&self, user_id: &str) -> Result<bool, BillingError> {
         let company_role: Option<String> =
             sqlx::query_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ?")
@@ -530,7 +544,7 @@ impl BillingService {
         .fetch_optional(&self.pool)
         .await
         .unwrap_or(None);
-        Ok(matches!(org_role.as_deref(), Some("system_admin") | Some("org_admin")))
+        Ok(org_role.as_deref() == Some("system_admin"))
     }
 }
 
@@ -768,5 +782,43 @@ mod tests {
         let plan = svc.plan("entX").await.unwrap();
         assert_eq!(plan.cost_cap_micros, Some(100));
         assert!(plan.cost_used_micros >= 100);
+    }
+
+    /// Billing is enterprise-scoped, so the guard must be too.
+    ///
+    /// The interesting case is `org_admin`: they administer ONE project group,
+    /// but tier / seat cap / spend cap / model allowlist apply to the whole
+    /// company. Letting them through would mean group A's admin can move the
+    /// budget for every other group. `system_admin` is still accepted because
+    /// that is the machine owner on a personal or single-server install, where
+    /// no company row exists at all.
+    #[tokio::test]
+    async fn billing_admin_is_enterprise_scoped_not_project_group_scoped() {
+        let svc = service().await;
+        sqlx::raw_sql(
+            "CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY (user_id, tenant_id));
+             CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL);
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('group_admin', 't1', 'org_admin');
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('machine_owner', 't1', 'system_admin');
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('plain', 't1', 'member');
+             INSERT INTO one_enterprise_members (user_id, enterprise_id, role, joined_at, updated_at) VALUES ('company_admin', 'entA', 'admin', 0, 0);",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+
+        assert!(
+            svc.is_billing_admin("company_admin").await.unwrap(),
+            "a company admin owns the company's plan"
+        );
+        assert!(
+            svc.is_billing_admin("machine_owner").await.unwrap(),
+            "system_admin must keep working — personal installs have no company row"
+        );
+        assert!(
+            !svc.is_billing_admin("group_admin").await.unwrap(),
+            "a project-group admin must not be able to move the whole company's budget"
+        );
+        assert!(!svc.is_billing_admin("plain").await.unwrap());
     }
 }
