@@ -45,6 +45,7 @@ pub enum RuntimeFailureKind {
     UnsupportedPlatform,
     BundledResourceMissing,
     BundledResourceInvalid,
+    ActivationIoFailed,
     Unknown,
 }
 
@@ -106,6 +107,14 @@ mod tests {
 
         assert_eq!(missing, "bundled_resource_missing");
         assert_eq!(invalid, "bundled_resource_invalid");
+    }
+
+    #[test]
+    fn activation_io_failed_serializes_to_snake_case() {
+        let json = serde_json::to_string(&RuntimeFailureKind::ActivationIoFailed).unwrap();
+        assert_eq!(json, "\"activation_io_failed\"");
+        let parsed: RuntimeFailureKind = serde_json::from_str("\"activation_io_failed\"").unwrap();
+        assert_eq!(parsed, RuntimeFailureKind::ActivationIoFailed);
     }
 
     #[test]
