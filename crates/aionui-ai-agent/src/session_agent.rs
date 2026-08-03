@@ -188,6 +188,27 @@ struct CatalogPreload {
     current_mode: Option<String>,
 }
 
+/// Per-model reasoning efforts out of the persisted `available_models` column.
+///
+/// The catalog is written by `catalog_partial_from_caps` as
+/// `{available_models:[{id,label,reasoning_efforts?}]}`. Rows written before
+/// that field existed simply have none, so a stale catalog degrades to "no
+/// effort axis" rather than failing to parse.
+fn efforts_for_model(available_models: Option<&serde_json::Value>, model_id: &str) -> Vec<String> {
+    let Some(list) = available_models
+        .and_then(|v| v.get("available_models"))
+        .and_then(|v| v.as_array())
+    else {
+        return Vec::new();
+    };
+    list.iter()
+        .find(|entry| entry.get("id").and_then(|v| v.as_str()) == Some(model_id))
+        .and_then(|entry| entry.get("reasoning_efforts"))
+        .and_then(|v| v.as_array())
+        .map(|efforts| efforts.iter().filter_map(|e| e.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
+}
+
 impl CatalogPreload {
     /// Parse the persisted handshake's `available_models` / `available_modes`
     /// columns into the live-capabilities shape. Reuses the ACP path's
@@ -211,7 +232,13 @@ impl CatalogPreload {
                         id: m.model_id.to_string(),
                         name: m.name.clone(),
                         description: m.description.clone(),
-                        reasoning_efforts: Vec::new(),
+                        // Read straight from the stored JSON: the ACP
+                        // `SessionModelState` this comes from has no effort
+                        // axis, so the parser cannot carry it through.
+                        reasoning_efforts: efforts_for_model(
+                            handshake.available_models.as_ref(),
+                            &m.model_id.to_string(),
+                        ),
                     })
                     .collect::<Vec<_>>();
                 let current = state.current_model_id.to_string();
@@ -1206,6 +1233,56 @@ pub struct SessionBuildInputs<'a> {
     /// spawn-time `session-cli-config` dump AND threads it (with the vendor
     /// label) into the `SessionAgentTask` for the send-time dump.
     pub prompt_dump_dir: Option<std::path::PathBuf>,
+    /// Antigravity only: the prepared `.agents/hooks.json` body, so a session
+    /// switched out of full auto can restore its approval gate.
+    pub permission_hook_body: Option<String>,
+}
+
+/// The mode a session actually starts on.
+///
+/// The persisted snapshot wins over the create-time seed: it is where a runtime
+/// switch lands (`save_acp_runtime_mode`) and where a scheduled run records the
+/// full-auto mode it resolved. Reading only `config.session_mode` would see the
+/// value the conversation was created with and miss both.
+///
+/// Aliases are normalized to the backend-native id here, so callers compare
+/// against catalog values rather than whatever spelling reached the API.
+/// The reasoning effort a session should open with: what `set_config_option`
+/// persisted, else the create-time seed.
+///
+/// Mirrors the `mode`/`model` precedence — snapshot over seed — and is a free
+/// function so the precedence is testable without standing up a backend.
+///
+/// NOT claude-scoped. It was, on the grounds that "codex effort rides
+/// collaborationMode via SetMode"; measured false — codex accepts
+/// `SetConfigOption{effort|reasoning_effort|thought_level}` and writes
+/// `thread/settings/update {"effort":…}`. The gate meant a codex conversation
+/// persisted its effort and lost it on every rebuild.
+pub(crate) fn resolved_effort(
+    config: &aionui_api_types::AcpBuildExtra,
+    session_snapshot: Option<&PersistedSessionState>,
+) -> Option<String> {
+    session_snapshot
+        .and_then(|s| {
+            s.config_selections
+                .iter()
+                .find(|(k, _)| k.as_str() == EFFORT_CONFIG_KEY)
+                .map(|(_, v)| v.as_str().to_owned())
+        })
+        .or_else(|| config.thought_level.clone())
+        .filter(|value| !value.is_empty())
+}
+
+pub(crate) fn resolved_session_mode(
+    config: &AcpBuildExtra,
+    session_snapshot: Option<&PersistedSessionState>,
+    metadata: &aionui_api_types::AgentMetadata,
+) -> Option<String> {
+    session_snapshot
+        .and_then(|s| s.current_mode_id.as_ref().map(|m| m.as_str().to_owned()))
+        .or_else(|| config.session_mode.clone())
+        .map(|m| crate::manager::acp::mode_normalize::normalize_requested_mode(metadata, &m))
+        .filter(|s| !s.is_empty())
 }
 
 /// The pure spec + mode/model mapping — the sibling of clean-slate's
@@ -1420,20 +1497,22 @@ pub async fn build_session_instance(
     // #4 — the persisted reasoning-effort level (claude only). There is no spawn-time
     // effort flag (effort rides a post-open control_request, NOT `--`args like
     // model/mode), so it cannot go into `SessionConfig`; instead we re-apply it AFTER
-    // open. codex effort is not a standalone selection (it rides collaborationMode via
-    // SetMode), so this is claude-scoped. Read from the snapshot's config_selections
-    // (the map `set_config_option` persisted under EFFORT_CONFIG_KEY).
-    let persisted_effort = (backend_label == "claude")
-        .then(|| {
-            session_snapshot.and_then(|s| {
-                s.config_selections
-                    .iter()
-                    .find(|(k, _)| k.as_str() == EFFORT_CONFIG_KEY)
-                    .map(|(_, v)| v.as_str().to_owned())
-            })
-        })
-        .flatten()
-        .filter(|s| !s.is_empty());
+    // open. Snapshot first (what `set_config_option` persisted under
+    // EFFORT_CONFIG_KEY), then the create-time seed — the same precedence
+    // `mode` and `model` above already use.
+    //
+    // NOT claude-scoped. It was, on the grounds that "codex effort rides
+    // collaborationMode via SetMode" — measured false: codex accepts
+    // `SetConfigOption{effort|reasoning_effort|thought_level}` and writes
+    // `thread/settings/update {"effort":"high"}` (codex_conn.rs, and confirmed
+    // live through the HTTP config-options endpoint). The gate meant a codex
+    // conversation persisted its effort and then silently lost it on every
+    // rebuild.
+    //
+    // The seed leg closes the other half: `extra.thought_level` has been
+    // carried from the new-conversation screen all along and nothing ever read
+    // it, so an effort chosen before the first turn was dropped.
+    let persisted_effort = resolved_effort(config, session_snapshot);
 
     // DEV (`--dump-prompts`): dump the resolved SessionConfig BEFORE it moves
     // into open_session. Best-effort — a failure only warns, never fails open.
@@ -1746,6 +1825,36 @@ fn catalog_partial_from_caps(caps: &aionui_session::Capabilities) -> Option<aion
             })).collect::<Vec<_>>(),
         }));
     }
+    // Reasoning-effort ("thought level") select. The new-conversation screen
+    // builds its effort picker from `config_options` ALONE —
+    // `buildAgentRuntimeThoughtLevelOption` looks up category `thought_level`
+    // and, unlike mode, has no fallback to a top-level column. Without this the
+    // control is simply absent exactly where the choice is made.
+    //
+    // Offered for any backend whose models advertise efforts: claude and codex
+    // both do, and both accept `SetConfigOption{reasoning_effort}` (verified
+    // live). A backend with no effort axis — agy folds it into the model id —
+    // yields an empty list and no option, rather than a dead control.
+    let efforts = resolve_current_model_efforts(&caps.available_models, caps.current_model.as_deref());
+    if !efforts.is_empty() {
+        config_options.push(serde_json::json!({
+            "id": "reasoning_effort",
+            "category": "thought_level",
+            "type": "select",
+            // Deliberately NOT `caps.current_effort`. That field means "the
+            // level THIS session last set" — claude remembers it because the
+            // CLI never echoes effort back (capability.rs), and codex does not
+            // track it at all. This catalog is agent-level and shared by every
+            // conversation, so writing a session's level here would make one
+            // conversation's choice the default for all of them. The picker
+            // offers the levels; the chosen one travels per-conversation via
+            // `extra.thought_level`.
+            "currentValue": serde_json::Value::Null,
+            "options": efforts.iter().map(|e| serde_json::json!({
+                "value": e, "name": e,
+            })).collect::<Vec<_>>(),
+        }));
+    }
     let available_commands = if caps.slash_commands.is_empty() {
         None
     } else {
@@ -1780,9 +1889,20 @@ fn catalog_partial_from_caps(caps: &aionui_session::Capabilities) -> Option<aion
     });
     let available_models = (!caps.available_models.is_empty()).then(|| {
         serde_json::json!({
-            "available_models": caps.available_models.iter().map(|m| serde_json::json!({
-                "id": m.id, "label": m.name,
-            })).collect::<Vec<_>>(),
+            "available_models": caps.available_models.iter().map(|m| {
+                let mut entry = serde_json::json!({ "id": m.id, "label": m.name });
+                // Per-model reasoning efforts (claude's `supportedEffortLevels`).
+                // Dropped here until now, so the persisted catalog carried only
+                // {id,label} and the thought-level picker could not be rebuilt
+                // from it — see `CatalogPreload::from_handshake`. Omitted rather
+                // than written empty for models that have none, keeping the
+                // column byte-identical for every backend that has no effort
+                // axis (agy folds effort into the model id; codex has none).
+                if !m.reasoning_efforts.is_empty() {
+                    entry["reasoning_efforts"] = serde_json::json!(m.reasoning_efforts);
+                }
+                entry
+            }).collect::<Vec<_>>(),
             "current_model_id": caps.current_model,
         })
     });
@@ -3239,6 +3359,66 @@ mod build_mapping_tests {
     use super::*;
     use crate::shared_kernel::{ModeId, ModelId};
     use aionui_session::SessionSpec;
+
+    fn snapshot_with_effort(effort: &str) -> PersistedSessionState {
+        let mut s = PersistedSessionState::default();
+        s.config_selections.insert(
+            crate::shared_kernel::ConfigKey::new(EFFORT_CONFIG_KEY),
+            crate::shared_kernel::ConfigValue::new(effort),
+        );
+        s
+    }
+
+    fn extra_with_thought_level(level: Option<&str>) -> aionui_api_types::AcpBuildExtra {
+        aionui_api_types::AcpBuildExtra {
+            backend: Some("codex".into()),
+            thought_level: level.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_codex_session_restores_its_persisted_effort() {
+        // Was gated on `backend_label == "claude"` because "codex effort rides
+        // collaborationMode via SetMode". Measured false: codex accepts
+        // SetConfigOption{effort} and writes thread/settings/update. The gate
+        // meant codex persisted an effort and lost it on every rebuild.
+        assert_eq!(
+            resolved_effort(&extra_with_thought_level(None), Some(&snapshot_with_effort("high"))),
+            Some("high".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_create_time_effort_seed_is_applied() {
+        // `extra.thought_level` has been carried from the new-conversation
+        // screen all along and nothing read it, so an effort chosen before the
+        // first turn was silently dropped.
+        assert_eq!(
+            resolved_effort(&extra_with_thought_level(Some("xhigh")), None),
+            Some("xhigh".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_persisted_effort_outranks_the_seed() {
+        // Same precedence as mode/model: what the user changed mid-session wins
+        // over what they picked when creating it.
+        assert_eq!(
+            resolved_effort(
+                &extra_with_thought_level(Some("low")),
+                Some(&snapshot_with_effort("max"))
+            ),
+            Some("max".to_owned())
+        );
+    }
+
+    #[test]
+    fn no_effort_anywhere_stays_none() {
+        assert_eq!(resolved_effort(&extra_with_thought_level(None), None), None);
+        // An empty seed is not a choice.
+        assert_eq!(resolved_effort(&extra_with_thought_level(Some("")), None), None);
+    }
 
     fn snapshot(mode: Option<&str>, model: Option<&str>) -> PersistedSessionState {
         PersistedSessionState {
@@ -6865,5 +7045,265 @@ mod force_kill_tests {
             "non-UserCancel kill must not broadcast Finish/Error, got {terminal:?}"
         );
         assert_eq!(IAgentTask::status(task.as_ref()), Some(ConversationStatus::Running));
+    }
+}
+
+#[cfg(test)]
+mod cold_start_effort_tests {
+    //! A resumed conversation rebuilds its pickers from the persisted catalog
+    //! before the live handshake lands. That catalog carried only `{id,label}`,
+    //! so the thought-level group was missing until the user left the
+    //! conversation and came back — nothing re-publishes config options when
+    //! the handshake arrives. Present since #609 moved claude/codex onto the
+    //! direct-CLI path.
+    use super::*;
+
+    fn handshake_with(models: serde_json::Value) -> aionui_api_types::AgentHandshake {
+        aionui_api_types::AgentHandshake {
+            available_models: Some(models),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_persisted_catalog_round_trips_per_model_efforts() {
+        let caps = aionui_session::Capabilities {
+            available_models: vec![aionui_session::ModelInfo {
+                id: "opus".into(),
+                name: "Opus".into(),
+                description: None,
+                reasoning_efforts: vec!["low".into(), "high".into()],
+            }],
+            current_model: Some("opus".into()),
+            ..Default::default()
+        };
+        let partial = catalog_partial_from_caps(&caps).expect("catalog");
+        let preload = CatalogPreload::from_handshake(&partial);
+
+        assert_eq!(
+            preload.available_models[0].reasoning_efforts,
+            vec!["low".to_owned(), "high".to_owned()],
+            "efforts must survive the write/read round trip, or a resumed \
+             conversation opens without a thought-level picker"
+        );
+        // The whole point: this is what feeds the picker.
+        assert_eq!(
+            resolve_current_model_efforts(&preload.available_models, Some("opus")),
+            vec!["low".to_owned(), "high".to_owned()]
+        );
+    }
+
+    #[test]
+    fn the_catalog_offers_an_effort_option() {
+        // The new-conversation screen builds its effort picker from
+        // `config_options` alone — `buildAgentRuntimeThoughtLevelOption` has no
+        // fallback to a top-level column the way mode does, so without this the
+        // control is absent exactly where the choice is made.
+        let caps = aionui_session::Capabilities {
+            available_models: vec![aionui_session::ModelInfo {
+                id: "gpt-5.6-sol".into(),
+                name: "GPT-5.6-Sol".into(),
+                description: None,
+                reasoning_efforts: vec!["low".into(), "high".into()],
+            }],
+            current_model: Some("gpt-5.6-sol".into()),
+            current_effort: Some("high".into()),
+            ..Default::default()
+        };
+        let partial = catalog_partial_from_caps(&caps).expect("catalog");
+        let effort = partial
+            .config_options
+            .as_ref()
+            .and_then(|v| v.as_array())
+            .and_then(|a| {
+                a.iter()
+                    .find(|o| o.get("category").and_then(|v| v.as_str()) == Some("thought_level"))
+            })
+            .expect("an effort option must be offered")
+            .clone();
+        assert_eq!(effort["id"], "reasoning_effort");
+        // Agent-level catalog: a session's current level must not leak into it
+        // as everyone's default.
+        assert!(effort["currentValue"].is_null(), "{effort}");
+        assert_eq!(effort["options"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_backend_with_no_effort_axis_offers_no_option() {
+        // agy folds effort into the model id; an empty select renders a dead
+        // control.
+        let caps = aionui_session::Capabilities {
+            available_models: vec![aionui_session::ModelInfo {
+                id: "gemini-3.6-flash-low".into(),
+                name: "gemini-3.6-flash-low".into(),
+                description: None,
+                reasoning_efforts: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let partial = catalog_partial_from_caps(&caps).expect("catalog");
+        let has_effort = partial
+            .config_options
+            .as_ref()
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .any(|o| o.get("category").and_then(|v| v.as_str()) == Some("thought_level"))
+            })
+            .unwrap_or(false);
+        assert!(!has_effort, "{:?}", partial.config_options);
+    }
+
+    #[test]
+    fn a_model_without_efforts_writes_no_key() {
+        // agy folds effort into the model id and codex has no effort axis;
+        // writing an empty array for them would change the stored column for
+        // every backend to fix one.
+        let caps = aionui_session::Capabilities {
+            available_models: vec![aionui_session::ModelInfo {
+                id: "gemini-3.6-flash-low".into(),
+                name: "gemini-3.6-flash-low".into(),
+                description: None,
+                reasoning_efforts: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let partial = catalog_partial_from_caps(&caps).expect("catalog");
+        let entry = &partial.available_models.as_ref().unwrap()["available_models"][0];
+        assert!(entry.get("reasoning_efforts").is_none(), "{entry}");
+    }
+
+    #[test]
+    fn a_catalog_written_before_this_field_still_loads() {
+        // Every row already in the database predates the field.
+        let preload = CatalogPreload::from_handshake(&handshake_with(serde_json::json!({
+            "available_models": [{"id": "opus", "label": "Opus"}],
+            "current_model_id": "opus",
+        })));
+        assert_eq!(preload.available_models.len(), 1);
+        assert!(preload.available_models[0].reasoning_efforts.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod catalog_writeback_tests {
+    //! When a backend discovers models LATE. agy runs `agy models` off the open
+    //! path (~3s cold, slower on a bad network), so the write-back must keep
+    //! watching well past the point where modes are already known.
+    use super::*;
+    use aionui_session::{Admission, Capabilities, CommandReceipt, ModeInfo, ModelInfo};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// `catalog_partial_from_caps` nests the list under its own key alongside
+    /// `current_*`, so reach through that wrapper rather than the outer value.
+    fn nested_len(field: Option<&serde_json::Value>, key: &str) -> usize {
+        field
+            .and_then(|v| v.get(key))
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0)
+    }
+
+    /// Reports modes immediately and models only after `polls_before_models`
+    /// calls to `capabilities()` — the write-back polls every 50ms, so the
+    /// count sets how late discovery lands.
+    struct LateModelsBackend {
+        polls: AtomicUsize,
+        polls_before_models: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBackend for LateModelsBackend {
+        async fn dispatch(&self, _c: Command) -> Result<CommandReceipt, BackendError> {
+            Ok(CommandReceipt {
+                accepted: true,
+                admission: Admission::NoTurn,
+                turn_gen: 0,
+            })
+        }
+        fn events(&self) -> BoxStream<'static, SessionEnvelope> {
+            use futures_util::StreamExt as _;
+            futures_util::stream::empty().boxed()
+        }
+        fn capabilities(&self) -> Capabilities {
+            let n = self.polls.fetch_add(1, Ordering::SeqCst);
+            let available_models = if n >= self.polls_before_models {
+                vec![ModelInfo {
+                    id: "gemini-3.6-flash-high".into(),
+                    name: "gemini-3.6-flash-high".into(),
+                    description: None,
+                    reasoning_efforts: Vec::new(),
+                }]
+            } else {
+                Vec::new()
+            };
+            Capabilities {
+                available_modes: vec![ModeInfo {
+                    id: "default".into(),
+                    name: "Default".into(),
+                    description: None,
+                }],
+                available_models,
+                ..Default::default()
+            }
+        }
+    }
+
+    /// Drain the channel until a message carrying models arrives, or the
+    /// write-back gives up. Returns every message it saw.
+    async fn collect_until_models(
+        rx: &mut tokio::sync::mpsc::Receiver<crate::registry::CatalogSyncMessage>,
+    ) -> Vec<crate::registry::CatalogSyncMessage> {
+        let mut seen = Vec::new();
+        while let Some(msg) = rx.recv().await {
+            let has_models = nested_len(msg.handshake.available_models.as_ref(), "available_models") > 0;
+            seen.push(msg);
+            if has_models {
+                break;
+            }
+        }
+        seen
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn models_discovered_after_the_interim_publish_still_reach_the_catalog() {
+        // 200 polls ≈ 10s: past the interim publish, well inside the model
+        // window. Before this fix the write-back stopped at 5s and the model
+        // picker stayed empty for the whole session with no error anywhere.
+        let backend = Arc::new(LateModelsBackend {
+            polls: AtomicUsize::new(0),
+            polls_before_models: 200,
+        });
+        let (tx, mut rx) = crate::registry::catalog_channel_for_test(16);
+        spawn_catalog_writeback("agent-1".into(), "user-1".into(), backend, tx);
+
+        let seen = collect_until_models(&mut rx).await;
+        let last = seen.last().expect("write-back published nothing at all");
+        assert_eq!(
+            nested_len(last.handshake.available_models.as_ref(), "available_models"),
+            1,
+            "late-discovered models never reached the catalog; saw {} message(s)",
+            seen.len()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_backend_that_never_reports_models_still_publishes_its_modes() {
+        // claude/codex fill capabilities from the handshake and may legitimately
+        // have no model list. Waiting for the longer model window must not stop
+        // their modes from landing.
+        let backend = Arc::new(LateModelsBackend {
+            polls: AtomicUsize::new(0),
+            polls_before_models: usize::MAX,
+        });
+        let (tx, mut rx) = crate::registry::catalog_channel_for_test(16);
+        spawn_catalog_writeback("agent-2".into(), "user-2".into(), backend, tx);
+
+        let msg = rx.recv().await.expect("modes were never published");
+        assert_eq!(msg.agent_metadata_id, "agent-2");
+        assert!(
+            nested_len(msg.handshake.available_modes.as_ref(), "available_modes") > 0,
+            "expected the modes-only partial to be published"
+        );
     }
 }
