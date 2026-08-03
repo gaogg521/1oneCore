@@ -80,7 +80,7 @@ async fn verified_registry_npx_agents_use_stable_packages_and_conservative_team_
         assert_eq!(source["binary_name"], binary_name, "{backend} binary_name");
         assert_eq!(source["bridge_binary"], "npx", "{backend} bridge_binary");
         let policy: serde_json::Value = serde_json::from_str(row.behavior_policy.as_deref().unwrap()).unwrap();
-        // 033 retired the veto flag and the no-op `supports_team: false`; a
+        // 044 retired the veto flag and the no-op `supports_team: false`; a
         // Registry agent's team membership is inferred from its advertised MCP
         // transports, never pinned in the stored policy.
         assert!(

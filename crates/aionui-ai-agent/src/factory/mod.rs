@@ -3,6 +3,7 @@ pub mod acp_assembler;
 mod acp;
 mod acp_launch_policy;
 pub(crate) mod aionrs;
+mod antigravity;
 mod context;
 mod session_mcp;
 
@@ -59,16 +60,24 @@ pub struct AgentFactoryDeps {
     /// protocol natively). `None` for tests/composition paths that do not
     /// need it.
     pub claude_bridge_config_repo: Option<Arc<dyn IClaudeBridgeConfigRepository>>,
-    // NOT adopted this sync (2026-07-29): upstream's `session_spawner` field
-    // powers the new direct-CLI `SessionAgentTask` path (`session_agent.rs`),
-    // which routes claude/codex around the ACP manager entirely and — as
-    // shipped upstream — only wires the third-party cc-switch fallback, not
-    // our first-party Codex/Claude bridge above. Adopting it here would
-    // silently regress the bridge (the product's flagship differentiator) to
-    // cc-switch-only for claude/codex conversations. `factory/acp.rs` still
-    // has the early-return dispatch call site removed to match. Revisit in a
-    // dedicated follow-up that threads codex_bridge_config_repo/
-    // claude_bridge_config_repo into SessionBuildInputs first.
+    /// Subprocess spawner for the direct-CLI session model (`SessionAgentTask`).
+    ///
+    /// ⚠️ Fork divergence: upstream wires this because claude/codex always take
+    /// that path. Here it exists for **Antigravity only** — `agy` has no ACP
+    /// surface, so it has nowhere else to run. claude/codex deliberately stay on
+    /// the ACP manager path so they keep the first-party Codex/Claude bridge
+    /// above; see `factory::acp::route_for_backend` for the full reasoning.
+    pub session_spawner: Arc<dyn aionui_process::Spawner>,
+    /// Base URL the Antigravity permission hook calls back on (e.g.
+    /// `http://127.0.0.1:25808`). agy cannot prompt for permission in headless
+    /// mode, so AionUi registers its own binary as a PreToolUse hook and
+    /// answers each request itself — the hook process needs this address to
+    /// reach us. `None` disables the bridge, which means agy runs with its gate
+    /// open and NO per-call approval; only acceptable in tests.
+    pub antigravity_hook_base_url: Option<String>,
+    /// Per-conversation tokens authenticating the permission hook's callback.
+    /// Shared with the HTTP endpoint that answers those callbacks.
+    pub antigravity_hook_tokens: Arc<crate::antigravity_hook::HookTokenRegistry>,
 }
 
 /// Build a production agent factory that dispatches to concrete agent types.
@@ -94,6 +103,7 @@ async fn build_agent(deps: Arc<AgentFactoryDeps>, options: BuildTaskOptions) -> 
     match context.kind {
         AgentSessionKind::Acp(acp_context) => acp::build(deps, *acp_context, ctx).await,
         AgentSessionKind::Aionrs(aionrs_context) => aionrs::build(deps, *aionrs_context, model, ctx).await,
+        AgentSessionKind::Antigravity(agy_context) => antigravity::build(deps, *agy_context, ctx).await,
     }
 }
 

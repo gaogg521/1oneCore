@@ -180,6 +180,48 @@ async fn resolve_codex_bridge_context_window(
     }
 }
 
+/// Where a conversation that arrived on the ACP factory actually has to run.
+///
+/// Conversations reach this factory by their *family*, not by how their agent
+/// talks: the frontend renders every non-aionrs agent through the ACP chat
+/// surface, so the backend label is the only thing that says which runtime a
+/// row really needs.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum BackendRoute {
+    /// Upstream routes claude/codex here (direct-CLI via
+    /// `build_session_instance`). ⚠️ This fork produces this variant for
+    /// nothing — see `route_for_backend`. Kept so the enum stays identical to
+    /// upstream's and future syncs of this file keep merging cleanly.
+    #[allow(dead_code)]
+    DirectCli,
+    /// agy — direct-CLI via its own factory (does NOT speak ACP).
+    Antigravity,
+    /// A real ACP vendor: the `AcpAgentManager` handshake path.
+    AcpManager,
+}
+
+/// ⚠️ Fork divergence: claude/codex map to `AcpManager`, not `DirectCli`.
+///
+/// Upstream sends them down the direct-CLI path, which skips
+/// `factory::acp::build`'s first-party Codex/Claude bridge injection and only
+/// wires the third-party cc-switch fallback. On this fork that bridge is what
+/// points claude/codex at a company model gateway, so taking upstream's arm
+/// would silently regress enterprise deployments to cc-switch-or-official-account.
+///
+/// Antigravity is different and DOES take the direct route: `agy` has no ACP
+/// surface at all, so there is no bridge to lose and no ACP path to fall back to.
+///
+/// Flipping claude/codex back requires threading `codex_bridge_config_repo` /
+/// `claude_bridge_config_repo` into `SessionBuildInputs` first, then verifying
+/// against a real on-disk session transcript (see CLAUDE.md, 2026-07-23) — a
+/// green test suite does not catch this regression.
+pub(crate) fn route_for_backend(backend: Option<&str>) -> BackendRoute {
+    match backend {
+        Some("antigravity") => BackendRoute::Antigravity,
+        _ => BackendRoute::AcpManager,
+    }
+}
+
 pub(super) async fn build(
     deps: Arc<AgentFactoryDeps>,
     build_context: AcpSessionBuildContext,
@@ -201,18 +243,37 @@ pub(super) async fn build(
         config.backend.clone_from(&meta.backend);
     }
 
-    // NOT adopted this sync (2026-07-29, reaffirmed on the 7f8ed6c5 multi-
-    // account cherry-pick): upstream ports claude/codex to a clean-slate
-    // direct-CLI `SessionAgentTask` here (see `session_agent.rs`), bypassing
-    // the ACP manager path below entirely — including our first-party
-    // Codex/Claude bridge injection further down in this function. Upstream's
-    // session path only wires the third-party cc-switch fallback, not
-    // codex_bridge_config_repo/claude_bridge_config_repo, so adopting it as-is
-    // would silently regress the bridge to cc-switch-only for claude/codex.
-    // Staying on the ACP path below until a follow-up threads the bridge
-    // repos into SessionBuildInputs. See factory/mod.rs for the matching note
-    // on the dropped `session_spawner` field. `session_agent.rs` itself
-    // remains dead code on this fork (see its own module doc).
+    // PARTIALLY adopted (2026-08-14). Antigravity genuinely has no ACP surface
+    // — `agy` does not speak the protocol at all — so it must take the
+    // direct-CLI route or it cannot run. It is dispatched below.
+    //
+    // claude/codex are the opposite case and deliberately do NOT follow: the
+    // `BackendRoute::DirectCli` arm upstream added here routes them around the
+    // ACP manager, and with it around this function's first-party Codex/Claude
+    // bridge injection. Upstream's session path only wires the third-party
+    // cc-switch fallback, not codex_bridge_config_repo /
+    // claude_bridge_config_repo, so taking that arm would silently regress the
+    // bridge to cc-switch-only — the product's flagship differentiator for
+    // enterprise deployments pointing claude/codex at a company gateway.
+    // `route_for_backend` therefore maps them to `AcpManager` on this fork.
+    // Revisit only in a dedicated follow-up that threads the bridge repos into
+    // `SessionBuildInputs` first, and verify it against a real session
+    // transcript on disk (see CLAUDE.md, 2026-07-23).
+    if matches!(route_for_backend(config.backend.as_deref()), BackendRoute::Antigravity) {
+        return super::antigravity::build(
+            deps,
+            crate::session_context::AntigravitySessionBuildContext {
+                config,
+                team: build_context.team,
+                belongs_to_team: build_context.belongs_to_team,
+                session_id: build_context.session_id,
+                session_snapshot: build_context.session_snapshot,
+            },
+            ctx,
+        )
+        .await;
+    }
+
 
     let mut command_spec = resolve_agent_command_spec(
         &meta,
@@ -357,7 +418,7 @@ pub(super) async fn build(
     Ok(instance)
 }
 
-async fn resolve_catalog_metadata(
+pub(super) async fn resolve_catalog_metadata(
     registry: &Arc<AgentRegistry>,
     config: &aionui_api_types::AcpBuildExtra,
     user_id: &str,
@@ -1456,5 +1517,29 @@ mod tests {
 
         let servers = load_user_mcp_servers(repo.as_ref(), None, TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
         assert!(servers.is_empty());
+    }
+
+    /// Antigravity arrives on the ACP factory because the renderer puts every
+    /// non-aionrs agent on the ACP chat surface — but agy does not speak ACP.
+    /// Routing it to the manager makes the initialize handshake time out and the
+    /// user sees "The selected Agent failed to start", with a fully working agy
+    /// installed. Verified end-to-end from the AionUi UI.
+    #[test]
+    fn antigravity_never_routes_to_the_acp_manager() {
+        assert_eq!(route_for_backend(Some("antigravity")), BackendRoute::Antigravity);
+    }
+
+    #[test]
+    fn claude_and_codex_keep_the_direct_cli_route() {
+        assert_eq!(route_for_backend(Some("claude")), BackendRoute::DirectCli);
+        assert_eq!(route_for_backend(Some("codex")), BackendRoute::DirectCli);
+    }
+
+    #[test]
+    fn a_real_acp_vendor_still_reaches_the_manager() {
+        // The default must stay the manager: every other vendor DOES speak ACP.
+        assert_eq!(route_for_backend(Some("gemini")), BackendRoute::AcpManager);
+        assert_eq!(route_for_backend(Some("opencode")), BackendRoute::AcpManager);
+        assert_eq!(route_for_backend(None), BackendRoute::AcpManager);
     }
 }

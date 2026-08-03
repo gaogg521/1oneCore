@@ -86,6 +86,11 @@ fn make_factory(
         codex_bridge_config_repo: None,
         local_base_url: "http://127.0.0.1:0".into(),
         claude_bridge_config_repo: None,
+        session_spawner,
+        // No hook bridge in this test: it exercises provider wiring, not the
+        // Antigravity permission path.
+        antigravity_hook_base_url: None,
+        antigravity_hook_tokens: Arc::new(aionui_ai_agent::antigravity_hook::HookTokenRegistry::new()),
     })
 }
 

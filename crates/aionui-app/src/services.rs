@@ -71,6 +71,8 @@ pub struct AppServices {
     pub content_inspection: Arc<aionui_system::ContentInspectionService>,
     runtime_helper_bin: String,
     runtime_base_url: String,
+    /// Shared with the Antigravity hook endpoint so it can authenticate callbacks.
+    pub(crate) antigravity_hook_tokens: Arc<aionui_ai_agent::antigravity_hook::HookTokenRegistry>,
 }
 
 impl AppServices {
@@ -256,6 +258,7 @@ impl AppServices {
             Arc::new(std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("aioncore")));
         let runtime_helper_bin = backend_binary_path.to_string_lossy().into_owned();
         let runtime_base_url = config.local_base_url();
+        let antigravity_hook_tokens = Arc::new(aionui_ai_agent::antigravity_hook::HookTokenRegistry::new());
 
         // NOT adopted this sync (2026-07-29): upstream wires a `session_spawner`
         // here for the direct-CLI SessionAgentTask path — see the matching notes
@@ -277,6 +280,12 @@ impl AppServices {
             codex_bridge_config_repo: Some(codex_bridge_config_repo),
             local_base_url: runtime_base_url.clone(),
             claude_bridge_config_repo: Some(claude_bridge_config_repo),
+            session_spawner,
+            // agy cannot prompt for tool permission in headless mode, so AionUi
+            // registers itself as its PreToolUse hook; the hook process calls
+            // back here to raise the user's permission card.
+            antigravity_hook_base_url: Some(runtime_base_url.clone()),
+            antigravity_hook_tokens: antigravity_hook_tokens.clone(),
         });
 
         // Agent factory is now wired. Future extension/custom agents
@@ -310,6 +319,7 @@ impl AppServices {
         Ok(Self {
             database,
             jwt_service: Arc::new(JwtService::new(secret.clone())),
+            antigravity_hook_tokens,
             user_repo,
             cookie_config: Arc::new(CookieConfig::from_env()),
             qr_token_store: Arc::new(QrTokenStore::new()),

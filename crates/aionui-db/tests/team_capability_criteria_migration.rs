@@ -1,6 +1,6 @@
 use aionui_db::{IAgentMetadataRepository, SqliteAgentMetadataRepository, init_database_memory};
 
-/// 033 retires the keys the Registry-sync workflow wrote that never meant what
+/// 044 retires the keys the Registry-sync workflow wrote that never meant what
 /// they looked like: `team_capable_override` hard-vetoed team mode with no way to
 /// lift it (builtin rows reject metadata edits), and `supports_team: false` read
 /// like a denial while being a no-op inside an OR.
@@ -30,7 +30,7 @@ async fn retired_team_policy_keys_are_stripped_from_every_seeded_policy() {
     }
 }
 
-/// The known-good whitelist (migration 014) survives 033. These rows are
+/// The known-good whitelist (migration 014) survives 044. These rows are
 /// load-bearing: on a fresh install claude/codex/gemini have NULL capabilities
 /// until their first handshake, and aionrs has a NULL backend the capability
 /// inference cannot judge at all — without the flag they would not be selectable.
@@ -124,7 +124,7 @@ async fn probed_registry_agents_carry_seeded_auth_methods() {
     }
 }
 
-/// 033 also seeds the handshake capabilities the Registry-sync probe captured
+/// 044 also seeds the handshake capabilities the Registry-sync probe captured
 /// from ACP `initialize` but never persisted, so Team can pick a transport before
 /// the agent has ever connected. Values are LIVE-probed (2026-07-30) at the npx
 /// versions pinned in acp-registry-npx-lock.json, and against the installed
