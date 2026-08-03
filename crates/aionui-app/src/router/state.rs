@@ -518,11 +518,18 @@ pub fn build_file_state(services: &AppServices) -> Result<FileRouterState, Route
     let file_service = Arc::new(FileService::new(broadcaster.clone(), allowed_roots.clone()));
     let watch_service = Arc::new(FileWatchService::new(broadcaster).map_err(file_watch_init_error)?);
     let snapshot_service = Arc::new(SnapshotService::new());
+    // Reveal-in-file-manager for `/api/fs/reveal`: an adapter over the shell
+    // service, injected as the file crate's revealer port (keeps aionui-file
+    // free of a shell dependency).
+    let revealer: aionui_file::ItemRevealerRef = Arc::new(super::item_revealer::ShellItemRevealer::new(Arc::new(
+        aionui_shell::ShellService::new(Arc::new(aionui_shell::DefaultSystemOpener)),
+    )));
     Ok(FileRouterState {
         file_service,
         watch_service,
         snapshot_service,
         project: Arc::new(services.project_service.clone()),
+        revealer,
         allowed_roots,
         browse_roots,
     })
