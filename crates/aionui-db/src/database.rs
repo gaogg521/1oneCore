@@ -141,11 +141,11 @@ pub async fn init_database_staged_with_options(
             );
             recover_and_retry(path, e.into_source()).await
         }
-        Err(e) if path.exists() && is_recoverable_migration_corruption(e.source()) => {
+        Err(e) if path.exists() && should_attempt_recovery(e.source()) => {
             warn!(
                 code = "BOOTSTRAP_DATABASE_CORRUPTION_REQUIRES_USER_CONFIRMATION",
                 stage = e.stage(),
-                "Database corruption-like migration failure requires user confirmation before rebuild"
+                "Database corruption-like startup failure requires user confirmation before rebuild"
             );
             Err(DatabaseInitError::new(
                 RECOVERABLE_DATABASE_CORRUPTION_STAGE,
@@ -785,14 +785,6 @@ fn should_attempt_recovery(err: &DbError) -> bool {
     }
 }
 
-fn is_recoverable_migration_corruption(err: &DbError) -> bool {
-    match err {
-        DbError::Migration(sqlx::migrate::MigrateError::VersionMismatch(_)) => false,
-        DbError::Migration(_) => is_corruption_like_error(err),
-        _ => false,
-    }
-}
-
 fn is_corruption_like_error(err: &DbError) -> bool {
     let message = err.to_string().to_ascii_lowercase();
 
@@ -922,7 +914,6 @@ mod tests {
         ));
 
         assert!(should_attempt_recovery(&err));
-        assert!(is_recoverable_migration_corruption(&err));
     }
 
     #[test]
@@ -933,7 +924,6 @@ mod tests {
         ));
 
         assert!(!should_attempt_recovery(&err));
-        assert!(!is_recoverable_migration_corruption(&err));
     }
 
     #[tokio::test]
