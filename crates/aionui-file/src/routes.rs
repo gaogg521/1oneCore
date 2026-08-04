@@ -9,12 +9,13 @@ use std::sync::{Arc, OnceLock};
 use tower_http::limit::RequestBodyLimitLayer;
 
 use aionui_api_types::{
-    ApiResponse, BrowseDirectoryQuery, BrowseDirectoryResponse, CancelZipRequest, CopyFilesRequest, CopyFilesResponse,
-    CreateTempFileRequest, DirOrFileResponse, FetchRemoteImageRequest, FileChangeInfoResponse, FileMetadataResponse,
-    FileWatchRequest, GetFileMetadataRequest, GetFilesByDirRequest, GetImageBase64Request, ListWorkspaceFilesRequest,
-    ReadFileBufferRequest, ReadFileRequest, RemoveEntryRequest, RenameRequest, RenameResponse, RevealItemRequest,
-    SnapshotBaselineRequest, SnapshotCompareResponse, SnapshotDiscardRequest, SnapshotInfoResponse,
-    SnapshotStageRequest, SnapshotWorkspaceRequest, WorkspaceFlatFileResponse, WorkspaceOfficeWatchRequest,
+    ApiResponse, BrowseDirectoryQuery, BrowseDirectoryResponse, CancelZipRequest, ContentMetadataRequest,
+    CopyFilesRequest, CopyFilesResponse, CreateTempFileRequest, DirOrFileResponse, FetchRemoteImageRequest,
+    FileChangeInfoResponse, FileMetadataResponse, FileWatchRequest, GetFileMetadataRequest, GetFilesByDirRequest,
+    GetImageBase64Request, ListWorkspaceFilesRequest, ReadContentRequest, ReadFileBufferRequest, ReadFileRequest,
+    RemoveEntryRequest, RenameRequest, RenameResponse, RevealItemRequest, SnapshotBaselineRequest,
+    SnapshotCompareResponse, SnapshotDiscardRequest, SnapshotInfoResponse, SnapshotStageRequest,
+    SnapshotWorkspaceRequest, WorkspaceFlatFileResponse, WorkspaceOfficeWatchRequest, WriteContentRequest,
     WriteFileRequest, ZipRequest,
 };
 use aionui_auth::CurrentUser;
@@ -24,6 +25,10 @@ use aionui_common::constants::UPLOAD_MAX_SIZE;
 use crate::browse;
 use crate::error::FileError;
 use crate::traits::{FileServiceRef, FileWatchServiceRef, ItemRevealerRef, SnapshotServiceRef};
+
+/// Request-body cap for `PUT /api/fs/content`, aligned with the 256 MB read cap
+/// so large files can be saved (the 10 MB global limit would otherwise 413).
+const CONTENT_MAX_SIZE: usize = 256 * 1024 * 1024;
 use crate::types::{
     CompareResult, CopyResult, DirOrFile, FileChangeInfo, FileMetadata, SnapshotInfo, SnapshotMode, WorkspaceFlatFile,
     ZipEntry,
@@ -140,9 +145,22 @@ pub fn file_routes(state: FileRouterState) -> Router {
         .layer(RequestBodyLimitLayer::new(UPLOAD_MAX_SIZE))
         .with_state(state.clone());
 
+    // Content endpoint (ChatFileRef identity). PUT carries the full file body,
+    // so — like upload — it disables the 10 MB global `DefaultBodyLimit` and
+    // applies its own `CONTENT_MAX_SIZE` cap aligned with the 256 MB read cap
+    // (otherwise saving a large file would 413 before reaching the handler).
+    // POST (read) shares the sub-router; its body is a tiny ChatFileRef so the
+    // wider limit is harmless.
+    let content_router = Router::new()
+        .route("/api/fs/content", post(read_content).put(write_content))
+        .layer(DefaultBodyLimit::disable())
+        .layer(RequestBodyLimitLayer::new(CONTENT_MAX_SIZE))
+        .with_state(state.clone());
+
     Router::new()
         // A. Core file operations
         .route("/api/fs/browse", get(browse_directory))
+        .route("/api/fs/content/metadata", post(content_metadata))
         .route("/api/fs/dir", post(get_files_by_dir))
         .route("/api/fs/list", post(list_workspace_files))
         .route("/api/fs/metadata", post(get_file_metadata))
@@ -180,6 +198,7 @@ pub fn file_routes(state: FileRouterState) -> Router {
         .route("/api/fs/snapshot/dispose", post(snapshot_dispose))
         .with_state(state)
         .merge(upload_router)
+        .merge(content_router)
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +425,115 @@ async fn create_temp_file(
     let Json(req) = body.map_err(ApiError::from)?;
     let path = state.file_service.create_temp_file(&req.file_name).await?;
     Ok(Json(ApiResponse::ok(path)))
+}
+
+// ---------------------------------------------------------------------------
+// Content endpoint (ChatFileRef identity) — handlers
+// ---------------------------------------------------------------------------
+
+/// Managed upload directory (`<tmp>/aionui`) used to validate `Upload`
+/// ChatFileRef variants — mirrors the chat send-boundary convention.
+fn content_upload_root() -> PathBuf {
+    std::env::temp_dir().join("aionui")
+}
+
+/// Parse the optional `If-Match` header as a last-modified-millisecond stamp.
+fn parse_if_match(headers: &axum::http::HeaderMap) -> Option<i64> {
+    headers
+        .get(axum::http::header::IF_MATCH)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<i64>()
+        .ok()
+}
+
+/// `POST /api/fs/content` — read a file addressed by `ChatFileRef` identity.
+/// Collapses the old `read` + `image-base64`: body carries the ref plus an
+/// `encoding` (utf8|base64|dataurl). Resolves per-variant (op = Read) then reads
+/// the trusted absolute path.
+async fn read_content(
+    State(state): State<FileRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    body: Result<Json<ReadContentRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<String>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let abs = state
+        .project
+        .resolve_chat_file_ref(
+            &user.id,
+            &req.file,
+            &content_upload_root(),
+            aionui_project::FileOp::Read,
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let content = state
+        .file_service
+        .read_resolved_content(Path::new(&abs), req.encoding)
+        .await?;
+    Ok(Json(ApiResponse::ok(content)))
+}
+
+/// `PUT /api/fs/content` — write a file addressed by `ChatFileRef` identity
+/// (op = Write for the Project arm). Optimistic concurrency: when the client
+/// sends `If-Match: <last-modified ms>`, a mismatch against the current on-disk
+/// mtime returns 409 Conflict (guards the "external change silently overwritten"
+/// case). Body cap is `CONTENT_MAX_SIZE` (see the router builder).
+async fn write_content(
+    State(state): State<FileRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    headers: axum::http::HeaderMap,
+    body: Result<Json<WriteContentRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<bool>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let abs = state
+        .project
+        .resolve_chat_file_ref(
+            &user.id,
+            &req.file,
+            &content_upload_root(),
+            aionui_project::FileOp::Write,
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let path = Path::new(&abs);
+
+    if let Some(expected) = parse_if_match(&headers) {
+        let current = state.file_service.resolved_metadata(path).await?.last_modified;
+        if current != expected {
+            return Err(ApiError::Conflict(format!(
+                "file changed on disk since last read (expected mtime {expected}, found {current})"
+            )));
+        }
+    }
+
+    state
+        .file_service
+        .write_resolved_content(path, req.data.as_bytes())
+        .await?;
+    Ok(Json(ApiResponse::ok(true)))
+}
+
+/// `POST /api/fs/content/metadata` — metadata for a `ChatFileRef`-addressed file.
+async fn content_metadata(
+    State(state): State<FileRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    body: Result<Json<ContentMetadataRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<FileMetadataResponse>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let abs = state
+        .project
+        .resolve_chat_file_ref(
+            &user.id,
+            &req.file,
+            &content_upload_root(),
+            aionui_project::FileOp::Read,
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let meta = state.file_service.resolved_metadata(Path::new(&abs)).await?;
+    Ok(Json(ApiResponse::ok(to_metadata_response(meta))))
 }
 
 /// Fields extracted from a `/api/fs/upload` multipart request.
