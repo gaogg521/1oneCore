@@ -8,7 +8,9 @@
 
 use std::sync::Arc;
 
-use aionui_common::license::{Feature, Tier, estimate_cost_micros, tier_allows, tier_seat_limit};
+use aionui_common::license::{
+    Feature, Tier, estimate_cost_micros, estimate_media_cost_micros, tier_allows, tier_seat_limit,
+};
 use aionui_common::{generate_prefixed_id, now_ms};
 use sqlx::SqlitePool;
 
@@ -375,6 +377,52 @@ impl BillingService {
         {
             return Err(BillingError::ModelNotAllowed(model.to_owned()));
         }
+        Ok(())
+    }
+
+    /// Whether a media generation (image / video) may run under company policy.
+    ///
+    /// Media reaches the provider through the built-in MCP tool, which never
+    /// passed through `SendGate` — so until this existed, the most expensive
+    /// calls in the product bypassed both the spend cap and the model
+    /// allowlist entirely. The policy is deliberately the same one the chat
+    /// path uses (one allowlist, one budget) rather than a parallel set of
+    /// rules an admin would have to discover and maintain separately.
+    ///
+    /// Personal / no-company users pass, same red line as everywhere else.
+    pub async fn check_media_allowed(&self, user_id: &str, model: &str) -> Result<(), BillingError> {
+        self.check_send_allowed(user_id, Some(model)).await
+    }
+
+    /// Record one completed media generation against the company's usage.
+    ///
+    /// Reuses `one_usage_events`: media has no token counts, so those columns
+    /// stay NULL and only the estimated cost is carried. That keeps media
+    /// inside the existing budget rollup (`budget_used_micros`) and the usage
+    /// dashboard without a schema change.
+    pub async fn record_media_usage(
+        &self,
+        user_id: &str,
+        kind: &str,
+        model: &str,
+        count: i64,
+        duration_seconds: i64,
+    ) -> Result<(), BillingError> {
+        let enterprise_id = self.resolve_enterprise_id(user_id).await?;
+        let cost = estimate_media_cost_micros(kind, model, count, duration_seconds);
+        sqlx::query(
+            "INSERT INTO one_usage_events \
+                (id, user_id, enterprise_id, conversation_id, model, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) \
+             VALUES (?, ?, ?, NULL, ?, NULL, NULL, NULL, ?, ?)",
+        )
+        .bind(generate_prefixed_id("usage"))
+        .bind(user_id)
+        .bind(enterprise_id)
+        .bind(model)
+        .bind(cost)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -820,5 +868,74 @@ mod tests {
             "a project-group admin must not be able to move the whole company's budget"
         );
         assert!(!svc.is_billing_admin("plain").await.unwrap());
+    }
+    /// Media generation reaches providers through the built-in MCP tool, which
+    /// never passed through `SendGate` — so until the precheck existed, the
+    /// priciest calls in the product ran outside the allowlist and the cap.
+    #[tokio::test]
+    async fn media_generation_obeys_the_same_allowlist_and_budget_as_chat() {
+        let svc = service().await;
+        add_members(&svc, "entM", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'mia' WHERE enterprise_id = 'entM'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+
+        // Allowlist covers media models by the same rule as chat models.
+        svc.set_model_control("entM", None, &["seedance-2-0-fast".to_owned()])
+            .await
+            .unwrap();
+        assert!(svc.check_media_allowed("mia", "seedance-2-0-fast").await.is_ok());
+        assert_eq!(
+            svc.check_media_allowed("mia", "gpt-image-2").await.unwrap_err().code(),
+            "MODEL_NOT_ALLOWED"
+        );
+
+        // Personal / no-company users are never gated — the standing red line.
+        assert!(svc.check_media_allowed("nobody", "anything").await.is_ok());
+
+        // Recorded media spend counts against the very same budget as chat, so
+        // an expensive video cannot hide from the cap.
+        svc.set_model_control("entM", Some(1_000), &[]).await.unwrap();
+        assert!(svc.check_media_allowed("mia", "seedance-2-0-fast").await.is_ok());
+        svc.record_media_usage("mia", "video", "seedance-2-0-fast", 1, 5)
+            .await
+            .unwrap();
+        assert_eq!(
+            svc.check_media_allowed("mia", "seedance-2-0-fast")
+                .await
+                .unwrap_err()
+                .code(),
+            "BUDGET_EXCEEDED"
+        );
+
+        // And it is visible in the dashboard rollup, not just the gate.
+        let plan = svc.plan("entM").await.unwrap();
+        assert!(plan.cost_used_micros >= 1_000);
+    }
+
+    /// Media has no token counts; charging it at a token rate would report zero
+    /// and let the most expensive calls sit invisibly under any cap.
+    #[tokio::test]
+    async fn media_usage_is_priced_even_though_it_has_no_tokens() {
+        let svc = service().await;
+        svc.record_media_usage("solo", "image", "gpt-image-2", 3, 0)
+            .await
+            .unwrap();
+        let cost: i64 = sqlx::query_scalar(
+            "SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(&svc.pool)
+        .await
+        .unwrap();
+        assert_eq!(cost, 3 * 40_000);
+
+        // Token columns stay NULL: media is metered per asset, not per token.
+        let tokens: Option<i64> =
+            sqlx::query_scalar("SELECT total_tokens FROM one_usage_events WHERE user_id = 'solo' LIMIT 1")
+                .fetch_one(&svc.pool)
+                .await
+                .unwrap();
+        assert!(tokens.is_none());
     }
 }

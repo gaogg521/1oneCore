@@ -138,6 +138,58 @@ pub fn estimate_cost_micros(model: &str, input_tokens: i64, output_tokens: i64) 
     (input * in_rate) / 1000 + (output * out_rate) / 1000
 }
 
+/// Per-image cost in USD-micros. Media is not metered in tokens, so it needs its
+/// own table — charging it at a token rate would report zero and let the most
+/// expensive calls in the product sit invisibly under any spend cap.
+fn image_rate_micros(model: &str) -> i64 {
+    let m = model.to_ascii_lowercase();
+    if m.contains("gpt-image") || m.contains("dall-e-3") {
+        40_000
+    } else if m.contains("seedream") || m.contains("jimeng") {
+        20_000
+    } else if m.contains("flux") || m.contains("stable-diffusion") || m.contains("sd3") {
+        10_000
+    } else if m.contains("wanx") || m.contains("cogview") || m.contains("dall-e") {
+        15_000
+    } else if m.contains("image") || m.contains("imagine") || m.contains("banana") {
+        // Chat-multimodal image models (gemini image-preview and friends).
+        10_000
+    } else {
+        0
+    }
+}
+
+/// Per-second-of-video cost in USD-micros. Video is the priciest thing the
+/// product can invoke, which is exactly why it must not be free to the meter.
+fn video_rate_micros_per_second(model: &str) -> i64 {
+    let m = model.to_ascii_lowercase();
+    if m.contains("sora") || m.contains("veo") {
+        500_000
+    } else if m.contains("seedance") || m.contains("kling") {
+        200_000
+    } else if m.contains("wan") || m.contains("cogvideox") || m.contains("vidu") {
+        100_000
+    } else {
+        0
+    }
+}
+
+/// Estimate a media generation's cost in USD-micros.
+///
+/// `count` is the number of assets produced; `duration_seconds` applies to video
+/// and is ignored for images. Unknown models return 0, same convention as the
+/// token estimator — the dashboard labels every figure an estimate.
+pub fn estimate_media_cost_micros(kind: &str, model: &str, count: i64, duration_seconds: i64) -> i64 {
+    let count = count.max(0);
+    if kind.eq_ignore_ascii_case("video") {
+        // Treat a missing duration as the common 5s clip rather than free.
+        let seconds = if duration_seconds > 0 { duration_seconds } else { 5 };
+        count * seconds * video_rate_micros_per_second(model)
+    } else {
+        count * image_rate_micros(model)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +200,36 @@ mod tests {
         assert_eq!(Tier::parse("ENTERPRISE"), Tier::Enterprise);
         assert_eq!(Tier::parse("bogus"), Tier::Free);
         assert_eq!(Tier::parse(""), Tier::Free);
+    }
+
+    /// Media is metered per asset / per second, never per token. Regressing
+    /// this to the token estimator would silently price every image and video
+    /// at zero — the failure mode is invisible, which is why it is pinned.
+    #[test]
+    fn media_is_priced_per_asset_and_per_second() {
+        // Images: cost scales with how many were produced.
+        assert_eq!(estimate_media_cost_micros("image", "gpt-image-2", 1, 0), 40_000);
+        assert_eq!(estimate_media_cost_micros("image", "gpt-image-2", 3, 0), 120_000);
+
+        // Video: cost scales with duration too, and is the priciest kind.
+        assert_eq!(
+            estimate_media_cost_micros("video", "seedance-2-0-fast", 1, 5),
+            1_000_000
+        );
+        assert_eq!(estimate_media_cost_micros("video", "sora-2", 1, 10), 5_000_000);
+
+        // A missing duration must not make a video free; it falls back to a
+        // typical clip rather than zero.
+        assert_eq!(
+            estimate_media_cost_micros("video", "seedance-2-0-fast", 1, 0),
+            estimate_media_cost_micros("video", "seedance-2-0-fast", 1, 5)
+        );
+
+        // Unknown models estimate 0, same convention as the token estimator.
+        assert_eq!(estimate_media_cost_micros("image", "some-unknown-model", 2, 0), 0);
+
+        // Negative / nonsense counts never produce a negative charge.
+        assert_eq!(estimate_media_cost_micros("image", "gpt-image-2", -5, 0), 0);
     }
 
     #[test]

@@ -29,7 +29,87 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
         )
         .route("/api/one/billing/checkout", post(billing_checkout))
         .route("/api/one/billing/webhook", post(billing_webhook))
+        .route("/api/one/billing/media-precheck", post(billing_media_precheck))
+        .route("/api/one/billing/media-usage", post(billing_media_usage))
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaPrecheckBody {
+    /// "image" | "video" — carried for future kind-specific policy and for the
+    /// denial message; the allowlist itself keys on the model.
+    kind: Option<String>,
+    model: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaPrecheckDto {
+    pub allow: bool,
+    /// Present when `allow` is false: why, in words a user can act on.
+    pub reason: Option<String>,
+}
+
+/// Policy gate for image/video generation.
+///
+/// Media runs through the built-in MCP tool, which never passed through
+/// `SendGate` — so the priciest calls in the product used to bypass both the
+/// spend cap and the model allowlist. Answers `allow: false` with a reason
+/// rather than an HTTP error, so the caller can surface the policy decision as
+/// a normal job failure instead of having to tell a denial apart from an outage.
+///
+/// Personal / no-company callers always get `allow: true`.
+async fn billing_media_precheck(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<MediaPrecheckBody>,
+) -> Result<Json<ApiResponse<MediaPrecheckDto>>, BillingError> {
+    match state.service.check_media_allowed(&user.id, &body.model).await {
+        Ok(()) => Ok(Json(ApiResponse::ok(MediaPrecheckDto {
+            allow: true,
+            reason: None,
+        }))),
+        Err(err) => {
+            let kind = body.kind.as_deref().unwrap_or("media");
+            Ok(Json(ApiResponse::ok(MediaPrecheckDto {
+                allow: false,
+                reason: Some(format!("{kind} generation blocked by company policy: {err}")),
+            })))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaUsageBody {
+    kind: String,
+    model: String,
+    /// Number of assets produced.
+    count: Option<i64>,
+    /// Video only; ignored for images.
+    duration_seconds: Option<i64>,
+}
+
+/// Report a completed media generation so it lands in the company's spend
+/// rollup and usage dashboard. Reported after the fact — the precheck is what
+/// blocks, this is what makes the next precheck accurate.
+async fn billing_media_usage(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<MediaUsageBody>,
+) -> Result<Json<ApiResponse<()>>, BillingError> {
+    state
+        .service
+        .record_media_usage(
+            &user.id,
+            &body.kind,
+            &body.model,
+            body.count.unwrap_or(1),
+            body.duration_seconds.unwrap_or(0),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 /// The license currently backing the plan, or `null` if none was ever
