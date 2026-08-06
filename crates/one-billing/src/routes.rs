@@ -89,6 +89,10 @@ struct MediaUsageBody {
     count: Option<i64>,
     /// Video only; ignored for images.
     duration_seconds: Option<i64>,
+    /// The user's own price per asset (image) or per second (video), in
+    /// USD-micros. Present only when they entered one; overrides the built-in
+    /// rate table so the rollup reflects real money rather than an estimate.
+    unit_price_micros: Option<i64>,
 }
 
 /// Report a completed media generation so it lands in the company's spend
@@ -107,6 +111,7 @@ async fn billing_media_usage(
             &body.model,
             body.count.unwrap_or(1),
             body.duration_seconds.unwrap_or(0),
+            body.unit_price_micros,
         )
         .await?;
     Ok(Json(ApiResponse::ok(())))

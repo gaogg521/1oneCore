@@ -407,9 +407,24 @@ impl BillingService {
         model: &str,
         count: i64,
         duration_seconds: i64,
+        unit_price_micros: Option<i64>,
     ) -> Result<(), BillingError> {
         let enterprise_id = self.resolve_enterprise_id(user_id).await?;
-        let cost = estimate_media_cost_micros(kind, model, count, duration_seconds);
+        // A price the user entered for their own provider beats our built-in
+        // table: the table is a coarse illustration, theirs is the contract they
+        // are actually billed under.
+        let cost = match unit_price_micros.filter(|price| *price > 0) {
+            Some(price) => {
+                let units = if kind.eq_ignore_ascii_case("video") {
+                    let seconds = if duration_seconds > 0 { duration_seconds } else { 5 };
+                    count.max(0) * seconds
+                } else {
+                    count.max(0)
+                };
+                units * price
+            }
+            None => estimate_media_cost_micros(kind, model, count, duration_seconds),
+        };
         sqlx::query(
             "INSERT INTO one_usage_events \
                 (id, user_id, enterprise_id, conversation_id, model, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) \
@@ -898,7 +913,7 @@ mod tests {
         // an expensive video cannot hide from the cap.
         svc.set_model_control("entM", Some(1_000), &[]).await.unwrap();
         assert!(svc.check_media_allowed("mia", "seedance-2-0-fast").await.is_ok());
-        svc.record_media_usage("mia", "video", "seedance-2-0-fast", 1, 5)
+        svc.record_media_usage("mia", "video", "seedance-2-0-fast", 1, 5, None)
             .await
             .unwrap();
         assert_eq!(
@@ -914,12 +929,55 @@ mod tests {
         assert!(plan.cost_used_micros >= 1_000);
     }
 
+    /// The built-in rate table is a coarse illustration; a price the user
+    /// entered for their own provider is the contract they are actually billed
+    /// under, so it must win.
+    #[tokio::test]
+    async fn a_user_supplied_price_overrides_the_built_in_rate_table() {
+        let svc = service().await;
+
+        // Video: priced per second, so 4s at 2 USD-micros/s is 8.
+        svc.record_media_usage("solo", "video", "some-unknown-model", 1, 4, Some(2))
+            .await
+            .unwrap();
+        let cost: i64 = sqlx::query_scalar(
+            "SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(&svc.pool)
+        .await
+        .unwrap();
+        // Without a price this model is unknown to the table and would cost 0.
+        assert_eq!(cost, 8);
+
+        // Images: priced per asset.
+        svc.record_media_usage("solo2", "image", "some-unknown-model", 3, 0, Some(7))
+            .await
+            .unwrap();
+        let cost2: i64 =
+            sqlx::query_scalar("SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo2' LIMIT 1")
+                .fetch_one(&svc.pool)
+                .await
+                .unwrap();
+        assert_eq!(cost2, 21);
+
+        // A zero / absent price falls back to the table rather than charging 0.
+        svc.record_media_usage("solo3", "image", "gpt-image-2", 1, 0, Some(0))
+            .await
+            .unwrap();
+        let cost3: i64 =
+            sqlx::query_scalar("SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo3' LIMIT 1")
+                .fetch_one(&svc.pool)
+                .await
+                .unwrap();
+        assert_eq!(cost3, 40_000);
+    }
+
     /// Media has no token counts; charging it at a token rate would report zero
     /// and let the most expensive calls sit invisibly under any cap.
     #[tokio::test]
     async fn media_usage_is_priced_even_though_it_has_no_tokens() {
         let svc = service().await;
-        svc.record_media_usage("solo", "image", "gpt-image-2", 3, 0)
+        svc.record_media_usage("solo", "image", "gpt-image-2", 3, 0, None)
             .await
             .unwrap();
         let cost: i64 = sqlx::query_scalar(
