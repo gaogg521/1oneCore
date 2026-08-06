@@ -45,15 +45,46 @@ pub enum ModelImageInputCapability {
     Unsupported,
 }
 
+/// What a model produces, as declared by the user.
+///
+/// Declared rather than inferred: image and video models ship constantly, and
+/// matching them by name means every new one needs a code change before it can
+/// be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelKind {
+    Text,
+    Multimodal,
+    Image,
+    Video,
+    Audio,
+}
+
 /// User-configured overrides for one model.
 ///
 /// Missing values retain automatic capability and protocol resolution.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Every field the client sends must be represented here. This struct is not
+/// `deny_unknown_fields`, but it is also not a passthrough: a key with no field
+/// is dropped on the round trip through `PUT /api/providers/:id`, silently and
+/// with no error anywhere. That is exactly how `model_kind` and the two media
+/// fields below came to be written by the settings page and never read back.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModelSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_input: Option<ModelImageInputCapability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_api_mode: Option<ModelOpenAiApiMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_kind: Option<ModelKind>,
+    /// Which media API this model speaks, when the built-in catalog does not
+    /// recognize it. Only meaningful for an `image` or `video` kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_endpoint: Option<String>,
+    /// Price of one generated image, or one second of video, in USD. User
+    /// entered — a gateway's price is the user's contract with their vendor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_unit_price_usd: Option<f64>,
 }
 
 /// Health status values for a model.
@@ -1012,5 +1043,54 @@ mod tests {
         assert_eq!(json["error_kind"], "unauthorized");
         assert_eq!(json["http_status"], 401);
         assert!(json.get("timeout_stage").is_none());
+    }
+
+    /// The settings page writes these three fields, and before they existed on
+    /// this struct serde dropped every one of them on the way through
+    /// `PUT /api/providers/:id` — no error, no warning, the declaration simply
+    /// never came back. That made the whole "user declares what a model
+    /// produces" design unusable, so the round trip is pinned here.
+    #[test]
+    fn model_settings_round_trip_preserves_media_declarations() {
+        let json = serde_json::json!({
+            "image_input": "supported",
+            "openai_api_mode": "chat_completions",
+            "model_kind": "video",
+            "media_endpoint": "ark-task",
+            "media_unit_price_usd": 0.25,
+        });
+
+        let parsed: ModelSettings = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(parsed.model_kind, Some(ModelKind::Video));
+        assert_eq!(parsed.media_endpoint.as_deref(), Some("ark-task"));
+        assert_eq!(parsed.media_unit_price_usd, Some(0.25));
+
+        // Re-serializing must reproduce every key the client sent.
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), json);
+    }
+
+    #[test]
+    fn model_settings_omit_absent_media_declarations() {
+        let parsed: ModelSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(parsed.model_kind, None);
+        let json = serde_json::to_value(&parsed).unwrap();
+        assert!(json.get("model_kind").is_none());
+        assert!(json.get("media_endpoint").is_none());
+        assert!(json.get("media_unit_price_usd").is_none());
+    }
+
+    #[test]
+    fn model_kind_uses_the_client_vocabulary() {
+        for (text, kind) in [
+            ("text", ModelKind::Text),
+            ("multimodal", ModelKind::Multimodal),
+            ("image", ModelKind::Image),
+            ("video", ModelKind::Video),
+            ("audio", ModelKind::Audio),
+        ] {
+            let parsed: ModelKind = serde_json::from_value(serde_json::json!(text)).unwrap();
+            assert_eq!(parsed, kind);
+            assert_eq!(serde_json::to_value(kind).unwrap(), serde_json::json!(text));
+        }
     }
 }
