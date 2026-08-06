@@ -15,14 +15,15 @@ use crate::runtime_completion::RuntimeCompletionPublisher;
 use crate::runtime_persistence::{RuntimePersistenceCoordinator, RuntimeWriteKind};
 use crate::runtime_state::ConversationRuntimeStateService;
 use aionui_api_types::{
-    ApprovalCheckResponse, AssistantConversationOverridesRequest, CancelConversationResponse, CloneConversationRequest,
-    ConfirmRequest, ConfirmationListResponse, ConversationArtifactKind, ConversationArtifactListResponse,
-    ConversationArtifactResponse, ConversationArtifactStatus, ConversationListResponse, ConversationMcpStatus,
-    ConversationMcpStatusKind, ConversationResponse, ConversationRuntimeSummary, CreateConversationRequest,
-    EnsureConversationRuntimeResponse, ListConversationsQuery, ListMessagesQuery, MessageListResponse, MessageResponse,
-    MessageSearchResponse, SearchMessagesQuery, SendMessageRequest, SendMessageResponse, SessionMcpServer,
-    SessionMcpTransport, TeamSessionBinding, UpdateConversationArtifactRequest, UpdateConversationRequest,
-    WebSocketMessage, assistant_avatar_response_value, assistant_avatar_response_value_with_version,
+    ApprovalCheckResponse, AssistantConversationOverridesRequest, CancelConversationResponse, ChatFileRef,
+    CloneConversationRequest, ConfirmRequest, ConfirmationListResponse, ConversationArtifactKind,
+    ConversationArtifactListResponse, ConversationArtifactResponse, ConversationArtifactStatus,
+    ConversationListResponse, ConversationMcpStatus, ConversationMcpStatusKind, ConversationResponse,
+    ConversationRuntimeSummary, CreateConversationRequest, EnsureConversationRuntimeResponse, ListConversationsQuery,
+    ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchResponse, SearchMessagesQuery,
+    SendMessageRequest, SendMessageResponse, SessionMcpServer, SessionMcpTransport, TeamSessionBinding,
+    UpdateConversationArtifactRequest, UpdateConversationRequest, WebSocketMessage, assistant_avatar_response_value,
+    assistant_avatar_response_value_with_version,
 };
 use aionui_common::{
     AgentKillReason, AgentType, ConversationSource, ConversationStatus, ErrorChain, MessageType, OnConversationDelete,
@@ -38,7 +39,7 @@ use aionui_db::{
 };
 use aionui_extension::AssistantRuleDispatcher;
 use aionui_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
-use aionui_project::{ProjectService, canonical};
+use aionui_project::{FileOp, ProjectService, ReferenceInput, canonical};
 use aionui_realtime::EventBroadcaster;
 use aionui_runtime::{RuntimeCommandProbe, probe_node_runtime_supported, probe_runtime_command, resolve_command_path};
 use chrono::Datelike;
@@ -445,6 +446,57 @@ impl ConversationService {
         if let Ok(mut guard) = self.project_service.write() {
             *guard = Some(project_service);
         }
+    }
+
+    /// Turn the wire file refs into absolute paths for the agent.
+    ///
+    /// Everything downstream (`SendMessageData.files`) speaks absolute paths;
+    /// the tagged shape exists only so a `project` ref can name a file by its
+    /// Explorer entry instead of a path that breaks when the project root
+    /// moves. Resolution happens here because this is the first layer that has
+    /// the project store.
+    ///
+    /// A project ref that cannot be resolved is an error rather than a silently
+    /// dropped attachment: the user picked a file and would otherwise watch the
+    /// agent answer as if it were never attached.
+    async fn resolve_chat_files(&self, files: &[ChatFileRef]) -> Result<Vec<String>, ConversationError> {
+        let mut out = Vec::with_capacity(files.len());
+        for file in files {
+            if let Some(path) = file.direct_path() {
+                if !path.is_empty() {
+                    out.push(path.to_owned());
+                }
+                continue;
+            }
+            let Some((pe_id, relative_path)) = file.project_ref() else {
+                continue;
+            };
+            let project_service = self.project_service.read().ok().and_then(|guard| guard.clone());
+            let Some(project_service) = project_service else {
+                return Err(ConversationError::BadRequest {
+                    reason: "Project file references are not available on this server".into(),
+                });
+            };
+            let resolved = project_service
+                .resolve_reference(ReferenceInput {
+                    pe_id: pe_id.to_owned(),
+                    relative_path: relative_path.to_owned(),
+                    op: FileOp::Read,
+                })
+                .await
+                .map_err(|err| ConversationError::BadRequest {
+                    reason: format!("Cannot resolve attached project file '{relative_path}': {err}"),
+                })?;
+            // `absolute_path` is None for non-file providers (a remote folder,
+            // say). Those cannot be handed to an agent as a path.
+            let Some(absolute) = resolved.absolute_path else {
+                return Err(ConversationError::BadRequest {
+                    reason: format!("Attached file '{relative_path}' is not a local file"),
+                });
+            };
+            out.push(absolute);
+        }
+        Ok(out)
     }
 
     /// Project-bind side branch: resolve the owner's workspace into a
@@ -2677,6 +2729,15 @@ impl ConversationService {
         }
         let send_started_at = now_ms();
 
+        // Resolve wire refs to absolute paths up front: a bad project ref must
+        // fail the send, not surface later as an attachment the agent silently
+        // never received.
+        let resolved_files = self.resolve_chat_files(&req.files).await?;
+        let req = SendMessageRequest {
+            files: resolved_files.into_iter().map(ChatFileRef::Path).collect(),
+            ..req
+        };
+
         // Verify conversation exists and belongs to user
         let row = self
             .conversation_repo
@@ -2905,7 +2966,9 @@ impl ConversationService {
                 conversation: row,
                 request: SendMessageRequest {
                     content: request.content,
-                    files: request.files,
+                    // Internal callers already hold absolute paths; only the
+                    // HTTP edge ever sees the tagged wire shape.
+                    files: request.files.into_iter().map(ChatFileRef::Path).collect(),
                     inject_skills: request.inject_skills,
                     hidden: request.user_message_hidden,
                 },

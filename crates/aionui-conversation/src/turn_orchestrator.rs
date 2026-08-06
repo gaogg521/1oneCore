@@ -383,7 +383,14 @@ impl ConversationTurnOrchestrator {
             content: input.request.content,
             msg_id: first_turn_msg_id.clone(),
             turn_id: Some(turn_id.clone()),
-            files: input.request.files,
+            // Already absolute paths — `ConversationService::send_message`
+            // resolves every wire ref before the turn is built.
+            files: input
+                .request
+                .files
+                .iter()
+                .filter_map(|f| f.direct_path().map(str::to_owned))
+                .collect(),
             inject_skills: input.request.inject_skills,
         };
         let mut replayed = false;
