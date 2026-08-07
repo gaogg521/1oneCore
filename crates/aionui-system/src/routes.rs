@@ -3,7 +3,7 @@
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Extension, Json, Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{delete, get, post};
 
 use aionui_api_types::{
@@ -13,7 +13,7 @@ use aionui_api_types::{
     SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
     UpdateProviderRequest, UpdateSettingsRequest,
 };
-use aionui_auth::CurrentUser;
+use aionui_auth::{CurrentUser, is_webui_proxied};
 use aionui_common::ApiError;
 
 use crate::client_pref::ClientPrefService;
@@ -184,29 +184,97 @@ async fn update_client_preferences(
 // Provider handlers
 // ===========================================================================
 
+/// The account that owns this deployment's provider credentials.
+///
+/// Providers are deployment-global — the table has no owner column — so the
+/// machine's operator is the only person whose keys these are. Everyone else
+/// reaching the same backend is a member of their org, not a co-owner.
+const PROVIDER_CREDENTIAL_OWNER: &str = "system_default_user";
+
+/// Whether this caller may see provider API keys in plaintext.
+///
+/// Two ways to qualify, and both mean "this is the operator":
+/// - the request did not come through the WebUI proxy, i.e. it is the desktop
+///   app talking to its own co-located backend from this machine;
+/// - or it did, but the session resolves to the operator's own account — the
+///   operator using the WebUI from a browser is still the operator.
+///
+/// An org member authenticated over the WebUI is neither, and gets the key
+/// masked. They can still see that a key is configured, pick models, and use
+/// the provider; what they cannot do is walk away with the operator's
+/// credential — which is billable and reusable anywhere.
+///
+/// `user` is optional because these routes are mounted with the auth middleware
+/// by `aionui-app` but exercised without it in this crate's own tests. A
+/// proxied request that somehow arrives with no resolved identity is treated as
+/// "not the operator" rather than trusted — the only way to reach the plaintext
+/// branch without an identity is to not be coming through the proxy at all,
+/// which means the desktop app on this machine.
+fn may_see_provider_secrets(headers: &HeaderMap, user: Option<&CurrentUser>) -> bool {
+    if !is_webui_proxied(headers) {
+        return true;
+    }
+    user.is_some_and(|current| current.id == PROVIDER_CREDENTIAL_OWNER)
+}
+
+/// Replace the key with a fixed marker.
+///
+/// Deliberately not a prefix/suffix hint: a masked-but-recognisable key still
+/// leaks which credential is in use across a whole org, and nothing in the UI
+/// needs to tell two keys apart — the provider already has a name.
+fn redact_provider_secret(mut provider: ProviderResponse) -> ProviderResponse {
+    if !provider.api_key.is_empty() {
+        provider.api_key = "***".to_string();
+    }
+    provider
+}
+
 async fn list_providers(
     State(state): State<SystemRouterState>,
+    user: Option<Extension<CurrentUser>>,
+    headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<ProviderResponse>>>, ApiError> {
     let providers = state.provider_service.list().await.map_err(ApiError::from)?;
-    Ok(Json(ApiResponse::ok(providers)))
+    if may_see_provider_secrets(&headers, user.as_deref()) {
+        return Ok(Json(ApiResponse::ok(providers)));
+    }
+    Ok(Json(ApiResponse::ok(
+        providers.into_iter().map(redact_provider_secret).collect(),
+    )))
 }
 
 async fn create_provider(
     State(state): State<SystemRouterState>,
+    user: Option<Extension<CurrentUser>>,
+    headers: HeaderMap,
     body: Result<Json<CreateProviderRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ApiResponse<ProviderResponse>>), ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
     let provider = state.provider_service.create(req).await.map_err(ApiError::from)?;
+    // Echoing the key back would hand it to a caller the list endpoint would
+    // have redacted for.
+    let provider = if may_see_provider_secrets(&headers, user.as_deref()) {
+        provider
+    } else {
+        redact_provider_secret(provider)
+    };
     Ok((StatusCode::CREATED, Json(ApiResponse::ok(provider))))
 }
 
 async fn update_provider(
     State(state): State<SystemRouterState>,
+    user: Option<Extension<CurrentUser>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     body: Result<Json<UpdateProviderRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<ProviderResponse>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
     let provider = state.provider_service.update(&id, req).await.map_err(ApiError::from)?;
+    let provider = if may_see_provider_secrets(&headers, user.as_deref()) {
+        provider
+    } else {
+        redact_provider_secret(provider)
+    };
     Ok(Json(ApiResponse::ok(provider)))
 }
 

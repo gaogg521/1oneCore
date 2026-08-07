@@ -133,6 +133,81 @@ async fn list_providers_returns_plaintext_api_key() {
     assert!(!api_key.contains("***"));
 }
 
+/// Providers are deployment-global: there is no owner column, so the keys are
+/// the machine operator's. A member of their org reaching the same backend over
+/// the WebUI must not be able to walk away with a billable credential, so the
+/// key is redacted for everyone the request did not come from the desktop app
+/// or the operator's own account.
+#[tokio::test]
+async fn list_providers_redacts_api_key_for_an_org_member_over_the_webui() {
+    let (_app, db) = setup().await;
+    create_one(&db).await;
+
+    let app2 = system_routes(build_state(&db));
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/providers")
+        .header(aionui_auth::WEBUI_PROXY_HEADER, aionui_auth::WEBUI_PROXY_VALUE)
+        .extension(aionui_auth::CurrentUser {
+            id: "sso_member_42".to_string(),
+            username: "member".to_string(),
+        })
+        .body(Body::empty())
+        .unwrap();
+    let resp = app2.oneshot(request).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    let api_key = json["data"][0]["api_key"].as_str().unwrap();
+    assert_eq!(api_key, "***");
+    assert!(!api_key.contains("sk-ant"));
+    // Everything else stays visible — the member can still pick this provider.
+    assert_eq!(json["data"][0]["name"].as_str().unwrap(), "Anthropic");
+}
+
+/// The operator using the WebUI from a browser is still the operator.
+#[tokio::test]
+async fn list_providers_keeps_plaintext_for_the_operator_over_the_webui() {
+    let (_app, db) = setup().await;
+    create_one(&db).await;
+
+    let app2 = system_routes(build_state(&db));
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/providers")
+        .header(aionui_auth::WEBUI_PROXY_HEADER, aionui_auth::WEBUI_PROXY_VALUE)
+        .extension(aionui_auth::CurrentUser {
+            id: "system_default_user".to_string(),
+            username: "admin".to_string(),
+        })
+        .body(Body::empty())
+        .unwrap();
+    let resp = app2.oneshot(request).await.unwrap();
+
+    let json = body_json(resp).await;
+    assert_eq!(json["data"][0]["api_key"].as_str().unwrap(), "sk-ant-api03-test1234");
+}
+
+/// A proxied request with no resolved identity must not fall through to
+/// plaintext — the absent extension is a misconfiguration, not a licence.
+#[tokio::test]
+async fn list_providers_redacts_a_proxied_request_with_no_identity() {
+    let (_app, db) = setup().await;
+    create_one(&db).await;
+
+    let app2 = system_routes(build_state(&db));
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/providers")
+        .header(aionui_auth::WEBUI_PROXY_HEADER, aionui_auth::WEBUI_PROXY_VALUE)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app2.oneshot(request).await.unwrap();
+
+    let json = body_json(resp).await;
+    assert_eq!(json["data"][0]["api_key"].as_str().unwrap(), "***");
+}
+
 // ===========================================================================
 // POST /api/providers — create
 // ===========================================================================
