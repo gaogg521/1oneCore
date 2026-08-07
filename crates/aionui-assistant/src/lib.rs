@@ -17,6 +17,9 @@ pub mod state;
 pub use agent_catalog::AssistantAgentCatalogPort;
 pub use builtin::{AvatarAsset, BuiltinAssistant, BuiltinAssistantRegistry};
 pub use error::AssistantError;
-pub use marketplace::{MarketplacePersona, load_marketplace_manifest, materialize_marketplace_personas};
+pub use marketplace::{
+    MarketplacePersona, load_marketplace_manifest, materialize_marketplace_personas,
+    refresh_unedited_installed_personas, snapshot_catalog_rules,
+};
 pub use routes::{AssistantRouterState, assistant_routes};
 pub use service::AssistantService;

@@ -9,7 +9,7 @@ use std::time::Instant;
 use aionui_ai_agent::{AgentRouterState, AgentService, RemoteAgentRouterState, RemoteAgentService};
 use aionui_assistant::{
     AssistantAgentCatalogPort, AssistantError, AssistantRouterState, AssistantService, BuiltinAssistantRegistry,
-    materialize_marketplace_personas,
+    materialize_marketplace_personas, refresh_unedited_installed_personas, snapshot_catalog_rules,
 };
 use aionui_auth::extract_token_from_ws_headers;
 use aionui_channel::ChannelRouterState;
@@ -227,6 +227,12 @@ pub async fn build_module_states(
         .bootstrap_assistant_storage()
         .await
         .map_err(assistant_bootstrap_build_error)?;
+    // Read the catalog before the upsert overwrites it: it is what tells us,
+    // afterwards, which installed copies the user never edited and can safely
+    // be moved to this build's version. See `refresh_unedited_installed_personas`.
+    let previous_catalog = snapshot_catalog_rules(assistant.marketplace_repo.as_ref())
+        .await
+        .unwrap_or_default();
     materialize_marketplace_personas(assistant.marketplace_repo.as_ref())
         .await
         .map_err(|error| {
@@ -236,6 +242,10 @@ pub async fn build_module_states(
             )
             .with_source(error)
         })?;
+    let refreshed = refresh_unedited_installed_personas(assistant.service.as_ref(), &previous_catalog).await;
+    if refreshed > 0 {
+        tracing::info!(refreshed, "startup: refreshed installed marketplace personas");
+    }
     let cron = build_cron_state(services);
     // Cron builds its own ConversationService (not a clone of the shared one),
     // so wire the assistant rule dispatcher here — otherwise scheduled runs
