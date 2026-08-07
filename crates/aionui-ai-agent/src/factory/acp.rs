@@ -13,6 +13,7 @@ use aionui_api_types::{SessionMcpServer, SessionMcpTransport};
 use aionui_common::CommandSpec;
 use aionui_db::IMcpServerRepository;
 use aionui_db::models::McpServerRow;
+use aionui_mcp::media_workspace::media_workspace_env;
 use aionui_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
 use aionui_runtime::{
     ManagedAcpToolId, ensure_managed_acp_tool_with_reporter, ensure_node_runtime_with_reporter, ensure_runtime_command,
@@ -275,7 +276,7 @@ pub(super) async fn build(
             );
             continue;
         }
-        match session_server_to_sdk_mcp_server(server).await {
+        match session_server_to_sdk_mcp_server(server, &ctx.workspace).await {
             Ok(server) => session_mcp_servers.push(server),
             Err(err) => {
                 warn!(
@@ -625,13 +626,19 @@ fn parse_headers(value: Option<&serde_json::Value>) -> Vec<HttpHeader> {
     entries.into_iter().map(|(k, v)| HttpHeader::new(k, v)).collect()
 }
 
-async fn session_server_to_sdk_mcp_server(server: &SessionMcpServer) -> Result<McpServer, String> {
+async fn session_server_to_sdk_mcp_server(server: &SessionMcpServer, workspace: &str) -> Result<McpServer, String> {
     match &server.transport {
         SessionMcpTransport::Stdio { command, args, env } => {
             if command.is_empty() {
                 return Err("stdio: missing command".to_owned());
             }
             let mut entries: Vec<(String, String)> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            // Only the media tool takes this, and only so its output lands in
+            // the conversation's folder — see `media_workspace`.
+            if let Some(entry) = media_workspace_env(&server.name, workspace) {
+                entries.retain(|(name, _)| name != &entry.0);
+                entries.push(entry);
+            }
             entries.sort_by(|a, b| a.0.cmp(&b.0));
             let (command, args, env) = ensure_stdio_launch(command, args, &entries).await?;
             Ok(McpServer::Stdio(

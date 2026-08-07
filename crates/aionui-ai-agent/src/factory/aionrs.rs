@@ -12,6 +12,7 @@ use aionui_api_types::{
 use aionui_common::ProviderWithModel;
 use aionui_db::IMcpServerRepository;
 use aionui_db::models::McpServerRow;
+use aionui_mcp::media_workspace::media_workspace_env;
 use aionui_realtime::EventBroadcaster;
 use aionui_runtime::ensure_runtime_command_with_reporter;
 use serde_json::{Map, Value};
@@ -65,6 +66,7 @@ pub(super) async fn build(
         &mut extra_mcp_servers,
         &overrides.session_mcp_servers,
         &ctx.conversation_id,
+        &ctx.workspace,
         deps.broadcaster.clone(),
     )
     .await;
@@ -667,11 +669,17 @@ async fn merge_session_snapshot_mcp_servers(
     extra_mcp_servers: &mut HashMap<String, McpServerConfig>,
     session_mcp_servers: &[SessionMcpServer],
     conversation_id: &str,
+    workspace: &str,
     broadcaster: Arc<dyn EventBroadcaster>,
 ) {
     for server in session_mcp_servers {
         match session_server_to_mcp_server_config(server, conversation_id, broadcaster.clone()).await {
-            Ok(config) => {
+            Ok(mut config) => {
+                // Only the media tool takes this, and only so its output lands
+                // in the conversation's folder — see `media_workspace`.
+                if let Some((name, value)) = media_workspace_env(&server.name, workspace) {
+                    config.env.get_or_insert_with(HashMap::new).insert(name, value);
+                }
                 if extra_mcp_servers.insert(server.name.clone(), config).is_some() {
                     debug!(
                         conversation_id = %conversation_id,
