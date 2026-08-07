@@ -9,12 +9,16 @@
 // depends on live. `managed_cli` is left in the tree unused (dormant, same as
 // `session_agent.rs`) rather than reconciled with this module.
 //
-// The one export helper this module used to have
-// (`managed_acp_tool_contract_for_export`, producing a
-// `ManagedAcpToolResourceContract` for the old schema-v1 bundle manifest) was
-// NOT restored: upstream's `cmd_prepare_managed_resources.rs` now unconditionally
-// builds the new schema-v2 `ManagedCliResourceContract` shape instead, so the
-// old export helper has no caller and no manifest schema left to target.
+// `managed_acp_tool_contract_for_export` was initially NOT restored, on the
+// reasoning that schema v2 had no slot for it. That reasoning was wrong, and it
+// shipped: with nothing calling `prepare_managed_acp_tool_to_root`, every
+// package built after the sync had no `acp/` subtree at all, so a fresh install
+// could not start Claude or Codex ("installation incomplete"). It went unnoticed
+// for a week because any machine that had run a pre-sync build already had the
+// artifacts in its user-data cache, which the resolver checks first. Restored
+// 2026-08-07 together with an `acpTools` section in the v2 contract, so the
+// packaging-time validator now fails hard when the subtree is absent.
+// See `docs/guides/packaging-release-playbook.zh-CN.md` §2.6 in the 1oneUI repo.
 mod types;
 
 #[cfg(test)]
@@ -29,6 +33,7 @@ use tracing::{info, warn};
 use crate::Builder;
 use crate::cache;
 use crate::managed_resources;
+use crate::managed_resources_contract::{ManagedAcpToolResourceContract, relative_contract_path};
 use crate::node_runtime::DoctorRow;
 use crate::node_runtime::ensure_node_runtime_with_reporter;
 
@@ -145,6 +150,49 @@ pub async fn prepare_managed_acp_tool_to_root(
     }
 
     result
+}
+
+/// Describe a prepared ACP tool for the managed-resources manifest.
+///
+/// The emitted shape matches the schema-v1 `acpTools` entry exactly, so the two
+/// existing verifiers (packaging-time JS, install-time PowerShell) validate a v2
+/// bundle's wrapper subtree without needing a second implementation each.
+pub fn managed_acp_tool_contract_for_export(
+    tool: ManagedAcpToolId,
+    bundle_root: &Path,
+    resolved: &ResolvedManagedAcpTool,
+) -> Result<ManagedAcpToolResourceContract, ManagedAcpToolError> {
+    managed_acp_tool_contract_for_export_with_spec(tool, platform_spec()?, bundle_root, resolved)
+}
+
+fn managed_acp_tool_contract_for_export_with_spec(
+    tool: ManagedAcpToolId,
+    spec: PlatformSpec,
+    bundle_root: &Path,
+    resolved: &ResolvedManagedAcpTool,
+) -> Result<ManagedAcpToolResourceContract, ManagedAcpToolError> {
+    if resolved.id != tool {
+        return Err(ManagedAcpToolError::invalid(format!(
+            "resolved managed ACP tool id {:?} does not match requested {:?}",
+            resolved.id, tool
+        )));
+    }
+    let manifest = read_local_manifest(&resolved.root)?;
+    let root = relative_contract_path(bundle_root, &resolved.root)
+        .map_err(|error| ManagedAcpToolError::invalid(format!("managed ACP contract path: {error}")))?;
+    Ok(ManagedAcpToolResourceContract {
+        slug: tool.slug().into(),
+        version: resolved.version.clone(),
+        package_name: tool.package_name().into(),
+        root,
+        platform_directory: spec.manifest_key.into(),
+        manifest: "manifest.json".into(),
+        entrypoint: manifest.entrypoint,
+        path_entries: manifest.path_entries,
+        required_files: vec!["package.json".into(), "package-lock.json".into()],
+        required_directories: vec!["node_modules".into()],
+        platform_executable: normalize_slashes(&platform_binary_relative_path(tool, spec)?),
+    })
 }
 
 fn report_failure(
