@@ -12,6 +12,39 @@ use aionui_db::IUserRepository;
 use crate::JwtService;
 use crate::extract::extract_token_from_headers;
 
+/// Header the WebUI reverse proxy stamps on every request it forwards.
+///
+/// The desktop's co-located backend runs with `--local`, which historically
+/// meant "nobody has to log in". But the SAME backend is what the WebUI serves
+/// to browsers, and with "允许远程访问" on, that listener is bound to `0.0.0.0`.
+/// So `--local` was silently granting the operator's identity to anyone on the
+/// network — no credential at all.
+///
+/// The peer address cannot answer "was this remote?" here: the proxy splices
+/// over loopback, so by the time a request reaches this process every peer
+/// looks local. The proxy is the only layer that still knows, so it tells us.
+///
+/// Trust model: the backend listener is bound to loopback, so forging this
+/// header requires already running code on the machine — and the header can
+/// only ever make the check *stricter*, never weaker. The proxy sets it
+/// unconditionally (overwriting any client-supplied copy), so a remote client
+/// cannot strip it.
+pub const WEBUI_PROXY_HEADER: &str = "x-aionui-forwarded-origin";
+
+/// Value paired with [`WEBUI_PROXY_HEADER`].
+pub const WEBUI_PROXY_VALUE: &str = "webui";
+
+/// Whether this request arrived through the WebUI reverse proxy.
+///
+/// When true, "local mode" must not be treated as "trusted operator": the
+/// caller is a browser that may be on another machine entirely.
+pub fn is_webui_proxied(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(WEBUI_PROXY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case(WEBUI_PROXY_VALUE))
+}
+
 /// Authenticated user injected into request extensions by the auth middleware.
 ///
 /// Route handlers extract this from `request.extensions()` to identify
@@ -58,9 +91,15 @@ pub async fn auth_middleware(
     // operator's tenant/members, and silently gaining its admin role). So in
     // local mode we still honor a *valid* bearer token when one is present, and
     // only fall back to the operator when there is no token (the local desktop
-    // never sends one) or it fails to resolve. This never returns 401 in local
-    // mode, preserving the no-auth convenience for the desktop operator.
-    if state.local {
+    // never sends one) or it fails to resolve.
+    //
+    // The operator fallback is what makes the desktop login-free, so it must
+    // apply ONLY to the desktop. A request carrying [`WEBUI_PROXY_HEADER`]
+    // reached us through the WebUI listener — which is bound to `0.0.0.0`
+    // whenever "允许远程访问" is on — so it is never "the operator at the
+    // keyboard" no matter what `--local` says. Those fall through to the strict
+    // path below and get 401 without a real session.
+    if state.local && !is_webui_proxied(request.headers()) {
         if let Some(token) = extract_token_from_headers(request.headers())
             && let Ok(payload) = state.jwt_service.verify(&token)
             && let Ok(Some(user)) = state.user_repo.find_by_id(&payload.user_id).await
@@ -208,6 +247,83 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(body_string(response).await, "system_default_user:system_default_user");
+    }
+
+    /// A request forwarded by the WebUI proxy is NOT the desktop operator, even
+    /// though the process runs with `--local`. Without a session it must 401 —
+    /// this is the whole point of the header: with "允许远程访问" on, the WebUI
+    /// listener is bound to 0.0.0.0, so this path was handing `system_default_user`
+    /// (and its admin role) to anyone on the network, with no credential at all.
+    #[tokio::test]
+    async fn local_mode_rejects_a_proxied_request_that_carries_no_session() {
+        let db = aionui_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
+        let jwt = Arc::new(JwtService::new("test-secret".to_string()));
+
+        let app = local_auth_app(user_repo, jwt).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header(WEBUI_PROXY_HEADER, WEBUI_PROXY_VALUE)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// ...but a proxied request WITH a valid session resolves to that real
+    /// user. Closing the hole must not break the logged-in WebUI.
+    #[tokio::test]
+    async fn local_mode_honors_a_valid_session_on_a_proxied_request() {
+        let db = aionui_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
+        let user = user_repo.create_user("zhaogao", "pw").await.unwrap();
+        let jwt = Arc::new(JwtService::new("test-secret".to_string()));
+        let token = jwt.sign(&user.id, &user.username).unwrap();
+
+        let app = local_auth_app(user_repo, jwt).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header(WEBUI_PROXY_HEADER, WEBUI_PROXY_VALUE)
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_string(response).await, format!("{}:{}", user.id, user.username));
+    }
+
+    /// A forged/expired token on a proxied request must 401 rather than fall
+    /// back to the operator — the fallback is exactly what we are removing.
+    #[tokio::test]
+    async fn local_mode_does_not_fall_back_to_the_operator_on_a_proxied_request() {
+        let db = aionui_db::init_database_memory().await.unwrap();
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
+        let jwt = Arc::new(JwtService::new("test-secret".to_string()));
+
+        let app = local_auth_app(user_repo, jwt).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header(WEBUI_PROXY_HEADER, WEBUI_PROXY_VALUE)
+                    .header("Authorization", "Bearer not-a-real-jwt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     /// An invalid/forged token in local mode does not 401 — it falls back to

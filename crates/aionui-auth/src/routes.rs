@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Json, Path, State};
+use axum::extract::{Json, Path, Request, State};
 use axum::http::{HeaderMap, header};
-use axum::middleware::from_fn_with_state;
+use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Router};
@@ -23,7 +23,7 @@ use aionui_db::{DbError, IUserRepository, models::User};
 
 use crate::error::AuthError;
 use crate::extract::extract_token_from_headers;
-use crate::middleware::{AuthState, CurrentUser, auth_middleware};
+use crate::middleware::{AuthState, CurrentUser, auth_middleware, is_webui_proxied};
 use crate::password::{dummy_password_hash, generate_password, hash_password, verify_password_timed};
 use crate::qr_token::QrTokenStore;
 use crate::rate_limit::{
@@ -103,6 +103,26 @@ fn ensure_local_mode(local: bool) -> Result<(), ApiError> {
     ))
 }
 
+/// Reject anything that reached a local-only route through the WebUI proxy.
+///
+/// `ensure_local_mode` only ever asked "was this process started with
+/// `--local`?" — a property of the *process*, not of the *caller*. The desktop
+/// always passes `--local`, so once "允许远程访问" is on, every one of these
+/// routes was answerable from the network: listing users, overwriting a
+/// password hash, rotating a JWT secret, or resetting the WebUI password and
+/// reading the new one straight out of the response.
+///
+/// Applied as a layer rather than threaded through each handler so a route
+/// added to this group later cannot forget the check.
+async fn reject_webui_proxied_middleware(request: Request, next: Next) -> Result<Response, ApiError> {
+    if is_webui_proxied(request.headers()) {
+        return Err(ApiError::Forbidden(
+            "This endpoint is only available to the local desktop app".into(),
+        ));
+    }
+    Ok(next.run(request).await)
+}
+
 /// Build the auth router with all endpoints and middleware layers.
 ///
 /// Returns a `Router` with these endpoints:
@@ -143,9 +163,17 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
         .route_layer(from_fn_with_state(auth_limiter, auth_rate_limit_middleware))
         .with_state(state.clone());
 
-    // API rate limited public routes (no auth required)
+    // Genuinely public: the login page asks whether setup is needed before
+    // anyone can possibly hold a session, so this one must stay answerable
+    // through the proxy.
     let api_public = Router::new()
         .route("/api/auth/status", get(status_handler))
+        .route_layer(from_fn_with_state(api_limiter.clone(), api_rate_limit_middleware))
+        .with_state(state.clone());
+
+    // Local-desktop-only: no auth middleware, so `--local` was the ONLY thing
+    // standing in front of them. Now also unreachable through the WebUI proxy.
+    let api_local_only = Router::new()
         .route(
             "/api/auth/internal/users",
             get(list_internal_users_handler).post(create_internal_user_handler),
@@ -176,11 +204,12 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
             "/api/auth/internal/users/{id}/last-login",
             post(update_user_last_login_handler),
         )
-        // WebUI admin credential endpoints — local-only, enforced inside each handler.
+        // WebUI admin credential endpoints — local desktop only.
         .route("/api/webui/change-password", post(webui_change_password_handler))
         .route("/api/webui/change-username", post(webui_change_username_handler))
         .route("/api/webui/reset-password", post(webui_reset_password_handler))
         .route("/api/webui/generate-qr-token", post(webui_generate_qr_token_handler))
+        .route_layer(from_fn(reject_webui_proxied_middleware))
         .route_layer(from_fn_with_state(api_limiter.clone(), api_rate_limit_middleware))
         .with_state(state.clone());
 
@@ -215,6 +244,7 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
     Router::new()
         .merge(auth_rate_limited)
         .merge(api_public)
+        .merge(api_local_only)
         .merge(authenticated)
         .merge(api_action_limited)
         .merge(static_routes)
