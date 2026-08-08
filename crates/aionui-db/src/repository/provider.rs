@@ -42,6 +42,9 @@ pub struct CreateProviderParams<'a> {
     pub model_settings: &'a str,
     pub bedrock_config: Option<&'a str>,
     pub is_full_url: bool,
+    /// `None` = user-configured. `Some("enterprise")` = materialized from a
+    /// company model channel, and therefore read-only on this machine.
+    pub managed_by: Option<&'a str>,
 }
 
 /// Parameters for updating an existing provider.

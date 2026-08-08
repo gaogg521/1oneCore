@@ -304,6 +304,7 @@ async fn fixture() -> Fixture {
             model_settings: "{}",
             bedrock_config: None,
             is_full_url: false,
+            managed_by: None,
         })
         .await
         .expect("seed provider");

@@ -220,6 +220,12 @@ pub struct ProviderResponse {
     /// is present in storage but could not be decrypted and must be re-entered.
     #[serde(default)]
     pub key_status: ProviderKeyStatus,
+    /// `None` = the user configured this themselves. `Some("enterprise")` = it
+    /// was provisioned by a company model channel: the client renders it
+    /// read-only, and its `api_key` is a revocable channel token rather than a
+    /// vendor credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_by: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

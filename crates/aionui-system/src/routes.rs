@@ -37,6 +37,10 @@ pub struct SystemRouterState {
     pub version_check_service: VersionCheckService,
     pub runtime_prepare_service: RuntimePrepareService,
     pub feedback_diagnostics_service: FeedbackDiagnosticsService,
+    /// Materializes company model channels as local providers. `None` on
+    /// deployments that never wire it — the endpoint then reports plainly
+    /// instead of silently doing nothing.
+    pub managed_provider_sync: Option<std::sync::Arc<crate::managed_provider::ManagedProviderSync>>,
 }
 
 impl From<SystemError> for ApiError {
@@ -88,6 +92,7 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         .route("/api/providers/fetch-models", post(fetch_models_anonymous))
         .route("/api/providers/{id}", delete(delete_provider).put(update_provider))
         .route("/api/providers/{id}/models", post(fetch_models))
+        .route("/api/providers/sync-model-channels", post(sync_model_channels))
         .route("/api/system/info", get(get_system_info))
         .route("/api/system/check-update", post(check_update))
         .route("/api/system/ensure-node-runtime", post(ensure_node_runtime))
@@ -284,6 +289,41 @@ async fn delete_provider(
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     state.provider_service.delete(&id).await.map_err(ApiError::from)?;
     Ok(Json(ApiResponse::success()))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncModelChannelsBody {
+    #[serde(default)]
+    channels: Vec<crate::managed_provider::ManagedChannelPayload>,
+    /// True only when the caller's fetch from the company server succeeded, so
+    /// this really is the complete set. False leaves existing managed rows
+    /// alone — a server that could not be reached must not wipe a member's
+    /// working setup.
+    #[serde(default)]
+    authoritative: bool,
+}
+
+/// Materialize the company's model channels as local providers.
+///
+/// Local-only by design: the channel list and the member's tokens are fetched
+/// by the renderer (which knows the company server's address and holds the
+/// session), and handed here to be written to this machine's provider table.
+async fn sync_model_channels(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<SyncModelChannelsBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<crate::managed_provider::ManagedChannelSyncReport>>, ApiError> {
+    let Json(body) = body.map_err(ApiError::from)?;
+    let Some(sync) = state.managed_provider_sync.as_ref() else {
+        return Err(ApiError::BadRequest(
+            "model channel sync is not available on this deployment".into(),
+        ));
+    };
+    let report = sync
+        .sync(&body.channels, body.authoritative)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(report)))
 }
 
 async fn fetch_models(

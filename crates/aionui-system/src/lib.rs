@@ -6,6 +6,7 @@ pub mod client_pref;
 pub mod diagnostics;
 pub mod error;
 pub mod keep_awake;
+pub mod managed_provider;
 pub mod model_fetcher;
 pub mod protocol;
 pub mod provider;

@@ -47,8 +47,8 @@ impl IProviderRepository for SqliteProviderRepository {
             "INSERT INTO providers \
                 (id, platform, name, base_url, api_key_encrypted, models, enabled, \
                  capabilities, context_limit, model_protocols, model_enabled, \
-                 model_health, model_settings, bedrock_config, is_full_url, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 model_health, model_settings, bedrock_config, is_full_url, managed_by, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(params.platform)
@@ -65,6 +65,7 @@ impl IProviderRepository for SqliteProviderRepository {
         .bind(params.model_settings)
         .bind(params.bedrock_config)
         .bind(params.is_full_url)
+        .bind(params.managed_by)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -92,6 +93,7 @@ impl IProviderRepository for SqliteProviderRepository {
             model_settings: params.model_settings.to_string(),
             bedrock_config: params.bedrock_config.map(String::from),
             is_full_url: params.is_full_url,
+            managed_by: params.managed_by.map(String::from),
             created_at: now,
             updated_at: now,
         })
@@ -184,6 +186,11 @@ fn merge_update(existing: Provider, params: UpdateProviderParams<'_>) -> Provide
             .bedrock_config
             .map_or(existing.bedrock_config, |v| v.map(String::from)),
         is_full_url: params.is_full_url.unwrap_or(existing.is_full_url),
+        // Ownership is not something an update may change: a personal provider
+        // cannot promote itself to enterprise-managed, and a managed one cannot
+        // shed the flag to become editable. Only the channel sync writes it, by
+        // replacing the row.
+        managed_by: existing.managed_by,
         created_at: existing.created_at,
         updated_at: now,
     }
@@ -217,6 +224,7 @@ mod tests {
             model_settings: "{}",
             bedrock_config: None,
             is_full_url: false,
+            managed_by: None,
         }
     }
 

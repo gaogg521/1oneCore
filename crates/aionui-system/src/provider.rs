@@ -84,15 +84,37 @@ impl ProviderService {
             model_settings: &model_settings_json,
             bedrock_config: bedrock_json.as_deref(),
             is_full_url: req.is_full_url,
+            // Anything created through the public API is the user's own.
+            // Enterprise-managed rows only ever come from
+            // `sync_managed_channels`.
+            managed_by: None,
         };
 
         let row = self.repo.create(params).await?;
         self.row_to_response(row)
     }
 
+    /// Refuse writes to a provider the company owns.
+    ///
+    /// Enforced here rather than only hidden in the UI: the sync would restore
+    /// the row on its next run anyway, so allowing the edit would just produce
+    /// a change that silently reverts later — the most confusing outcome of the
+    /// three. Saying no immediately, with the reason, is the honest one.
+    async fn ensure_not_company_managed(&self, id: &str) -> Result<(), SystemError> {
+        if let Some(row) = self.repo.find_by_id(id).await?
+            && row.managed_by.is_some()
+        {
+            return Err(SystemError::BadRequest(
+                "this model channel is provisioned by your company and cannot be changed here".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Update an existing provider. Only provided fields are changed.
     pub async fn update(&self, id: &str, req: UpdateProviderRequest) -> Result<ProviderResponse, SystemError> {
         validate_update_request(&req)?;
+        self.ensure_not_company_managed(id).await?;
 
         let encrypted_key = req
             .api_key
@@ -130,6 +152,7 @@ impl ProviderService {
 
     /// Delete a provider by ID.
     pub async fn delete(&self, id: &str) -> Result<(), SystemError> {
+        self.ensure_not_company_managed(id).await?;
         self.repo.delete(id).await?;
         Ok(())
     }
@@ -189,6 +212,7 @@ impl ProviderService {
             bedrock_config,
             is_full_url: row.is_full_url,
             key_status,
+            managed_by: row.managed_by,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })

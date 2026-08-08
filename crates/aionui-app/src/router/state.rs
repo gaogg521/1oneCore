@@ -419,6 +419,9 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
             Arc::new(aionui_system::SystemKeepAwakeController::new()),
         ),
         provider_service: ProviderService::new(provider_repo.clone(), encryption_key),
+        managed_provider_sync: Some(Arc::new(
+            aionui_system::managed_provider::ManagedProviderSync::new(provider_repo.clone(), encryption_key),
+        )),
         model_fetch_service: ModelFetchService::new(provider_repo, encryption_key, http_client.clone()),
         protocol_detection_service: ProtocolDetectionService::new(http_client.clone()),
         version_check_service: VersionCheckService::new(http_client, env!("CARGO_PKG_VERSION").to_owned()),

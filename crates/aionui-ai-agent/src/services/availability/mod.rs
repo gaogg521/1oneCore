@@ -323,6 +323,7 @@ mod tests {
             model_settings: "{}",
             bedrock_config: None,
             is_full_url: false,
+            managed_by: None,
         }
     }
 

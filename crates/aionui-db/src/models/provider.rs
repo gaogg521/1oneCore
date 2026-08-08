@@ -32,6 +32,12 @@ pub struct Provider {
     /// When true, base_url is treated as a complete endpoint URL.
     /// The system will NOT append paths like /v1/chat/completions.
     pub is_full_url: bool,
+    /// `None` = the user configured this themselves (theirs to edit and
+    /// delete). `Some("enterprise")` = materialized from a company model
+    /// channel: read-only here, reconciled by the sync, and its
+    /// `api_key_encrypted` holds a revocable channel token rather than a real
+    /// vendor credential.
+    pub managed_by: Option<String>,
     pub created_at: TimestampMs,
     pub updated_at: TimestampMs,
 }
