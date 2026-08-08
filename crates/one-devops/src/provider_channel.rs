@@ -37,7 +37,6 @@
 
 use base64::Engine;
 use sha2::{Digest, Sha256};
-use sqlx::SqlitePool;
 
 use aionui_common::now_ms;
 use aionui_common::{decrypt_string, encrypt_string};
