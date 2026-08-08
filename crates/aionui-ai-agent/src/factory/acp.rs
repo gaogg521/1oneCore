@@ -6,6 +6,7 @@ use crate::factory::AgentFactoryDeps;
 use crate::factory::acp_assembler::{WorkspaceInfo, assemble_acp_params};
 use crate::factory::acp_launch_policy::{AcpLaunchPolicyInput, apply_acp_launch_policy};
 use crate::factory::context::FactoryContext;
+use crate::factory::session_mcp::load_session_mcp_rows;
 use crate::manager::acp::{AcpAgentManager, CatalogForwarder};
 use crate::session_context::AcpSessionBuildContext;
 use agent_client_protocol::schema::{EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio};
@@ -466,40 +467,18 @@ async fn resolve_builtin_managed_acp_command_spec(
 /// MCP tool than fail the whole session), and return them in SDK shape ready
 /// for `NewSessionRequest::mcp_servers`.
 ///
-/// When `selected_ids` is present, those rows define the session snapshot and
-/// are injected regardless of the current global `enabled` flag. Legacy
-/// conversations without a snapshot still fall back to "all enabled rows".
-/// Builtins are wired through other paths (e.g. team/guide MCP).
+/// Which rows apply is `session_mcp::load_session_mcp_rows`'s call — one rule
+/// shared with the aionrs factory, including which built-ins ride along.
 async fn load_user_mcp_servers(
     repo: &dyn IMcpServerRepository,
     selected_ids: Option<&[String]>,
     conversation_id: &str,
     capabilities: &AcpMcpCapabilities,
 ) -> Vec<McpServer> {
-    let rows_result = match selected_ids {
-        Some(ids) => repo.list_by_ids_any(ids).await,
-        None => repo.list().await,
-    };
-    let rows = match rows_result {
-        Ok(r) => r,
-        Err(err) => {
-            warn!(
-                conversation_id,
-                error = %err,
-                "user_mcp: list() failed; skipping injection"
-            );
-            return Vec::new();
-        }
-    };
+    let rows = load_session_mcp_rows(repo, selected_ids, conversation_id).await;
 
     let mut servers = Vec::with_capacity(rows.len());
     for row in rows {
-        let selected = selected_ids
-            .map(|ids| ids.iter().any(|id| id == &row.id))
-            .unwrap_or(row.enabled);
-        if !selected || row.builtin {
-            continue;
-        }
         if !row_supported_by_capabilities(&row, capabilities) {
             warn!(
                 conversation_id,

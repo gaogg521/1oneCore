@@ -400,6 +400,10 @@ impl BillingService {
     /// stay NULL and only the estimated cost is carried. That keeps media
     /// inside the existing budget rollup (`budget_used_micros`) and the usage
     /// dashboard without a schema change.
+    ///
+    /// `conversation_id` is attribution, not content — it is what lets an admin
+    /// follow a charge back to where it happened. Optional because a caller may
+    /// genuinely not have one; the column has always been nullable.
     pub async fn record_media_usage(
         &self,
         user_id: &str,
@@ -408,6 +412,7 @@ impl BillingService {
         count: i64,
         duration_seconds: i64,
         unit_price_micros: Option<i64>,
+        conversation_id: Option<&str>,
     ) -> Result<(), BillingError> {
         let enterprise_id = self.resolve_enterprise_id(user_id).await?;
         // A price the user entered for their own provider beats our built-in
@@ -428,11 +433,12 @@ impl BillingService {
         sqlx::query(
             "INSERT INTO one_usage_events \
                 (id, user_id, enterprise_id, conversation_id, model, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) \
-             VALUES (?, ?, ?, NULL, ?, NULL, NULL, NULL, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
         )
         .bind(generate_prefixed_id("usage"))
         .bind(user_id)
         .bind(enterprise_id)
+        .bind(conversation_id)
         .bind(model)
         .bind(cost)
         .bind(now_ms())
@@ -913,7 +919,7 @@ mod tests {
         // an expensive video cannot hide from the cap.
         svc.set_model_control("entM", Some(1_000), &[]).await.unwrap();
         assert!(svc.check_media_allowed("mia", "seedance-2-0-fast").await.is_ok());
-        svc.record_media_usage("mia", "video", "seedance-2-0-fast", 1, 5, None)
+        svc.record_media_usage("mia", "video", "seedance-2-0-fast", 1, 5, None, Some("conv_1"))
             .await
             .unwrap();
         assert_eq!(
@@ -937,7 +943,7 @@ mod tests {
         let svc = service().await;
 
         // Video: priced per second, so 4s at 2 USD-micros/s is 8.
-        svc.record_media_usage("solo", "video", "some-unknown-model", 1, 4, Some(2))
+        svc.record_media_usage("solo", "video", "some-unknown-model", 1, 4, Some(2), None)
             .await
             .unwrap();
         let cost: i64 = sqlx::query_scalar(
@@ -950,7 +956,7 @@ mod tests {
         assert_eq!(cost, 8);
 
         // Images: priced per asset.
-        svc.record_media_usage("solo2", "image", "some-unknown-model", 3, 0, Some(7))
+        svc.record_media_usage("solo2", "image", "some-unknown-model", 3, 0, Some(7), None)
             .await
             .unwrap();
         let cost2: i64 =
@@ -961,7 +967,7 @@ mod tests {
         assert_eq!(cost2, 21);
 
         // A zero / absent price falls back to the table rather than charging 0.
-        svc.record_media_usage("solo3", "image", "gpt-image-2", 1, 0, Some(0))
+        svc.record_media_usage("solo3", "image", "gpt-image-2", 1, 0, Some(0), None)
             .await
             .unwrap();
         let cost3: i64 =
@@ -977,7 +983,7 @@ mod tests {
     #[tokio::test]
     async fn media_usage_is_priced_even_though_it_has_no_tokens() {
         let svc = service().await;
-        svc.record_media_usage("solo", "image", "gpt-image-2", 3, 0, None)
+        svc.record_media_usage("solo", "image", "gpt-image-2", 3, 0, None, None)
             .await
             .unwrap();
         let cost: i64 = sqlx::query_scalar(
@@ -995,5 +1001,37 @@ mod tests {
                 .await
                 .unwrap();
         assert!(tokens.is_none());
+    }
+
+    /// A charge an admin cannot trace back to anywhere is a charge they cannot
+    /// act on. Media started from the compose box writes no conversation
+    /// message at all, so this column is the only trail it leaves — it used to
+    /// be hard-coded NULL for every media row.
+    #[tokio::test]
+    async fn media_usage_is_attributed_to_its_conversation() {
+        let svc = service().await;
+        svc.record_media_usage("solo", "video", "seedance-2-0-fast", 1, 5, None, Some("conv_abc"))
+            .await
+            .unwrap();
+        let conversation: Option<String> = sqlx::query_scalar(
+            "SELECT conversation_id FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(&svc.pool)
+        .await
+        .unwrap();
+        assert_eq!(conversation.as_deref(), Some("conv_abc"));
+
+        // Still optional: a caller without one records the spend anyway rather
+        // than dropping it, because the money was spent either way.
+        svc.record_media_usage("solo2", "image", "gpt-image-2", 1, 0, None, None)
+            .await
+            .unwrap();
+        let none_conversation: Option<String> = sqlx::query_scalar(
+            "SELECT conversation_id FROM one_usage_events WHERE user_id = 'solo2' ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(&svc.pool)
+        .await
+        .unwrap();
+        assert!(none_conversation.is_none());
     }
 }

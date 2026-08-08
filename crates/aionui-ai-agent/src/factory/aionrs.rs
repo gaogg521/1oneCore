@@ -22,6 +22,7 @@ use crate::agent_task::AgentInstance;
 use crate::error::AgentError;
 use crate::factory::AgentFactoryDeps;
 use crate::factory::context::FactoryContext;
+use crate::factory::session_mcp::load_session_mcp_rows;
 use crate::manager::aionrs::{AionrsAgentManager, sanitize_session_messages};
 use crate::runtime_status::conversation_runtime_reporter;
 use crate::session_context::AionrsSessionBuildContext;
@@ -451,31 +452,10 @@ async fn load_user_mcp_servers(
     conversation_id: &str,
     broadcaster: Arc<dyn EventBroadcaster>,
 ) -> HashMap<String, McpServerConfig> {
-    let rows_result = match selected_ids {
-        Some(ids) => repo.list_by_ids_any(ids).await,
-        None => repo.list().await,
-    };
-    let rows = match rows_result {
-        Ok(r) => r,
-        Err(err) => {
-            warn!(
-                conversation_id,
-                error = %err,
-                "user_mcp: list() failed; skipping injection"
-            );
-            return HashMap::new();
-        }
-    };
+    let rows = load_session_mcp_rows(repo, selected_ids, conversation_id).await;
 
     let mut servers = HashMap::new();
     for row in rows {
-        let selected = selected_ids
-            .map(|ids| ids.iter().any(|id| id == &row.id))
-            .unwrap_or(row.enabled);
-        if !selected || row.builtin {
-            continue;
-        }
-
         match row_to_mcp_server_config(&row, conversation_id, broadcaster.clone()).await {
             Ok(config) => {
                 servers.insert(row.name.clone(), config);
@@ -1921,7 +1901,17 @@ mod tests {
             },
         }];
 
-        merge_session_snapshot_mcp_servers(&mut servers, &snapshot, "conv-override", test_broadcaster()).await;
+        // Pre-existing test-build break: `workspace` was added to the function
+        // without updating this call, so the whole lib test target stopped
+        // compiling — which is why nothing here had been running.
+        merge_session_snapshot_mcp_servers(
+            &mut servers,
+            &snapshot,
+            "conv-override",
+            "/tmp/workspace",
+            test_broadcaster(),
+        )
+        .await;
 
         let server = servers.get("demo-mcp").expect("snapshot should remain");
         assert_eq!(server.transport, TransportType::Stdio);

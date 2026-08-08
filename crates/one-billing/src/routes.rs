@@ -93,6 +93,12 @@ struct MediaUsageBody {
     /// USD-micros. Present only when they entered one; overrides the built-in
     /// rate table so the rollup reflects real money rather than an estimate.
     unit_price_micros: Option<i64>,
+    /// Which conversation the generation belongs to, when the caller knows.
+    ///
+    /// Attribution, not content. A generation started from the compose box
+    /// writes no message, so without this the ledger row is the only trace it
+    /// leaves and it points at nothing an admin can follow.
+    conversation_id: Option<String>,
 }
 
 /// Report a completed media generation so it lands in the company's spend
@@ -112,6 +118,7 @@ async fn billing_media_usage(
             body.count.unwrap_or(1),
             body.duration_seconds.unwrap_or(0),
             body.unit_price_micros,
+            body.conversation_id.as_deref(),
         )
         .await?;
     Ok(Json(ApiResponse::ok(())))

@@ -4,6 +4,7 @@ mod acp;
 mod acp_launch_policy;
 pub(crate) mod aionrs;
 mod context;
+mod session_mcp;
 
 use std::path::PathBuf;
 use std::sync::Arc;
