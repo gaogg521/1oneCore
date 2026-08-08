@@ -62,8 +62,23 @@ pub struct PendingFinding {
 
 /// Outcome of inspecting one message.
 pub struct InspectionOutcome {
-    /// `Some(reason)` when a rule with action `block` matched.
-    pub blocked: Option<String>,
+    /// `Some(_)` when a rule with action `block` matched.
+    pub blocked: Option<ContentBlock>,
+}
+
+/// A block, carried in parts rather than as one pre-formatted sentence.
+///
+/// The caller needs the rule name on its own: the HTTP layer hands it to the
+/// client as a parameter so the client can say this in the reader's language.
+/// A single English string would force every UI to either show English or
+/// re-parse it back out.
+#[derive(Debug, Clone)]
+pub struct ContentBlock {
+    /// The admin-authored rule name. Shown to the member — it is the only part
+    /// that tells them what actually stopped the send.
+    pub rule_name: String,
+    /// English sentence, for clients with no translation and for logs.
+    pub reason: String,
 }
 
 /// Holds the distributed rules and the findings they produce.
@@ -121,11 +136,12 @@ impl ContentInspectionService {
             return InspectionOutcome { blocked: None };
         }
 
-        let blocked = result.blocking().first().map(|f| {
-            format!(
+        let blocked = result.blocking().first().map(|f| ContentBlock {
+            rule_name: f.rule_name.clone(),
+            reason: format!(
                 "Blocked by your company's content policy (rule: {}). Remove the flagged content and try again.",
                 f.rule_name
-            )
+            ),
         });
 
         if let Ok(mut pending) = self.pending.lock() {
@@ -206,10 +222,14 @@ mod tests {
         svc.set_rules(vec![rule("r2", "acme merger", DlpAction::Block)]);
 
         let out = svc.inspect(None, None, "draft of the ACME MERGER memo");
-        let reason = out.blocked.expect("a block rule must block");
+        let block = out.blocked.expect("a block rule must block");
+        // The rule name must be available on its own, not only buried in the
+        // English sentence — that is what lets the UI translate around it.
+        assert_eq!(block.rule_name, "rule-r2");
         assert!(
-            reason.contains("rule-r2"),
-            "the member must learn which rule fired: {reason}"
+            block.reason.contains("rule-r2"),
+            "the English fallback must name the rule too: {}",
+            block.reason
         );
         assert_eq!(svc.drain_findings().len(), 1, "a blocked send is still an event");
     }

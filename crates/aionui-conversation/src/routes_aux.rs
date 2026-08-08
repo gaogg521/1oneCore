@@ -41,9 +41,9 @@ async fn set_config_option(
     // option carries a model value; personal / no-allowlist users pass.
     if option_id == "model"
         && let Some(gate) = &state.send_gate
-        && let Err(reason) = gate.check_model(&user.id, &req.value).await
+        && let Err(denial) = gate.check_model(&user.id, &req.value).await
     {
-        return Err(ApiError::Forbidden(reason));
+        return Err(crate::routes::denial_to_api_error(denial));
     }
     Ok(Json(ApiResponse::ok(
         state

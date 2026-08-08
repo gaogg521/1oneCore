@@ -258,6 +258,28 @@ async fn get_msg(
     Ok(Json(ApiResponse::ok(result)))
 }
 
+/// Turn a policy refusal into the HTTP error the client sees.
+///
+/// Deliberately NOT `ApiError::Forbidden`: that variant redacts its message to a
+/// bare "Forbidden." at the boundary, which is right for what it was built for
+/// (sandbox escapes, internal paths) and wrong for these. A policy refusal is
+/// written *for* the person who hit it — which rule stopped them, which model is
+/// off the allowlist, that the budget is spent. Swallowing it leaves someone
+/// staring at an unexplained refusal with nothing to act on, which for content
+/// policy is exactly what pushes people to paste into a browser instead: the
+/// outcome the feature exists to prevent.
+///
+/// `Coded` keeps the message, and `details` carries the parameters a client
+/// needs to say the same thing in the reader's language.
+pub(crate) fn denial_to_api_error(denial: crate::state::PolicyDenial) -> ApiError {
+    ApiError::Coded {
+        status: StatusCode::FORBIDDEN,
+        code: denial.code,
+        message: denial.message,
+        details: denial.details,
+    }
+}
+
 async fn send_msg(
     State(state): State<ConversationRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -274,33 +296,18 @@ async fn send_msg(
     // ⚠️ Inspects `req.content` only. Attached files are NOT scanned: that would
     // mean reading and decoding every attachment on the send path. Known gap,
     // not an oversight.
-    //
-    // Deliberately NOT `ApiError::Forbidden`: that variant redacts its message
-    // to a bare "Forbidden." at the HTTP boundary, which is right for the cases
-    // it was built for (sandbox escapes, internal paths) but wrong here. This
-    // reason is admin-authored text whose entire purpose is to be read by the
-    // member — it names the rule that stopped them and what to do about it.
-    // Swallowing it leaves someone staring at an unexplained refusal, which is
-    // exactly what pushes people to paste into a browser instead: the outcome
-    // this feature exists to prevent. `Coded` preserves the message and gives
-    // clients a stable code to branch on.
     if let Some(inspector) = &state.content_inspector
-        && let Some(reason) = inspector.inspect(&id, &req.content)
+        && let Some(denial) = inspector.inspect(&id, &req.content)
     {
-        return Err(ApiError::Coded {
-            status: StatusCode::FORBIDDEN,
-            code: "CONTENT_BLOCKED",
-            message: reason,
-            details: None,
-        });
+        return Err(denial_to_api_error(denial));
     }
     // P1-2 model control: block the send when the team is over its spend budget
     // (or the model is off-allowlist, when a model is known). No-op for
     // personal / no-company users, or when no gate is wired.
     if let Some(gate) = &state.send_gate
-        && let Err(reason) = gate.check_send(&user.id, None).await
+        && let Err(denial) = gate.check_send(&user.id, None).await
     {
-        return Err(ApiError::Forbidden(reason));
+        return Err(denial_to_api_error(denial));
     }
     let response = state
         .service
@@ -497,12 +504,10 @@ mod error_mapping_tests {
         let reason = "Blocked by your company's content policy (rule: 合同关键词). \
                       Remove the flagged content and try again."
             .to_owned();
-        let app = ApiError::Coded {
-            status: StatusCode::FORBIDDEN,
-            code: "CONTENT_BLOCKED",
-            message: reason.clone(),
-            details: None,
-        };
+        let app = denial_to_api_error(
+            crate::state::PolicyDenial::new("CONTENT_BLOCKED", reason.clone())
+                .with_details(serde_json::json!({ "ruleName": "合同关键词" })),
+        );
 
         assert_eq!(app.status_code(), StatusCode::FORBIDDEN);
         assert_eq!(app.error_code(), "CONTENT_BLOCKED");
@@ -510,6 +515,43 @@ mod error_mapping_tests {
         assert_eq!(app.public_message(), reason);
         assert!(app.public_message().contains("合同关键词"));
         assert_ne!(app.public_message(), "Forbidden.");
+    }
+
+    /// The rule name must also travel as a *parameter*, not only inside the
+    /// English sentence — that is what lets a client say this in the reader's
+    /// language instead of pasting English into a Chinese UI.
+    #[test]
+    fn content_block_carries_the_rule_name_as_a_translatable_parameter() {
+        let app = denial_to_api_error(
+            crate::state::PolicyDenial::new("CONTENT_BLOCKED", "Blocked by your company's content policy.")
+                .with_details(serde_json::json!({ "ruleName": "合同关键词" })),
+        );
+
+        let details = app.error_details().expect("a block must carry its parameters");
+        assert_eq!(details["ruleName"], "合同关键词");
+    }
+
+    /// Budget and allowlist refusals were swallowed by the same `Forbidden`
+    /// redaction. They are equally written for the person who hit them.
+    #[test]
+    fn budget_and_allowlist_denials_are_not_redacted_either() {
+        let budget = denial_to_api_error(crate::state::PolicyDenial::new(
+            "BUDGET_EXCEEDED",
+            "The team's usage budget for this period has been reached",
+        ));
+        assert_eq!(budget.error_code(), "BUDGET_EXCEEDED");
+        assert_ne!(budget.public_message(), "Forbidden.");
+
+        let model = denial_to_api_error(
+            crate::state::PolicyDenial::new("MODEL_NOT_ALLOWED", "Model 'gpt-9' is not allowed by the team's policy")
+                .with_details(serde_json::json!({ "model": "gpt-9" })),
+        );
+        assert_eq!(model.status_code(), StatusCode::FORBIDDEN);
+        assert_eq!(model.error_code(), "MODEL_NOT_ALLOWED");
+        assert_eq!(
+            model.error_details().expect("model denial carries the model id")["model"],
+            "gpt-9"
+        );
     }
 
     #[test]

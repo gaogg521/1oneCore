@@ -181,20 +181,40 @@ impl aionui_conversation::UsageRecorder for BillingUsageRecorder {
 /// its spend budget / off-allowlist; personal users always pass.
 struct BillingSendGate(std::sync::Arc<one_billing::BillingService>);
 
+/// Map a billing refusal to something the member can act on.
+///
+/// ⚠️ Only the two *policy* variants become visible text. Everything else is an
+/// internal failure (a DB error, say) — the gate still fails closed, but its
+/// `to_string()` must not reach the user, and there is nothing actionable in it
+/// for them anyway. This mattered the moment these messages stopped being
+/// redacted: before, `ApiError::Forbidden` hid every one of them equally.
+fn billing_denial(error: one_billing::BillingError) -> aionui_conversation::PolicyDenial {
+    use one_billing::BillingError;
+    match error {
+        BillingError::ModelNotAllowed(model) => aionui_conversation::PolicyDenial::new(
+            "MODEL_NOT_ALLOWED",
+            format!("Model '{model}' is not allowed by the team's policy"),
+        )
+        .with_details(serde_json::json!({ "model": model })),
+        BillingError::BudgetExceeded => aionui_conversation::PolicyDenial::new(
+            "BUDGET_EXCEEDED",
+            "The team's usage budget for this period has been reached",
+        ),
+        other => {
+            tracing::error!(error = %other, "billing gate failed; blocking the send");
+            aionui_conversation::PolicyDenial::new("POLICY_CHECK_FAILED", "Company policy could not be checked.")
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl aionui_conversation::SendGate for BillingSendGate {
-    async fn check_send(&self, user_id: &str, model: Option<&str>) -> Result<(), String> {
-        self.0
-            .check_send_allowed(user_id, model)
-            .await
-            .map_err(|e| e.to_string())
+    async fn check_send(&self, user_id: &str, model: Option<&str>) -> Result<(), aionui_conversation::PolicyDenial> {
+        self.0.check_send_allowed(user_id, model).await.map_err(billing_denial)
     }
 
-    async fn check_model(&self, user_id: &str, model: &str) -> Result<(), String> {
-        self.0
-            .check_model_allowed(user_id, model)
-            .await
-            .map_err(|e| e.to_string())
+    async fn check_model(&self, user_id: &str, model: &str) -> Result<(), aionui_conversation::PolicyDenial> {
+        self.0.check_model_allowed(user_id, model).await.map_err(billing_denial)
     }
 }
 
@@ -204,11 +224,17 @@ impl aionui_conversation::SendGate for BillingSendGate {
 struct LocalContentInspector(std::sync::Arc<aionui_system::ContentInspectionService>);
 
 impl aionui_conversation::ContentInspector for LocalContentInspector {
-    fn inspect(&self, conversation_id: &str, text: &str) -> Option<String> {
+    fn inspect(&self, conversation_id: &str, text: &str) -> Option<aionui_conversation::PolicyDenial> {
         // The model is not known at this point in the send path (the billing
         // gate has the same limitation), so findings are attributed by
         // conversation, which is what a reviewer follows back anyway.
-        self.0.inspect(Some(conversation_id), None, text).blocked
+        self.0.inspect(Some(conversation_id), None, text).blocked.map(|block| {
+            // The rule name travels as a parameter, not baked into the
+            // sentence: it is admin-authored data, while the sentence around
+            // it is product copy the client translates.
+            aionui_conversation::PolicyDenial::new("CONTENT_BLOCKED", block.reason)
+                .with_details(serde_json::json!({ "ruleName": block.rule_name }))
+        })
     }
 }
 
@@ -798,9 +824,43 @@ fn boundary_error_for_status(status: StatusCode) -> Option<(&'static str, &'stat
 mod tests {
     use axum::http::StatusCode;
 
-    use super::{boundary_error_for_status, create_router_with_runtime};
+    use super::{billing_denial, boundary_error_for_status, create_router_with_runtime};
     use crate::config::AppConfig;
     use crate::services::AppServices;
+
+    /// The two policy refusals are written for the member and must survive with
+    /// their parameters, so a client can say them in the reader's language.
+    #[test]
+    fn billing_policy_denials_keep_their_message_and_parameters() {
+        let model = billing_denial(one_billing::BillingError::ModelNotAllowed("gpt-9".into()));
+        assert_eq!(model.code, "MODEL_NOT_ALLOWED");
+        assert!(model.message.contains("gpt-9"));
+        assert_eq!(
+            model.details.expect("model id travels as a parameter")["model"],
+            "gpt-9"
+        );
+
+        let budget = billing_denial(one_billing::BillingError::BudgetExceeded);
+        assert_eq!(budget.code, "BUDGET_EXCEEDED");
+        assert!(budget.message.contains("budget"));
+    }
+
+    /// ⚠️ An internal failure must NOT become user-visible text.
+    ///
+    /// While these messages were redacted to "Forbidden." this could not bite;
+    /// the moment they started reaching the user, `e.to_string()` on any error
+    /// would have shipped internals (SQL, paths) straight to the UI. The gate
+    /// still fails closed — it just refuses without narrating why.
+    #[test]
+    fn billing_internal_failure_does_not_leak_its_message() {
+        let leaky = "no such table: one_licenses; DB at C:\\Users\\someone\\secret.db";
+        let denial = billing_denial(one_billing::BillingError::Internal(leaky.into()));
+
+        assert_eq!(denial.code, "POLICY_CHECK_FAILED");
+        assert!(!denial.message.contains("no such table"));
+        assert!(!denial.message.contains("secret.db"));
+        assert!(denial.details.is_none());
+    }
 
     #[test]
     fn boundary_error_for_status_covers_common_fallback_statuses() {

@@ -19,7 +19,7 @@ pub mod version;
 
 pub use bedrock_probe::{ConnectionTestRouterState, ConnectionTestService, connection_test_routes};
 pub use client_pref::ClientPrefService;
-pub use content_inspection::{ContentInspectionService, PendingFinding};
+pub use content_inspection::{ContentBlock, ContentInspectionService, PendingFinding};
 pub use diagnostics::FeedbackDiagnosticsService;
 pub use error::SystemError;
 pub use keep_awake::{KeepAwakeController, NoopKeepAwakeController, SystemKeepAwakeController};
