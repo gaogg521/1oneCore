@@ -430,6 +430,21 @@ impl BillingService {
             }
             None => estimate_media_cost_micros(kind, model, count, duration_seconds),
         };
+        // A media call that costs 0 does not just report oddly — it consumes
+        // none of the company's spend cap, so the cap silently stops binding for
+        // that model. The built-in rate table matches on model name, and a
+        // gateway with its own naming (very common) misses it entirely. Nothing
+        // here invents a number: the row is recorded as-is, but an operator can
+        // now find out why their cap is not moving, and fix it by entering a
+        // unit price for the model.
+        if cost == 0 && count > 0 && enterprise_id.is_some() {
+            tracing::warn!(
+                model,
+                kind,
+                "media usage recorded at zero cost: no built-in rate matched this model and no unit \
+                 price was configured, so it does not count against the company's spend cap"
+            );
+        }
         sqlx::query(
             "INSERT INTO one_usage_events \
                 (id, user_id, enterprise_id, conversation_id, model, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) \
@@ -1001,6 +1016,40 @@ mod tests {
                 .await
                 .unwrap();
         assert!(tokens.is_none());
+    }
+
+    /// Zero-cost media is not a cosmetic reporting issue: it consumes none of
+    /// the spend cap, so the cap quietly stops binding for that model. Pinned
+    /// because the built-in table matches on model *name* and a gateway with its
+    /// own naming — the common case — misses every entry.
+    #[tokio::test]
+    async fn an_unrecognised_media_model_costs_nothing_against_the_cap() {
+        let svc = service().await;
+        svc.record_media_usage("solo", "image", "our-gateways-own-name", 1, 0, None, None)
+            .await
+            .unwrap();
+        let cost: i64 = sqlx::query_scalar(
+            "SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(&svc.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            cost, 0,
+            "if this ever becomes non-zero, a rate was invented — that is a pricing decision"
+        );
+
+        // …and the escape hatch that makes it countable is the user's own price.
+        svc.record_media_usage("solo", "image", "our-gateways-own-name", 2, 0, Some(30_000), None)
+            .await
+            .unwrap();
+        let priced: i64 = sqlx::query_scalar(
+            "SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(&svc.pool)
+        .await
+        .unwrap();
+        assert_eq!(priced, 60_000);
     }
 
     /// A charge an admin cannot trace back to anywhere is a charge they cannot

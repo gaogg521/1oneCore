@@ -72,9 +72,22 @@ async fn billing_media_precheck(
         }))),
         Err(err) => {
             let kind = body.kind.as_deref().unwrap_or("media");
+            // Name the lever, not just the verdict. The allowlist is one list
+            // for chat and media alike, so the overwhelmingly common cause of
+            // this refusal is an admin who filled in chat models and did not
+            // realise image/video models had to be listed too — and "blocked by
+            // company policy" alone gives them nowhere to go.
+            let reason = match &err {
+                BillingError::ModelNotAllowed(model) => format!(
+                    "{kind} generation blocked: the model '{model}' is not on your company's model allowlist. \
+                     An administrator can add it under 企业管理后台 → 订阅与用量 → 模型 allowlist \
+                     (that one list covers chat and image/video models alike)."
+                ),
+                other => format!("{kind} generation blocked by company policy: {other}"),
+            };
             Ok(Json(ApiResponse::ok(MediaPrecheckDto {
                 allow: false,
-                reason: Some(format!("{kind} generation blocked by company policy: {err}")),
+                reason: Some(reason),
             })))
         }
     }
