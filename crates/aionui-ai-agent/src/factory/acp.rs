@@ -14,7 +14,7 @@ use aionui_api_types::{SessionMcpServer, SessionMcpTransport};
 use aionui_common::CommandSpec;
 use aionui_db::IMcpServerRepository;
 use aionui_db::models::McpServerRow;
-use aionui_mcp::media_workspace::media_workspace_env;
+use aionui_mcp::media_workspace::{media_conversation_env, media_workspace_env};
 use aionui_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
 use aionui_runtime::{
     ManagedAcpToolId, ensure_managed_acp_tool_with_reporter, ensure_node_runtime_with_reporter, ensure_runtime_command,
@@ -277,7 +277,7 @@ pub(super) async fn build(
             );
             continue;
         }
-        match session_server_to_sdk_mcp_server(server, &ctx.workspace).await {
+        match session_server_to_sdk_mcp_server(server, &ctx.workspace, &ctx.conversation_id).await {
             Ok(server) => session_mcp_servers.push(server),
             Err(err) => {
                 warn!(
@@ -605,7 +605,11 @@ fn parse_headers(value: Option<&serde_json::Value>) -> Vec<HttpHeader> {
     entries.into_iter().map(|(k, v)| HttpHeader::new(k, v)).collect()
 }
 
-async fn session_server_to_sdk_mcp_server(server: &SessionMcpServer, workspace: &str) -> Result<McpServer, String> {
+async fn session_server_to_sdk_mcp_server(
+    server: &SessionMcpServer,
+    workspace: &str,
+    conversation_id: &str,
+) -> Result<McpServer, String> {
     match &server.transport {
         SessionMcpTransport::Stdio { command, args, env } => {
             if command.is_empty() {
@@ -615,6 +619,12 @@ async fn session_server_to_sdk_mcp_server(server: &SessionMcpServer, workspace: 
             // Only the media tool takes this, and only so its output lands in
             // the conversation's folder — see `media_workspace`.
             if let Some(entry) = media_workspace_env(&server.name, workspace) {
+                entries.retain(|(name, _)| name != &entry.0);
+                entries.push(entry);
+            }
+            // …and which conversation it is generating for, so a media charge
+            // can be traced back to where it happened.
+            if let Some(entry) = media_conversation_env(&server.name, conversation_id) {
                 entries.retain(|(name, _)| name != &entry.0);
                 entries.push(entry);
             }

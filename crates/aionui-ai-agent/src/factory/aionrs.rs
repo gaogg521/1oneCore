@@ -12,7 +12,7 @@ use aionui_api_types::{
 use aionui_common::ProviderWithModel;
 use aionui_db::IMcpServerRepository;
 use aionui_db::models::McpServerRow;
-use aionui_mcp::media_workspace::media_workspace_env;
+use aionui_mcp::media_workspace::{media_conversation_env, media_workspace_env};
 use aionui_realtime::EventBroadcaster;
 use aionui_runtime::ensure_runtime_command_with_reporter;
 use serde_json::{Map, Value};
@@ -658,6 +658,12 @@ async fn merge_session_snapshot_mcp_servers(
                 // Only the media tool takes this, and only so its output lands
                 // in the conversation's folder — see `media_workspace`.
                 if let Some((name, value)) = media_workspace_env(&server.name, workspace) {
+                    config.env.get_or_insert_with(HashMap::new).insert(name, value);
+                }
+                // …and which conversation it is generating for, so a media
+                // charge can be traced back to where it happened. A stdio
+                // subprocess has no other way to know.
+                if let Some((name, value)) = media_conversation_env(&server.name, conversation_id) {
                     config.env.get_or_insert_with(HashMap::new).insert(name, value);
                 }
                 if extra_mcp_servers.insert(server.name.clone(), config).is_some() {

@@ -56,7 +56,7 @@ async fn insert_test_provider(repo: &dyn IProviderRepository, id: &str, platform
         model_settings: "{}",
         bedrock_config: None,
         is_full_url: false,
-            managed_by: None,
+        managed_by: None,
     })
     .await
     .unwrap();

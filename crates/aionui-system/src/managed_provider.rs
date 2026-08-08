@@ -181,8 +181,8 @@ impl ManagedProviderSync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aionui_db::init_database_memory;
     use aionui_db::SqliteProviderRepository;
+    use aionui_db::init_database_memory;
 
     const KEY: [u8; 32] = [3u8; 32];
 
@@ -207,7 +207,10 @@ mod tests {
     #[tokio::test]
     async fn a_channel_becomes_a_usable_provider_pointed_at_the_proxy() {
         let (sync, repo, _db) = sync_service().await;
-        let report = sync.sync(&[channel("ochan_1", "corp-gateway", "onech-tok")], true).await.unwrap();
+        let report = sync
+            .sync(&[channel("ochan_1", "corp-gateway", "onech-tok")], true)
+            .await
+            .unwrap();
         assert_eq!(report.written, vec!["corp-gateway".to_owned()]);
 
         let rows = repo.list().await.unwrap();
@@ -255,12 +258,9 @@ mod tests {
     #[tokio::test]
     async fn an_authoritative_sync_removes_channels_that_went_away() {
         let (sync, repo, _db) = sync_service().await;
-        sync.sync(
-            &[channel("ochan_1", "a", "t1"), channel("ochan_2", "b", "t2")],
-            true,
-        )
-        .await
-        .unwrap();
+        sync.sync(&[channel("ochan_1", "a", "t1"), channel("ochan_2", "b", "t2")], true)
+            .await
+            .unwrap();
 
         let report = sync.sync(&[channel("ochan_1", "a", "t1")], true).await.unwrap();
         assert_eq!(report.removed, vec!["b".to_owned()]);
@@ -304,7 +304,10 @@ mod tests {
         .await
         .unwrap();
 
-        let report = sync.sync(&[channel("ochan_1", "corp-gateway", "tok")], true).await.unwrap();
+        let report = sync
+            .sync(&[channel("ochan_1", "corp-gateway", "tok")], true)
+            .await
+            .unwrap();
         assert_eq!(report.conflicts, vec!["corp-gateway".to_owned()]);
         assert!(report.written.is_empty());
 
