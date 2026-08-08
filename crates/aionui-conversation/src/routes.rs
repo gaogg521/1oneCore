@@ -274,10 +274,25 @@ async fn send_msg(
     // ⚠️ Inspects `req.content` only. Attached files are NOT scanned: that would
     // mean reading and decoding every attachment on the send path. Known gap,
     // not an oversight.
+    //
+    // Deliberately NOT `ApiError::Forbidden`: that variant redacts its message
+    // to a bare "Forbidden." at the HTTP boundary, which is right for the cases
+    // it was built for (sandbox escapes, internal paths) but wrong here. This
+    // reason is admin-authored text whose entire purpose is to be read by the
+    // member — it names the rule that stopped them and what to do about it.
+    // Swallowing it leaves someone staring at an unexplained refusal, which is
+    // exactly what pushes people to paste into a browser instead: the outcome
+    // this feature exists to prevent. `Coded` preserves the message and gives
+    // clients a stable code to branch on.
     if let Some(inspector) = &state.content_inspector
         && let Some(reason) = inspector.inspect(&id, &req.content)
     {
-        return Err(ApiError::Forbidden(reason));
+        return Err(ApiError::Coded {
+            status: StatusCode::FORBIDDEN,
+            code: "CONTENT_BLOCKED",
+            message: reason,
+            details: None,
+        });
     }
     // P1-2 model control: block the send when the team is over its spend budget
     // (or the model is off-allowlist, when a model is known). No-op for
@@ -467,6 +482,34 @@ mod error_mapping_tests {
     fn conversation_not_found_maps_to_app_not_found() {
         let app = ApiError::from(ConversationError::NotFound { id: "conv_1".into() });
         assert!(matches!(app, ApiError::NotFound(message) if message == "Conversation conv_1 not found"));
+    }
+
+    /// A content-policy block must reach the member with the rule named.
+    ///
+    /// Regression guard: this was first written as `ApiError::Forbidden`, whose
+    /// `public_message()` redacts to a bare "Forbidden." — so the member saw an
+    /// unexplained refusal and the admin-authored reason never left the backend.
+    /// Real-machine verification caught it; a unit test on the scanner could not,
+    /// because the scanner produced the right string all along and the loss
+    /// happened at the HTTP boundary.
+    #[test]
+    fn content_block_reaches_the_member_with_the_rule_named() {
+        let reason = "Blocked by your company's content policy (rule: 合同关键词). \
+                      Remove the flagged content and try again."
+            .to_owned();
+        let app = ApiError::Coded {
+            status: StatusCode::FORBIDDEN,
+            code: "CONTENT_BLOCKED",
+            message: reason.clone(),
+            details: None,
+        };
+
+        assert_eq!(app.status_code(), StatusCode::FORBIDDEN);
+        assert_eq!(app.error_code(), "CONTENT_BLOCKED");
+        // The whole point: the reason survives, rule name included.
+        assert_eq!(app.public_message(), reason);
+        assert!(app.public_message().contains("合同关键词"));
+        assert_ne!(app.public_message(), "Forbidden.");
     }
 
     #[test]
