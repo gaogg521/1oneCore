@@ -64,6 +64,31 @@ struct License {
 /// Rolling budget window (P1-2): 30 days.
 const BUDGET_WINDOW_MS: i64 = 30 * 24 * 3600 * 1000;
 
+/// One completed media generation, as reported for metering.
+///
+/// A struct rather than a positional argument list: these are seven mostly-
+/// primitive values, several of them `i64`, so a mis-ordered call site would
+/// compile and silently meter the wrong thing.
+#[derive(Debug, Clone, Copy)]
+pub struct MediaUsage<'a> {
+    pub user_id: &'a str,
+    /// `"image"` or `"video"` — decides whether duration participates in cost.
+    pub kind: &'a str,
+    pub model: &'a str,
+    /// Number of assets actually produced (not requested).
+    pub count: i64,
+    /// Video only; ignored for images.
+    pub duration_seconds: i64,
+    /// The user's own price for this model, when they entered one. Overrides the
+    /// built-in rate table, which is a coarse illustration next to the contract
+    /// they are actually billed under.
+    pub unit_price_micros: Option<i64>,
+    /// Where the generation happened. Attribution, not content — it is what lets
+    /// an admin follow a charge back to somewhere. Optional because a caller may
+    /// genuinely not have one.
+    pub conversation_id: Option<&'a str>,
+}
+
 /// Ordering for "is this an upgrade?". Kept local rather than deriving `Ord` on
 /// `Tier` in aionui-common, because tier ordering is a *billing* policy, not an
 /// intrinsic property of the enum.
@@ -404,16 +429,16 @@ impl BillingService {
     /// `conversation_id` is attribution, not content — it is what lets an admin
     /// follow a charge back to where it happened. Optional because a caller may
     /// genuinely not have one; the column has always been nullable.
-    pub async fn record_media_usage(
-        &self,
-        user_id: &str,
-        kind: &str,
-        model: &str,
-        count: i64,
-        duration_seconds: i64,
-        unit_price_micros: Option<i64>,
-        conversation_id: Option<&str>,
-    ) -> Result<(), BillingError> {
+    pub async fn record_media_usage(&self, usage: MediaUsage<'_>) -> Result<(), BillingError> {
+        let MediaUsage {
+            user_id,
+            kind,
+            model,
+            count,
+            duration_seconds,
+            unit_price_micros,
+            conversation_id,
+        } = usage;
         let enterprise_id = self.resolve_enterprise_id(user_id).await?;
         // A price the user entered for their own provider beats our built-in
         // table: the table is a coarse illustration, theirs is the contract they
@@ -934,9 +959,17 @@ mod tests {
         // an expensive video cannot hide from the cap.
         svc.set_model_control("entM", Some(1_000), &[]).await.unwrap();
         assert!(svc.check_media_allowed("mia", "seedance-2-0-fast").await.is_ok());
-        svc.record_media_usage("mia", "video", "seedance-2-0-fast", 1, 5, None, Some("conv_1"))
-            .await
-            .unwrap();
+        svc.record_media_usage(MediaUsage {
+            user_id: "mia",
+            kind: "video",
+            model: "seedance-2-0-fast",
+            count: 1,
+            duration_seconds: 5,
+            unit_price_micros: None,
+            conversation_id: Some("conv_1"),
+        })
+        .await
+        .unwrap();
         assert_eq!(
             svc.check_media_allowed("mia", "seedance-2-0-fast")
                 .await
@@ -958,9 +991,17 @@ mod tests {
         let svc = service().await;
 
         // Video: priced per second, so 4s at 2 USD-micros/s is 8.
-        svc.record_media_usage("solo", "video", "some-unknown-model", 1, 4, Some(2), None)
-            .await
-            .unwrap();
+        svc.record_media_usage(MediaUsage {
+            user_id: "solo",
+            kind: "video",
+            model: "some-unknown-model",
+            count: 1,
+            duration_seconds: 4,
+            unit_price_micros: Some(2),
+            conversation_id: None,
+        })
+        .await
+        .unwrap();
         let cost: i64 = sqlx::query_scalar(
             "SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
         )
@@ -971,9 +1012,17 @@ mod tests {
         assert_eq!(cost, 8);
 
         // Images: priced per asset.
-        svc.record_media_usage("solo2", "image", "some-unknown-model", 3, 0, Some(7), None)
-            .await
-            .unwrap();
+        svc.record_media_usage(MediaUsage {
+            user_id: "solo2",
+            kind: "image",
+            model: "some-unknown-model",
+            count: 3,
+            duration_seconds: 0,
+            unit_price_micros: Some(7),
+            conversation_id: None,
+        })
+        .await
+        .unwrap();
         let cost2: i64 =
             sqlx::query_scalar("SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo2' LIMIT 1")
                 .fetch_one(&svc.pool)
@@ -982,9 +1031,17 @@ mod tests {
         assert_eq!(cost2, 21);
 
         // A zero / absent price falls back to the table rather than charging 0.
-        svc.record_media_usage("solo3", "image", "gpt-image-2", 1, 0, Some(0), None)
-            .await
-            .unwrap();
+        svc.record_media_usage(MediaUsage {
+            user_id: "solo3",
+            kind: "image",
+            model: "gpt-image-2",
+            count: 1,
+            duration_seconds: 0,
+            unit_price_micros: Some(0),
+            conversation_id: None,
+        })
+        .await
+        .unwrap();
         let cost3: i64 =
             sqlx::query_scalar("SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo3' LIMIT 1")
                 .fetch_one(&svc.pool)
@@ -998,9 +1055,17 @@ mod tests {
     #[tokio::test]
     async fn media_usage_is_priced_even_though_it_has_no_tokens() {
         let svc = service().await;
-        svc.record_media_usage("solo", "image", "gpt-image-2", 3, 0, None, None)
-            .await
-            .unwrap();
+        svc.record_media_usage(MediaUsage {
+            user_id: "solo",
+            kind: "image",
+            model: "gpt-image-2",
+            count: 3,
+            duration_seconds: 0,
+            unit_price_micros: None,
+            conversation_id: None,
+        })
+        .await
+        .unwrap();
         let cost: i64 = sqlx::query_scalar(
             "SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
         )
@@ -1025,9 +1090,17 @@ mod tests {
     #[tokio::test]
     async fn an_unrecognised_media_model_costs_nothing_against_the_cap() {
         let svc = service().await;
-        svc.record_media_usage("solo", "image", "our-gateways-own-name", 1, 0, None, None)
-            .await
-            .unwrap();
+        svc.record_media_usage(MediaUsage {
+            user_id: "solo",
+            kind: "image",
+            model: "our-gateways-own-name",
+            count: 1,
+            duration_seconds: 0,
+            unit_price_micros: None,
+            conversation_id: None,
+        })
+        .await
+        .unwrap();
         let cost: i64 = sqlx::query_scalar(
             "SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
         )
@@ -1040,9 +1113,17 @@ mod tests {
         );
 
         // …and the escape hatch that makes it countable is the user's own price.
-        svc.record_media_usage("solo", "image", "our-gateways-own-name", 2, 0, Some(30_000), None)
-            .await
-            .unwrap();
+        svc.record_media_usage(MediaUsage {
+            user_id: "solo",
+            kind: "image",
+            model: "our-gateways-own-name",
+            count: 2,
+            duration_seconds: 0,
+            unit_price_micros: Some(30_000),
+            conversation_id: None,
+        })
+        .await
+        .unwrap();
         let priced: i64 = sqlx::query_scalar(
             "SELECT estimated_cost_micros FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
         )
@@ -1059,9 +1140,17 @@ mod tests {
     #[tokio::test]
     async fn media_usage_is_attributed_to_its_conversation() {
         let svc = service().await;
-        svc.record_media_usage("solo", "video", "seedance-2-0-fast", 1, 5, None, Some("conv_abc"))
-            .await
-            .unwrap();
+        svc.record_media_usage(MediaUsage {
+            user_id: "solo",
+            kind: "video",
+            model: "seedance-2-0-fast",
+            count: 1,
+            duration_seconds: 5,
+            unit_price_micros: None,
+            conversation_id: Some("conv_abc"),
+        })
+        .await
+        .unwrap();
         let conversation: Option<String> = sqlx::query_scalar(
             "SELECT conversation_id FROM one_usage_events WHERE user_id = 'solo' ORDER BY created_at DESC LIMIT 1",
         )
@@ -1072,9 +1161,17 @@ mod tests {
 
         // Still optional: a caller without one records the spend anyway rather
         // than dropping it, because the money was spent either way.
-        svc.record_media_usage("solo2", "image", "gpt-image-2", 1, 0, None, None)
-            .await
-            .unwrap();
+        svc.record_media_usage(MediaUsage {
+            user_id: "solo2",
+            kind: "image",
+            model: "gpt-image-2",
+            count: 1,
+            duration_seconds: 0,
+            unit_price_micros: None,
+            conversation_id: None,
+        })
+        .await
+        .unwrap();
         let none_conversation: Option<String> = sqlx::query_scalar(
             "SELECT conversation_id FROM one_usage_events WHERE user_id = 'solo2' ORDER BY created_at DESC LIMIT 1",
         )

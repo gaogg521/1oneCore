@@ -15,6 +15,7 @@ use aionui_common::now_ms;
 
 use crate::error::BillingError;
 use crate::models::{CheckoutResultDto, LicenseInfoDto, PlanDto, UsageSummaryDto};
+use crate::service::MediaUsage;
 use crate::state::OneBillingRouterState;
 
 pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
@@ -124,15 +125,15 @@ async fn billing_media_usage(
 ) -> Result<Json<ApiResponse<()>>, BillingError> {
     state
         .service
-        .record_media_usage(
-            &user.id,
-            &body.kind,
-            &body.model,
-            body.count.unwrap_or(1),
-            body.duration_seconds.unwrap_or(0),
-            body.unit_price_micros,
-            body.conversation_id.as_deref(),
-        )
+        .record_media_usage(MediaUsage {
+            user_id: &user.id,
+            kind: &body.kind,
+            model: &body.model,
+            count: body.count.unwrap_or(1),
+            duration_seconds: body.duration_seconds.unwrap_or(0),
+            unit_price_micros: body.unit_price_micros,
+            conversation_id: body.conversation_id.as_deref(),
+        })
         .await?;
     Ok(Json(ApiResponse::ok(())))
 }
