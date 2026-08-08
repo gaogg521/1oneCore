@@ -85,6 +85,27 @@ impl one_sso::OrgAutoJoin for OrgAutoJoinAdapter {
 /// depending on one-enterprise. Best-effort by construction (see the service
 /// method); errors are logged and swallowed so a failed sync can never block a
 /// valid login.
+/// Lets one-org revoke a departing member's company model channel tokens
+/// without depending on one-devops (same layer). Those tokens deliberately
+/// outlive JWT rotation, so removing a member has to close them explicitly —
+/// otherwise the leaver keeps a working key to the company's models, which is
+/// the whole thing channel provisioning exists to prevent.
+struct ModelChannelRevoker(std::sync::Arc<one_devops::DevopsService>);
+
+#[async_trait::async_trait]
+impl one_org::CredentialRevoker for ModelChannelRevoker {
+    async fn revoke_for_user(&self, user_id: &str) {
+        match self.0.revoke_channel_tokens_for_user(user_id).await {
+            Ok(0) => {}
+            Ok(revoked) => tracing::info!(user_id, revoked, "revoked model channel tokens"),
+            // Never block the removal: a member who could not be fully
+            // de-provisioned must still be removed. Logged loudly because it
+            // leaves a live credential behind and needs following up.
+            Err(error) => tracing::error!(%error, user_id, "failed to revoke model channel tokens on removal"),
+        }
+    }
+}
+
 struct EnterpriseSyncAdapter(std::sync::Arc<one_enterprise::EnterpriseService>);
 
 #[async_trait::async_trait]
@@ -452,14 +473,30 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let claude_bridge_config_authenticated = claude_bridge_config_routes(states.claude_bridge.clone())
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // Built here, ahead of one-org, only because removing a member has to be
+    // able to revoke that member's model channel tokens (see
+    // `ModelChannelRevoker`). Its routes are still assembled further down with
+    // the rest of one-devops.
+    //
+    // The data key is for company model channels: their credential is stored
+    // encrypted and decrypted only inside the model proxy, so it never reaches
+    // a member's machine.
+    let one_devops_service = std::sync::Arc::new(
+        one_devops::DevopsService::new(services.database.pool().clone())
+            .with_encryption_key(crate::config::derive_encryption_key(&services.data_secret_raw)),
+    );
+
     // one-org enterprise routes (/api/one/*) — RBAC extractors depend on the
     // upstream auth middleware injecting CurrentUser.
-    let one_org_service = std::sync::Arc::new(one_org::OrgService::new(
-        services.database.pool().clone(),
-        services.user_repo.clone(),
-        services.data_dir.clone(),
-        crate::config::derive_encryption_key(&services.data_secret_raw),
-    ));
+    let one_org_service = std::sync::Arc::new(
+        one_org::OrgService::new(
+            services.database.pool().clone(),
+            services.user_repo.clone(),
+            services.data_dir.clone(),
+            crate::config::derive_encryption_key(&services.data_secret_raw),
+        )
+        .with_credential_revoker(std::sync::Arc::new(ModelChannelRevoker(one_devops_service.clone()))),
+    );
     // one-enterprise service (真实企业 / company tier) — constructed here so its
     // company-admin bridges can be wired into one-org and one-sso below.
     let one_enterprise_service =
@@ -560,7 +597,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
 
     // one-devops routes (/api/one/devops/*) — requirements board +
     // collaboration registries, member-writable behind auth.
-    let one_devops_service = std::sync::Arc::new(one_devops::DevopsService::new(services.database.pool().clone()));
+    // `one_devops_service` was built earlier (see the comment there).
     // Installs whose knowledge base predates hybrid retrieval have chunks in
     // SQLite but no lexical index yet. The rebuild reads only text already
     // stored, so it costs no embedding-API calls, and it self-skips once
@@ -581,8 +618,12 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let one_devops_state = one_devops::OneDevopsRouterState::new(one_devops_service)
         .with_employee(one_employee_service.clone())
         .with_tenant_resolver(tenant_resolver.clone());
-    let one_devops_authenticated = one_devops::one_devops_routes(one_devops_state)
+    let one_devops_authenticated = one_devops::one_devops_routes(one_devops_state.clone())
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+    // Not session-authenticated, for the same reason the Codex bridge is not:
+    // the caller is an agent process presenting a channel token, not a browser
+    // with a session. See `one_devops::model_proxy`.
+    let model_proxy_public = one_devops::model_proxy_routes(one_devops_state);
 
     // Office proxy routes — exempt from auth (serve iframe content)
     let office_proxy = office_proxy_routes(states.office);
@@ -649,6 +690,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     .merge(office_proxy)
     .merge(public_assets)
     .merge(codex_bridge_public)
+    .merge(model_proxy_public)
     .layer(middleware::from_fn(security_headers_middleware));
 
     // Raise the default request body limit from axum's 2MB default to

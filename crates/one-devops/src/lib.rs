@@ -23,7 +23,9 @@ pub mod breakdown;
 pub mod embedding;
 pub mod error;
 pub mod migrate;
+pub mod model_proxy;
 pub mod models;
+pub mod provider_channel;
 pub mod retrieval;
 pub mod routes;
 pub mod service;
@@ -31,6 +33,7 @@ pub mod state;
 
 pub use error::DevopsError;
 pub use migrate::run_one_devops_migrations;
+pub use model_proxy::model_proxy_routes;
 pub use routes::one_devops_routes;
 pub use service::DevopsService;
 pub use state::OneDevopsRouterState;

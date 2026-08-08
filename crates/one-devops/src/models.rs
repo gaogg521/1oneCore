@@ -131,6 +131,38 @@ pub struct McpRegistryDto {
     pub updated_at: i64,
 }
 
+/// A company-provisioned model channel, as seen by anyone.
+///
+/// ⚠️ There is deliberately **no field for the credential**. The real API key
+/// lives encrypted in `one_provider_registry.api_key_encrypted` and is decrypted
+/// only inside the model proxy; it must never reach a member's machine, and the
+/// cheapest way to guarantee that is for the type carrying channels around to
+/// have nowhere to put it. `hasKey` says whether one is configured, which is
+/// all an admin UI needs to render.
+#[derive(Debug, Clone, FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderChannelDto {
+    pub id: String,
+    pub name: String,
+    pub platform: String,
+    /// Where the proxy forwards to. Visible to admins in the console; it is not
+    /// a secret, and a member needs it for nothing (they talk to the proxy).
+    pub upstream_base_url: String,
+    pub has_key: bool,
+    /// JSON array of model names offered on this channel.
+    pub models: String,
+    /// JSON object of per-model settings, same shape as `providers.model_settings`.
+    pub model_settings: Option<String>,
+    pub enabled: bool,
+    pub scope: String,
+    pub team_id: Option<String>,
+    /// Read visibility (P0-4): `'all'` | `'admin'`.
+    pub visibility: String,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RagDocumentDto {

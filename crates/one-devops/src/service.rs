@@ -16,7 +16,13 @@ use crate::models::{
 };
 
 pub struct DevopsService {
-    pool: SqlitePool,
+    pub(crate) pool: SqlitePool,
+    /// Deployment data-encryption key, for the one thing in this crate that
+    /// holds a real credential: company model channels
+    /// (`provider_channel`). `None` when the app did not wire one — channel
+    /// writes then fail loudly rather than storing a key in the clear, which
+    /// is the failure mode that would actually hurt.
+    pub(crate) encryption_key: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Default)]
@@ -63,7 +69,18 @@ fn validate_one_of(value: &str, allowed: &[&str], label: &str) -> Result<(), Dev
 
 impl DevopsService {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            encryption_key: None,
+        }
+    }
+
+    /// Wire the deployment's data-encryption key so company model channels can
+    /// store their credential. Builder rather than a `new` parameter so the
+    /// many existing call sites (and every test) stay untouched.
+    pub fn with_encryption_key(mut self, key: [u8; 32]) -> Self {
+        self.encryption_key = Some(key);
+        self
     }
 
     // -- requirements -----------------------------------------------------
@@ -624,7 +641,7 @@ impl DevopsService {
     /// `visibility='all'` (admin-only resources stay hidden). Binds
     /// `viewer_user_id` **once**. `prefix` is the column qualifier ("" for a
     /// single-table read, "d." for the `search_rag` join).
-    fn member_visibility_where(prefix: &str) -> String {
+    pub(crate) fn member_visibility_where(prefix: &str) -> String {
         format!(
             "({p}scope = 'org' OR ({p}scope = 'team' AND {p}team_id IN \
                (SELECT tenant_id FROM one_user_org WHERE user_id = ?))) AND {p}visibility = 'all'",
@@ -635,7 +652,7 @@ impl DevopsService {
     /// True when the viewer sees every resource unfiltered: an org/system admin,
     /// or a standalone/personal-edition owner (no `one_user_org` row →
     /// `user_org_role` is `None`, the machine owner). Members are filtered.
-    async fn viewer_is_privileged(&self, viewer_user_id: &str) -> Result<bool, DevopsError> {
+    pub(crate) async fn viewer_is_privileged(&self, viewer_user_id: &str) -> Result<bool, DevopsError> {
         Ok(match self.user_org_role(viewer_user_id).await? {
             None => true,
             Some(role) => role == "org_admin" || role == "system_admin" || role == "admin",
@@ -647,7 +664,7 @@ impl DevopsService {
     /// read via the shared pool — same cross-crate precedent as
     /// `user_org_role`). Returns the normalized team_id (forced `None` for org
     /// scope so an org resource never carries a stray team binding).
-    async fn validate_resource_scope<'a>(
+    pub(crate) async fn validate_resource_scope<'a>(
         &self,
         created_by: &str,
         scope: &str,

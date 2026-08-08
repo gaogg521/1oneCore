@@ -19,6 +19,7 @@ use aionui_common::license::{Feature, Tier, tier_allows};
 use aionui_common::{decrypt_string, encrypt_string, now_ms};
 use aionui_db::IUserRepository;
 
+use crate::credential_revoker::{CredentialRevoker, NoopCredentialRevoker};
 use crate::email::{EmailSender, SendEmailResult, StubEmailSender};
 use crate::error::OrgError;
 use crate::integration::{IntegrationCredentials, IntegrationProvider, IntegrationTestResult, StubIntegrationProvider};
@@ -45,6 +46,10 @@ pub struct OrgService {
     /// swap in a real provider via `with_integration_provider` once a connector
     /// client is actually wired.
     integration_provider: Arc<dyn IntegrationProvider>,
+    /// Revokes credentials that outlive a session — today, company model
+    /// channel tokens. Defaults to a no-op (personal installs have none); the
+    /// app layer wires the real one. See `credential_revoker`.
+    credential_revoker: Arc<dyn CredentialRevoker>,
 }
 
 /// Normalize an invite code: strip whitespace/dashes, uppercase.
@@ -92,7 +97,15 @@ impl OrgService {
             encryption_key,
             email_sender: Arc::new(StubEmailSender),
             integration_provider: Arc::new(StubIntegrationProvider),
+            credential_revoker: Arc::new(NoopCredentialRevoker),
         }
+    }
+
+    /// Wire the revoker so removing a member also closes their company model
+    /// channels. Chainable at construction time.
+    pub fn with_credential_revoker(mut self, revoker: Arc<dyn CredentialRevoker>) -> Self {
+        self.credential_revoker = revoker;
+        self
     }
 
     /// Swap in a real `EmailSender` once SMTP is actually configured/wired at
@@ -272,9 +285,15 @@ impl OrgService {
     }
 
     /// Invalidate the user's sessions by rotating their per-user JWT secret.
+    /// Rotating the secret kills every session. It does **not** touch
+    /// credentials that are meant to outlive a session, so those are revoked
+    /// here too — otherwise a removed member would keep a working key to the
+    /// company's models, which is exactly what channel provisioning exists to
+    /// prevent. See `credential_revoker`.
     async fn invalidate_user_tokens(&self, user_id: &str) -> Result<(), OrgError> {
         let secret = generate_random_secret_string();
         self.user_repo.update_jwt_secret(user_id, &secret).await?;
+        self.credential_revoker.revoke_for_user(user_id).await;
         Ok(())
     }
 
@@ -1559,10 +1578,15 @@ impl OrgService {
         // best-effort from a few well-known JSON shapes.
         let name_expr = "COALESCE(json_extract(m.content,'$.name'), json_extract(m.content,'$.toolName'), \
                          json_extract(m.content,'$.tool'), '')";
+        // What the call was *about*, in whichever shape the backend used. The
+        // prompt keys matter for media generation: without them an image or
+        // video call showed a tool name and an empty detail column, which tells
+        // an auditor that something expensive ran and nothing about what it was.
         let detail_expr = "COALESCE(json_extract(m.content,'$.args.command'), json_extract(m.content,'$.args.path'), \
                           json_extract(m.content,'$.args.file_path'), json_extract(m.content,'$.args.pattern'), \
-                          json_extract(m.content,'$.args.url'), json_extract(m.content,'$.input.command'), \
-                          json_extract(m.content,'$.input.path'), json_extract(m.content,'$.description'))";
+                          json_extract(m.content,'$.args.url'), json_extract(m.content,'$.args.prompt'), \
+                          json_extract(m.content,'$.input.command'), json_extract(m.content,'$.input.path'), \
+                          json_extract(m.content,'$.input.prompt'), json_extract(m.content,'$.description'))";
         let mut sql = format!(
             "SELECT m.id AS id, m.conversation_id AS conversation_id, c.user_id AS user_id, \
                     {name_expr} AS tool_name, {detail_expr} AS detail, m.status AS status, m.created_at AS created_at \

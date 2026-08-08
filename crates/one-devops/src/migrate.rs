@@ -26,6 +26,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "009_resource_visibility",
         include_str!("../migrations/009_resource_visibility.sql"),
     ),
+    (
+        "010_provider_registry",
+        include_str!("../migrations/010_provider_registry.sql"),
+    ),
 ];
 
 /// Run all pending one-devops migrations. Idempotent; call once at startup
@@ -94,5 +98,7 @@ mod tests {
         assert!(tables.contains(&"one_test_cases".to_owned()));
         assert!(tables.contains(&"one_pipelines".to_owned()));
         assert!(tables.contains(&"one_pipeline_runs".to_owned()));
+        assert!(tables.contains(&"one_provider_registry".to_owned()));
+        assert!(tables.contains(&"one_provider_channel_tokens".to_owned()));
     }
 }

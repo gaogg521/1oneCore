@@ -12,8 +12,8 @@ use aionui_auth::CurrentUser;
 
 use crate::error::DevopsError;
 use crate::models::{
-    McpRegistryDto, MilestoneDto, PipelineDto, PipelineRunDto, RagConfigDto, RagDocumentDto, RagSearchHit,
-    RequirementCommentDto, RequirementDto, SkillRegistryDto, TestCaseDto, TestPlanDto,
+    McpRegistryDto, MilestoneDto, PipelineDto, PipelineRunDto, ProviderChannelDto, RagConfigDto, RagDocumentDto,
+    RagSearchHit, RequirementCommentDto, RequirementDto, SkillRegistryDto, TestCaseDto, TestPlanDto,
 };
 use crate::service::{CreateRequirementInput, UpdateRequirementInput};
 use crate::state::OneDevopsRouterState;
@@ -42,6 +42,18 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         .route("/api/one/devops/skills/{id}", axum::routing::delete(delete_skill))
         .route("/api/one/devops/mcp-registry", get(list_mcp).post(upsert_mcp))
         .route("/api/one/devops/mcp-registry/{id}", axum::routing::delete(delete_mcp))
+        .route(
+            "/api/one/devops/model-channels",
+            get(list_model_channels).post(upsert_model_channel),
+        )
+        .route(
+            "/api/one/devops/model-channels/{id}",
+            axum::routing::delete(delete_model_channel),
+        )
+        .route(
+            "/api/one/devops/model-channels/{id}/token",
+            axum::routing::post(issue_model_channel_token),
+        )
         .route("/api/one/devops/rag/documents", get(list_rag).post(register_rag))
         .route("/api/one/devops/rag/documents/{id}", axum::routing::delete(delete_rag))
         .route(
@@ -694,6 +706,118 @@ async fn delete_mcp(
     audit(&state, &user.id, "devops.mcp.delete", Some(&id)).await;
     state.service.delete_mcp_registry(&id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+// -- company model channels ------------------------------------------------
+
+/// Channels the caller may see. Members get the ones provisioned for them;
+/// admins get all of them. Never carries a credential — see `ProviderChannelDto`.
+async fn list_model_channels(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<ProviderChannelDto>>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_provider_channels(&user.id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpsertModelChannelBody {
+    #[serde(default)]
+    id: Option<String>,
+    name: String,
+    #[serde(default = "default_platform")]
+    platform: String,
+    upstream_base_url: String,
+    /// Write-only. Absent on an edit means "leave the stored credential alone",
+    /// which is what lets an admin rename a channel without re-entering it.
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default = "default_models")]
+    models: String,
+    #[serde(default)]
+    model_settings: Option<String>,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default = "default_scope_org")]
+    scope: String,
+    #[serde(default)]
+    team_id: Option<String>,
+    #[serde(default = "default_visibility_all")]
+    visibility: String,
+}
+
+fn default_platform() -> String {
+    "openai".to_owned()
+}
+
+fn default_models() -> String {
+    "[]".to_owned()
+}
+
+async fn upsert_model_channel(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<UpsertModelChannelBody>,
+) -> Result<Json<ApiResponse<ProviderChannelDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let dto = state
+        .service
+        .upsert_provider_channel(
+            body.id.as_deref(),
+            &body.name,
+            &body.platform,
+            &body.upstream_base_url,
+            body.api_key.as_deref(),
+            &body.models,
+            body.model_settings.as_deref(),
+            body.enabled,
+            &body.scope,
+            body.team_id.as_deref(),
+            &body.visibility,
+            &user.id,
+        )
+        .await?;
+    audit(&state, &user.id, "devops.modelChannel.upsert", Some(&dto.id)).await;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_model_channel(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    audit(&state, &user.id, "devops.modelChannel.delete", Some(&id)).await;
+    state.service.delete_provider_channel(&id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IssuedChannelTokenDto {
+    channel_id: String,
+    /// The only time this value is ever transmitted: the server keeps a hash.
+    /// The client persists it as the provider's api_key and re-asks only if it
+    /// has none.
+    token: String,
+}
+
+/// Mint this member's token for a channel they can see.
+///
+/// Not admin-gated on purpose — every member needs their own token, and the
+/// authorization is the channel's own visibility (checked in the service).
+async fn issue_model_channel_token(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<IssuedChannelTokenDto>>, DevopsError> {
+    let issued = state.service.issue_channel_token(&user.id, &id).await?;
+    Ok(Json(ApiResponse::ok(IssuedChannelTokenDto {
+        channel_id: issued.channel_id,
+        token: issued.token,
+    })))
 }
 
 async fn list_rag(
