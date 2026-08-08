@@ -260,6 +260,7 @@ pub(super) async fn build(
                 repo.as_ref(),
                 config.mcp_server_ids.as_deref(),
                 &ctx.conversation_id,
+                &ctx.workspace,
                 &mcp_capabilities,
             )
             .await
@@ -473,6 +474,7 @@ async fn load_user_mcp_servers(
     repo: &dyn IMcpServerRepository,
     selected_ids: Option<&[String]>,
     conversation_id: &str,
+    workspace: &str,
     capabilities: &AcpMcpCapabilities,
 ) -> Vec<McpServer> {
     let rows = load_session_mcp_rows(repo, selected_ids, conversation_id).await;
@@ -510,7 +512,7 @@ async fn load_user_mcp_servers(
             );
             continue;
         }
-        match row_to_sdk_mcp_server(&row).await {
+        match row_to_sdk_mcp_server(&row, workspace, conversation_id).await {
             Ok(server) => servers.push(server),
             Err(err) => {
                 warn!(
@@ -537,7 +539,11 @@ async fn load_user_mcp_servers(
 /// Convert an `McpServerRow` into the SDK `McpServer` shape used by
 /// `NewSessionRequest::mcp_servers`. Returns an error string when
 /// `transport_config` is malformed or required fields are missing.
-async fn row_to_sdk_mcp_server(row: &McpServerRow) -> Result<McpServer, String> {
+async fn row_to_sdk_mcp_server(
+    row: &McpServerRow,
+    workspace: &str,
+    conversation_id: &str,
+) -> Result<McpServer, String> {
     let value: serde_json::Value =
         serde_json::from_str(&row.transport_config).map_err(|e| format!("invalid transport_config JSON: {e}"))?;
 
@@ -561,6 +567,22 @@ async fn row_to_sdk_mcp_server(row: &McpServerRow) -> Result<McpServer, String> 
                         .collect()
                 })
                 .unwrap_or_default();
+            // The media tool needs to know where to put its output and which
+            // conversation it is billing to. Injected here as well as on the
+            // snapshot path, because the built-in media server now reaches a
+            // session as a repo row (see `session_mcp`) — without this it would
+            // land its files in a fallback directory and its spend would be
+            // attributed to nothing.
+            for entry in [
+                media_workspace_env(&row.name, workspace),
+                media_conversation_env(&row.name, conversation_id),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                env_entries.retain(|(name, _)| name != &entry.0);
+                env_entries.push(entry);
+            }
             env_entries.sort_by(|a, b| a.0.cmp(&b.0));
             let (resolved_command, args, env) = ensure_stdio_launch(command, &args, &env_entries).await?;
 
@@ -865,7 +887,7 @@ mod tests {
             false,
         );
 
-        let server = row_to_sdk_mcp_server(&row).await.expect("convert");
+        let server = row_to_sdk_mcp_server(&row, "/tmp/ws", "conv-1").await.expect("convert");
         match server {
             McpServer::Stdio(s) => {
                 let command = s.command.to_string_lossy();
@@ -973,7 +995,7 @@ mod tests {
             true,
             false,
         );
-        let server = row_to_sdk_mcp_server(&row).await.expect("convert");
+        let server = row_to_sdk_mcp_server(&row, "/tmp/ws", "conv-1").await.expect("convert");
         match server {
             McpServer::Stdio(s) => {
                 assert_eq!(s.name, "ctx7");
@@ -1001,7 +1023,7 @@ mod tests {
             true,
             false,
         );
-        let server = row_to_sdk_mcp_server(&row).await.expect("convert");
+        let server = row_to_sdk_mcp_server(&row, "/tmp/ws", "conv-1").await.expect("convert");
         match server {
             McpServer::Http(h) => {
                 assert_eq!(h.name, "remote");
@@ -1017,19 +1039,19 @@ mod tests {
     #[tokio::test]
     async fn row_to_sdk_unknown_transport_type_errors() {
         let row = make_row("bad", "websocket", "{}", true, false);
-        assert!(row_to_sdk_mcp_server(&row).await.is_err());
+        assert!(row_to_sdk_mcp_server(&row, "/tmp/ws", "conv-1").await.is_err());
     }
 
     #[tokio::test]
     async fn row_to_sdk_invalid_json_errors() {
         let row = make_row("bad", "stdio", "not-json", true, false);
-        assert!(row_to_sdk_mcp_server(&row).await.is_err());
+        assert!(row_to_sdk_mcp_server(&row, "/tmp/ws", "conv-1").await.is_err());
     }
 
     #[tokio::test]
     async fn row_to_sdk_stdio_missing_command_errors() {
         let row = make_row("bad", "stdio", r#"{"args":[]}"#, true, false);
-        assert!(row_to_sdk_mcp_server(&row).await.is_err());
+        assert!(row_to_sdk_mcp_server(&row, "/tmp/ws", "conv-1").await.is_err());
     }
 
     // -- load_user_mcp_servers integration -----------------------------------
@@ -1149,7 +1171,7 @@ mod tests {
             fail: false,
         });
 
-        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", &caps).await;
+        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", "/tmp/ws", &caps).await;
 
         assert_eq!(servers.len(), 1, "only the healthy server may be injected");
         assert!(
@@ -1173,7 +1195,7 @@ mod tests {
             fail: false,
         });
 
-        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", &caps).await;
+        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", "/tmp/ws", &caps).await;
         assert_eq!(servers.len(), 1);
     }
 
@@ -1199,7 +1221,7 @@ mod tests {
             ],
             fail: false,
         });
-        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", &caps).await;
+        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", "/tmp/ws", &caps).await;
         assert_eq!(servers.len(), 1);
         match &servers[0] {
             McpServer::Stdio(s) => assert_eq!(s.name, "user-enabled"),
@@ -1218,7 +1240,7 @@ mod tests {
             rows: vec![],
             fail: true,
         });
-        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", &caps).await;
+        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", "/tmp/ws", &caps).await;
         assert!(servers.is_empty());
     }
 
@@ -1237,7 +1259,7 @@ mod tests {
             ],
             fail: false,
         });
-        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", &caps).await;
+        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", "/tmp/ws", &caps).await;
         assert_eq!(servers.len(), 1);
         match &servers[0] {
             McpServer::Stdio(s) => assert_eq!(s.name, "good"),
@@ -1262,7 +1284,7 @@ mod tests {
         });
 
         let selected = vec!["mcp_disabled-picked".to_owned()];
-        let servers = load_user_mcp_servers(repo.as_ref(), Some(&selected), "conv-1", &caps).await;
+        let servers = load_user_mcp_servers(repo.as_ref(), Some(&selected), "conv-1", "/tmp/ws", &caps).await;
 
         assert_eq!(servers.len(), 1);
         match &servers[0] {
@@ -1289,7 +1311,7 @@ mod tests {
             fail: false,
         });
 
-        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", &caps).await;
+        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", "/tmp/ws", &caps).await;
         assert!(servers.is_empty());
     }
 }

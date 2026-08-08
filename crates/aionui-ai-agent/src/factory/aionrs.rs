@@ -56,6 +56,7 @@ pub(super) async fn build(
             repo.as_ref(),
             overrides.mcp_server_ids.as_deref(),
             &ctx.conversation_id,
+            &ctx.workspace,
             deps.broadcaster.clone(),
         )
         .await
@@ -450,6 +451,7 @@ async fn load_user_mcp_servers(
     repo: &dyn IMcpServerRepository,
     selected_ids: Option<&[String]>,
     conversation_id: &str,
+    workspace: &str,
     broadcaster: Arc<dyn EventBroadcaster>,
 ) -> HashMap<String, McpServerConfig> {
     let rows = load_session_mcp_rows(repo, selected_ids, conversation_id).await;
@@ -457,7 +459,22 @@ async fn load_user_mcp_servers(
     let mut servers = HashMap::new();
     for row in rows {
         match row_to_mcp_server_config(&row, conversation_id, broadcaster.clone()).await {
-            Ok(config) => {
+            Ok(mut config) => {
+                // The media tool needs to know where to put its output and which
+                // conversation it is billing to. Injected here as well as on the
+                // snapshot path below, because the built-in media server now
+                // reaches a session as a repo row (see `session_mcp`) — without
+                // this it would land its files in a fallback directory and its
+                // spend would be attributed to nothing.
+                for entry in [
+                    media_workspace_env(&row.name, workspace),
+                    media_conversation_env(&row.name, conversation_id),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    config.env.get_or_insert_with(HashMap::new).insert(entry.0, entry.1);
+                }
                 servers.insert(row.name.clone(), config);
             }
             Err(err) => {
@@ -1052,7 +1069,7 @@ mod tests {
         let selected = vec!["mcp-docs".to_owned()];
 
         let extra_mcp_servers =
-            load_user_mcp_servers(&repo, Some(&selected), "conv-frozen-mcp", test_broadcaster()).await;
+            load_user_mcp_servers(&repo, Some(&selected), "conv-frozen-mcp", "/tmp/ws", test_broadcaster()).await;
 
         assert!(extra_mcp_servers.contains_key("mcp-docs"));
         assert_eq!(extra_mcp_servers["mcp-docs"].transport, TransportType::StreamableHttp);
