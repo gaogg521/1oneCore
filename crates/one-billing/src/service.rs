@@ -571,6 +571,21 @@ impl BillingService {
         .fetch_one(&self.pool)
         .await?;
 
+        // Media rows are the ones with no token counts (media is metered per
+        // asset, never per token), so `total_tokens IS NULL` identifies them
+        // without a schema change. A zero cost among those means nothing priced
+        // the call — neither the built-in table nor a unit price the admin
+        // entered — and it therefore consumed none of the spend cap.
+        let (unpriced_media_calls, unpriced_models): (i64, Option<String>) = sqlx::query_as(
+            "SELECT COUNT(*), GROUP_CONCAT(DISTINCT model) FROM one_usage_events \
+             WHERE enterprise_id = ? AND created_at >= ? \
+               AND total_tokens IS NULL AND model IS NOT NULL AND estimated_cost_micros = 0",
+        )
+        .bind(enterprise_id)
+        .bind(since_ms)
+        .fetch_one(&self.pool)
+        .await?;
+
         Ok(UsageSummaryDto {
             since: since_ms,
             total_turns,
@@ -579,6 +594,14 @@ impl BillingService {
             by_user,
             by_model,
             by_day,
+            unpriced_media_calls,
+            unpriced_media_models: unpriced_models
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect(),
         })
     }
 
@@ -832,6 +855,78 @@ mod tests {
         assert_eq!(summary.by_user.len(), 1);
         assert_eq!(summary.by_user[0].key, "alice");
         assert_eq!(summary.by_model[0].key, "claude-opus-4-8");
+    }
+
+    /// The dashboard has to name the models nothing priced, because a zero-cost
+    /// media call consumes none of the spend cap — the cap quietly stops binding
+    /// for that model, and the only fix is an admin entering a unit price. This
+    /// is the visibility half of that (option 2), deliberately instead of
+    /// inventing a fallback rate.
+    #[tokio::test]
+    async fn usage_summary_names_the_media_models_nothing_priced() {
+        let svc = service().await;
+        add_members(&svc, "ent1", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+
+        let usage = |model: &'static str, price: Option<i64>| MediaUsage {
+            user_id: "alice",
+            kind: "image",
+            model,
+            count: 1,
+            duration_seconds: 0,
+            unit_price_micros: price,
+            conversation_id: None,
+        };
+
+        // Nothing prices these two.
+        svc.record_media_usage(usage("our-gateway-name-a", None)).await.unwrap();
+        svc.record_media_usage(usage("our-gateway-name-b", None)).await.unwrap();
+        // The built-in table prices this one…
+        svc.record_media_usage(usage("gpt-image-2", None)).await.unwrap();
+        // …and the admin priced this one themselves.
+        svc.record_media_usage(usage("another-gateway-name", Some(50_000)))
+            .await
+            .unwrap();
+        // A chat turn must not be mistaken for unpriced media.
+        svc.record_turn("alice", Some("c1"), Some("some-chat-model"), Some(10), Some(10))
+            .await
+            .unwrap();
+
+        let summary = svc.usage_summary("ent1", 0).await.unwrap();
+        assert_eq!(summary.unpriced_media_calls, 2, "only the two nothing priced");
+        let mut named = summary.unpriced_media_models.clone();
+        named.sort();
+        assert_eq!(named, vec!["our-gateway-name-a", "our-gateway-name-b"]);
+    }
+
+    /// A company that prices everything must see a clean dashboard — otherwise
+    /// the warning becomes noise everyone learns to ignore.
+    #[tokio::test]
+    async fn a_fully_priced_company_sees_no_warning() {
+        let svc = service().await;
+        add_members(&svc, "ent1", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'alice' WHERE enterprise_id = 'ent1'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        svc.record_media_usage(MediaUsage {
+            user_id: "alice",
+            kind: "video",
+            model: "seedance-2-0-fast",
+            count: 1,
+            duration_seconds: 5,
+            unit_price_micros: None,
+            conversation_id: None,
+        })
+        .await
+        .unwrap();
+
+        let summary = svc.usage_summary("ent1", 0).await.unwrap();
+        assert_eq!(summary.unpriced_media_calls, 0);
+        assert!(summary.unpriced_media_models.is_empty());
     }
 
     #[tokio::test]

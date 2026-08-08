@@ -70,6 +70,18 @@ pub struct UsageSummaryDto {
     pub by_user: Vec<UsageBucketDto>,
     pub by_model: Vec<UsageBucketDto>,
     pub by_day: Vec<UsageBucketDto>,
+    /// How many media generations in this window were metered at zero because
+    /// nothing priced them.
+    ///
+    /// Surfaced rather than papered over with an invented rate: a zero-cost call
+    /// consumes none of the spend cap, so the cap quietly stops binding for that
+    /// model. The built-in rate table matches on model name and a gateway with
+    /// its own naming — the common case — misses every entry. The fix is for an
+    /// admin to enter a unit price, and they can only do that if they know.
+    pub unpriced_media_calls: i64,
+    /// The models behind `unpriced_media_calls`, so the admin knows exactly
+    /// which ones need a price rather than having to hunt.
+    pub unpriced_media_models: Vec<String>,
 }
 
 /// Result of a checkout attempt. Real payment is not wired: the manual provider
