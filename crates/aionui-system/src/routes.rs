@@ -41,6 +41,10 @@ pub struct SystemRouterState {
     /// deployments that never wire it — the endpoint then reports plainly
     /// instead of silently doing nothing.
     pub managed_provider_sync: Option<std::sync::Arc<crate::managed_provider::ManagedProviderSync>>,
+    /// Holds the company's distributed content-inspection rules and the
+    /// findings they produce on this machine (T4). Always present — with no
+    /// rules distributed it costs a read lock and a length check per send.
+    pub content_inspection: std::sync::Arc<crate::content_inspection::ContentInspectionService>,
 }
 
 impl From<SystemError> for ApiError {
@@ -93,6 +97,10 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         .route("/api/providers/{id}", delete(delete_provider).put(update_provider))
         .route("/api/providers/{id}/models", post(fetch_models))
         .route("/api/providers/sync-model-channels", post(sync_model_channels))
+        // Content inspection (T4). Rules come down from the governance backend
+        // via the renderer; findings go back up the same way.
+        .route("/api/content-inspection/rules", post(set_inspection_rules))
+        .route("/api/content-inspection/findings", post(drain_inspection_findings))
         .route("/api/system/info", get(get_system_info))
         .route("/api/system/check-update", post(check_update))
         .route("/api/system/ensure-node-runtime", post(ensure_node_runtime))
@@ -324,6 +332,42 @@ async fn sync_model_channels(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(report)))
+}
+
+#[derive(serde::Deserialize)]
+struct SetInspectionRulesBody {
+    #[serde(default)]
+    rules: Vec<aionui_common::dlp::DlpRule>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SetInspectionRulesReport {
+    active_rules: usize,
+}
+
+/// Replace the locally-enforced rule set.
+///
+/// Authoritative on purpose: an admin deleting a rule has to actually stop it
+/// being enforced, and a merge would keep deleted rules alive on every machine
+/// that ever saw them.
+async fn set_inspection_rules(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<SetInspectionRulesBody>, JsonRejection>,
+) -> Result<Json<ApiResponse<SetInspectionRulesReport>>, ApiError> {
+    let Json(body) = body.map_err(ApiError::from)?;
+    let active_rules = state.content_inspection.set_rules(body.rules);
+    Ok(Json(ApiResponse::ok(SetInspectionRulesReport { active_rules })))
+}
+
+/// Hand over the findings buffered since the last call, and forget them.
+///
+/// POST rather than GET because it mutates: the caller takes ownership of
+/// delivering them upstream.
+async fn drain_inspection_findings(
+    State(state): State<SystemRouterState>,
+) -> Result<Json<ApiResponse<Vec<crate::content_inspection::PendingFinding>>>, ApiError> {
+    Ok(Json(ApiResponse::ok(state.content_inspection.drain_findings())))
 }
 
 async fn fetch_models(

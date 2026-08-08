@@ -62,6 +62,11 @@ pub struct AppServices {
     pub skill_paths: Arc<aionui_extension::SkillPaths>,
     /// User skill metadata and import history repository.
     pub skill_repo: Arc<dyn ISkillRepository>,
+    /// Company content-inspection rules and the findings they produce on this
+    /// machine (T4). Constructed here rather than per-router because two router
+    /// states need the *same* instance: the system router loads rules into it,
+    /// the conversation router enforces them.
+    pub content_inspection: Arc<aionui_system::ContentInspectionService>,
     runtime_helper_bin: String,
     runtime_base_url: String,
 }
@@ -297,6 +302,7 @@ impl AppServices {
             app_version,
             skill_paths,
             skill_repo,
+            content_inspection: Arc::new(aionui_system::ContentInspectionService::new()),
             runtime_helper_bin,
             runtime_base_url,
         })

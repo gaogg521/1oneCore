@@ -36,6 +36,7 @@ fn build_state(db: &aionui_db::Database) -> SystemRouterState {
         client_pref_service: ClientPrefService::new(Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone()))),
         provider_service: ProviderService::new(provider_repo.clone(), TEST_ENCRYPTION_KEY),
         managed_provider_sync: None,
+        content_inspection: std::sync::Arc::new(aionui_system::ContentInspectionService::new()),
         model_fetch_service: ModelFetchService::new(provider_repo, TEST_ENCRYPTION_KEY, http_client.clone()),
         protocol_detection_service: ProtocolDetectionService::new(http_client.clone()),
         version_check_service: VersionCheckService::new(http_client, "0.1.0".to_owned()),

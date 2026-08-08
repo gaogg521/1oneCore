@@ -30,6 +30,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "010_provider_registry",
         include_str!("../migrations/010_provider_registry.sql"),
     ),
+    ("011_dlp", include_str!("../migrations/011_dlp.sql")),
 ];
 
 /// Run all pending one-devops migrations. Idempotent; call once at startup
@@ -100,5 +101,7 @@ mod tests {
         assert!(tables.contains(&"one_pipeline_runs".to_owned()));
         assert!(tables.contains(&"one_provider_registry".to_owned()));
         assert!(tables.contains(&"one_provider_channel_tokens".to_owned()));
+        assert!(tables.contains(&"one_dlp_rules".to_owned()));
+        assert!(tables.contains(&"one_dlp_events".to_owned()));
     }
 }

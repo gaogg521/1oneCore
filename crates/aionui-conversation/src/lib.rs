@@ -35,7 +35,7 @@ pub use service::{
     ConversationAgentTurnOutcome, ConversationAgentTurnRequest, ConversationAgentTurnStarted,
     ConversationAgentTurnStartedCallback, ConversationAgentTurnStatus, ConversationService,
 };
-pub use state::{ConversationRouterState, SendGate, UsageRecorder};
+pub use state::{ContentInspector, ConversationRouterState, SendGate, UsageRecorder};
 
 #[cfg(test)]
 #[path = "service_test.rs"]

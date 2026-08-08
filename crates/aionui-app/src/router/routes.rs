@@ -198,6 +198,20 @@ impl aionui_conversation::SendGate for BillingSendGate {
     }
 }
 
+/// Adapts aionui-system's local content inspector to the conversation crate's
+/// `ContentInspector` trait (T4). Personal builds have no rules distributed, so
+/// this costs a read lock and a length check per send.
+struct LocalContentInspector(std::sync::Arc<aionui_system::ContentInspectionService>);
+
+impl aionui_conversation::ContentInspector for LocalContentInspector {
+    fn inspect(&self, conversation_id: &str, text: &str) -> Option<String> {
+        // The model is not known at this point in the send path (the billing
+        // gate has the same limitation), so findings are attributed by
+        // conversation, which is what a reviewer follows back anyway.
+        self.0.inspect(Some(conversation_id), None, text).blocked
+    }
+}
+
 use super::health::health_check;
 use super::runtime_team_tools::{RuntimeTeamToolsState, runtime_team_tools_routes};
 use super::state::{ModuleStates, RouterBuildError, build_module_states, build_ws_state};
@@ -382,7 +396,10 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             .conversation
             .clone()
             .with_usage_recorder(std::sync::Arc::new(BillingUsageRecorder(one_billing_service.clone())))
-            .with_send_gate(std::sync::Arc::new(BillingSendGate(one_billing_service.clone()))),
+            .with_send_gate(std::sync::Arc::new(BillingSendGate(one_billing_service.clone())))
+            .with_content_inspector(std::sync::Arc::new(LocalContentInspector(
+                services.content_inspection.clone(),
+            ))),
     )
     .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 

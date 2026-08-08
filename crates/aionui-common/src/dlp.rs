@@ -53,6 +53,15 @@ impl DlpAction {
     pub fn blocks(self) -> bool {
         matches!(self, DlpAction::Block)
     }
+
+    /// The storage/wire spelling, matching the `action` CHECK constraint on
+    /// `one_dlp_rules`. Kept next to the enum so the two cannot drift.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DlpAction::Log => "log",
+            DlpAction::Block => "block",
+        }
+    }
 }
 
 /// One rule, as the enforcement layer sees it.

@@ -20,6 +20,7 @@
 //! which is what makes the startup backfill and any re-index safe.
 
 pub mod breakdown;
+pub mod dlp_service;
 pub mod embedding;
 pub mod error;
 pub mod migrate;

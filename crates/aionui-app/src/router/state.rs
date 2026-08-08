@@ -430,6 +430,7 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
         feedback_diagnostics_service: FeedbackDiagnosticsService::new(Arc::new(
             SqliteFeedbackDiagnosticsRepository::new(pool),
         )),
+        content_inspection: services.content_inspection.clone(),
     }
 }
 
@@ -453,6 +454,8 @@ pub fn build_conversation_state(
         // Both wired to one-billing in build_router (needs the billing service).
         usage_recorder: None,
         send_gate: None,
+        // Wired in build_router alongside the billing gate (T4).
+        content_inspector: None,
     }
 }
 

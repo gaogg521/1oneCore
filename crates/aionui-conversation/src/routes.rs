@@ -265,6 +265,20 @@ async fn send_msg(
     body: Result<Json<SendMessageRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ApiResponse<SendMessageResponse>>), ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    // T4 content inspection. Runs BEFORE the budget gate on purpose: a message
+    // the budget would have refused was still typed and sent by a person, which
+    // is exactly the event the company wants recorded — and gating it behind
+    // billing would mean a company that runs out of budget silently stops
+    // collecting content evidence.
+    //
+    // ⚠️ Inspects `req.content` only. Attached files are NOT scanned: that would
+    // mean reading and decoding every attachment on the send path. Known gap,
+    // not an oversight.
+    if let Some(inspector) = &state.content_inspector
+        && let Some(reason) = inspector.inspect(&id, &req.content)
+    {
+        return Err(ApiError::Forbidden(reason));
+    }
     // P1-2 model control: block the send when the team is over its spend budget
     // (or the model is off-allowlist, when a model is known). No-op for
     // personal / no-company users, or when no gate is wired.

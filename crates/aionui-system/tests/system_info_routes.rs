@@ -40,6 +40,7 @@ fn build_state(db: &aionui_db::Database, version_check_service: VersionCheckServ
         client_pref_service: ClientPrefService::new(Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone()))),
         provider_service: ProviderService::new(provider_repo.clone(), TEST_KEY),
         managed_provider_sync: None,
+        content_inspection: std::sync::Arc::new(aionui_system::ContentInspectionService::new()),
         model_fetch_service: ModelFetchService::new(provider_repo, TEST_KEY, http_client.clone()),
         protocol_detection_service: ProtocolDetectionService::new(http_client),
         version_check_service,

@@ -2,7 +2,7 @@
 //! the whole board is collaborative, so every authenticated org member can
 //! read and write (matching the 1one superAssistant behavior).
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::{get, patch};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
@@ -10,6 +10,7 @@ use serde::Deserialize;
 use aionui_api_types::ApiResponse;
 use aionui_auth::CurrentUser;
 
+use crate::dlp_service::{DlpEventDto, DlpEventInput, DlpRuleDto};
 use crate::error::DevopsError;
 use crate::models::{
     McpRegistryDto, MilestoneDto, PipelineDto, PipelineRunDto, ProviderChannelDto, RagConfigDto, RagDocumentDto,
@@ -53,6 +54,17 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
         .route(
             "/api/one/devops/model-channels/{id}/token",
             axum::routing::post(issue_model_channel_token),
+        )
+        // Content inspection (T4). Rules are admin-authored; the member-facing
+        // list is deliberately readable by any member, because enforcement runs
+        // on their machine and a rule they cannot fetch is a rule that silently
+        // does nothing.
+        .route("/api/one/devops/dlp/rules", get(list_dlp_rules).post(upsert_dlp_rule))
+        .route("/api/one/devops/dlp/rules/{id}", axum::routing::delete(delete_dlp_rule))
+        .route("/api/one/devops/dlp/my-rules", get(list_my_dlp_rules))
+        .route(
+            "/api/one/devops/dlp/events",
+            get(list_dlp_events).post(report_dlp_events),
         )
         .route("/api/one/devops/rag/documents", get(list_rag).post(register_rag))
         .route("/api/one/devops/rag/documents/{id}", axum::routing::delete(delete_rag))
@@ -818,6 +830,133 @@ async fn issue_model_channel_token(
         channel_id: issued.channel_id,
         token: issued.token,
     })))
+}
+
+// -- content inspection (DLP) ---------------------------------------------
+
+/// Every rule, including disabled ones. Admin-only: the full set is the
+/// company's control surface.
+async fn list_dlp_rules(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<DlpRuleDto>>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    Ok(Json(ApiResponse::ok(state.service.list_dlp_rules().await?)))
+}
+
+/// The rules this member is subject to, for local enforcement.
+///
+/// Deliberately not admin-gated: the check runs on the member's own machine,
+/// so their client has to be able to fetch what it is meant to enforce. A rule
+/// a member cannot read is a rule that silently does nothing.
+async fn list_my_dlp_rules(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<DlpRuleDto>>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.list_dlp_rules_for_member(&user.id).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpsertDlpRuleBody {
+    #[serde(default)]
+    id: Option<String>,
+    name: String,
+    #[serde(default = "default_matcher")]
+    matcher: String,
+    pattern: String,
+    #[serde(default = "default_dlp_action")]
+    action: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default = "default_scope_org")]
+    scope: String,
+    #[serde(default)]
+    team_id: Option<String>,
+}
+
+fn default_matcher() -> String {
+    "keyword".to_owned()
+}
+
+/// New rules record rather than block — see migration 011 for why.
+fn default_dlp_action() -> String {
+    "log".to_owned()
+}
+
+async fn upsert_dlp_rule(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<UpsertDlpRuleBody>,
+) -> Result<Json<ApiResponse<DlpRuleDto>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    let dto = state
+        .service
+        .upsert_dlp_rule(crate::dlp_service::UpsertDlpRule {
+            id: body.id.as_deref(),
+            name: &body.name,
+            matcher: &body.matcher,
+            pattern: &body.pattern,
+            action: &body.action,
+            enabled: body.enabled,
+            scope: &body.scope,
+            team_id: body.team_id.as_deref(),
+            created_by: &user.id,
+        })
+        .await?;
+    audit(&state, &user.id, "devops.dlp.upsert", Some(&dto.id)).await;
+    Ok(Json(ApiResponse::ok(dto)))
+}
+
+async fn delete_dlp_rule(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    audit(&state, &user.id, "devops.dlp.delete", Some(&id)).await;
+    state.service.delete_dlp_rule(&id).await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportDlpEventsBody {
+    #[serde(default)]
+    events: Vec<DlpEventInput>,
+}
+
+/// Accept findings a member's client produced.
+///
+/// Any member may report their own — the alternative is that findings from
+/// non-admins never arrive, which is every finding worth having.
+async fn report_dlp_events(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<ReportDlpEventsBody>,
+) -> Result<Json<ApiResponse<u64>>, DevopsError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.record_dlp_events(&user.id, &body.events).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+struct DlpEventsQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+async fn list_dlp_events(
+    State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(query): Query<DlpEventsQuery>,
+) -> Result<Json<ApiResponse<Vec<DlpEventDto>>>, DevopsError> {
+    require_registry_admin(&state, &user.id).await?;
+    Ok(Json(ApiResponse::ok(
+        state.service.list_dlp_events(query.limit.unwrap_or(200)).await?,
+    )))
 }
 
 async fn list_rag(
