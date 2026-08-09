@@ -6,7 +6,7 @@ use sqlx::SqlitePool;
 use crate::error::EnterpriseError;
 use crate::models::{
     CompanyMemberDto, CompanyOverviewDto, EnterpriseIdentityDto, ROLE_COMPANY_ADMIN, ROLE_COMPANY_MEMBER,
-    is_company_admin_role,
+    SEAT_STATUS_ACTIVE, SEAT_STATUS_PENDING, is_company_admin_role,
 };
 use crate::session_revoker::{NoopSessionRevoker, SessionRevoker};
 
@@ -19,6 +19,17 @@ const ROLE_SYSTEM_ADMIN: &str = "system_admin";
 pub struct EnterpriseService {
     pool: SqlitePool,
     session_revoker: std::sync::Arc<dyn SessionRevoker>,
+}
+
+/// Named-fields input for `upsert_member` — see that function's doc comment.
+struct UpsertMemberInput<'a> {
+    user_id: &'a str,
+    enterprise_id: &'a str,
+    display_name: Option<&'a str>,
+    department: Option<&'a str>,
+    job_title: Option<&'a str>,
+    seat_status: &'a str,
+    now: i64,
 }
 
 impl EnterpriseService {
@@ -80,39 +91,77 @@ impl EnterpriseService {
             return Ok(());
         };
 
-        // P0-3 seat cap: a NEW member consumes a seat. Re-login of an existing
-        // member is an update and never blocked. Enforced only when the billing
-        // license table exists (installed) — otherwise no licensing applies.
-        self.enforce_seat_for_new_member(user_id, &enterprise_id).await?;
+        // P0-3 / T6-4 seat cap: a member arriving at a full plan does not get
+        // silently dropped (see `resolve_seat_status`'s doc). They get a row —
+        // just not an ACTIVE one — so governance resolution in one-billing
+        // finds them and can deny, instead of mistaking a company member for a
+        // personal/no-company user and applying zero governance.
+        let seat_status = self.resolve_seat_status(user_id, &enterprise_id).await?;
+        if seat_status == SEAT_STATUS_PENDING {
+            tracing::warn!(
+                user_id,
+                provider,
+                enterprise_id,
+                "seat cap reached; member synced without an active seat (pending)"
+            );
+        }
 
-        self.upsert_member(user_id, &enterprise_id, display_name, department, job_title, now)
-            .await?;
+        self.upsert_member(UpsertMemberInput {
+            user_id,
+            enterprise_id: &enterprise_id,
+            display_name,
+            department,
+            job_title,
+            seat_status,
+            now,
+        })
+        .await?;
         tracing::info!(
             user_id,
             provider,
             enterprise_id,
+            seat_status,
             "enterprise membership synced from SSO"
         );
         Ok(())
     }
 
-    /// Reject a *new* member when the company's plan seat cap is full. Existing
-    /// members (re-login) pass. Reads the one-billing license table via the
-    /// shared pool; the `aionui-common` matrix is the single source for tier
-    /// caps. Tolerant of a missing license table (billing not installed →
-    /// unlimited) so standalone / pre-billing behavior is unchanged.
-    async fn enforce_seat_for_new_member(&self, user_id: &str, enterprise_id: &str) -> Result<(), EnterpriseError> {
-        // Already in this company → not a new seat.
-        let current: Option<String> =
-            sqlx::query_scalar("SELECT enterprise_id FROM one_enterprise_members WHERE user_id = ?")
+    /// What `seat_status` this member's row should carry.
+    ///
+    /// An already-ACTIVE member is never re-evaluated: a plan downgraded below
+    /// today's headcount must not silently strip governance from — or evict —
+    /// people who already have a working seat. A PENDING member (or someone
+    /// with no row at all) is checked against the current cap every time they
+    /// sync, which is what promotes them the moment a seat frees up — there is
+    /// no separate "assign a seat" admin action, "log in again" is the only
+    /// mechanism and it has to actually work.
+    async fn resolve_seat_status(&self, user_id: &str, enterprise_id: &str) -> Result<&'static str, EnterpriseError> {
+        let existing: Option<(String, String)> =
+            sqlx::query_as("SELECT enterprise_id, seat_status FROM one_enterprise_members WHERE user_id = ?")
                 .bind(user_id)
                 .fetch_optional(&self.pool)
                 .await?;
-        if current.as_deref() == Some(enterprise_id) {
-            return Ok(());
+        if let Some((existing_enterprise, existing_status)) = existing
+            && existing_enterprise == enterprise_id
+            && existing_status == SEAT_STATUS_ACTIVE
+        {
+            return Ok(SEAT_STATUS_ACTIVE);
         }
-        // Effective seat limit. Distinguish table-missing (skip) from row-absent
-        // (new company → free default).
+        if self.active_seat_available(enterprise_id).await? {
+            Ok(SEAT_STATUS_ACTIVE)
+        } else {
+            Ok(SEAT_STATUS_PENDING)
+        }
+    }
+
+    /// Whether the plan has room for one more ACTIVE seat. Reads the
+    /// one-billing license table via the shared pool; the `aionui-common`
+    /// matrix is the single source for tier caps. Tolerant of a missing
+    /// license table (billing not installed → unlimited) so standalone /
+    /// pre-billing behavior is unchanged.
+    async fn active_seat_available(&self, enterprise_id: &str) -> Result<bool, EnterpriseError> {
+        // Distinguish table-missing (skip) from row-absent (new company → free
+        // default).
         let tier = match sqlx::query_as::<_, (String, Option<i64>)>(
             "SELECT tier, seat_limit FROM one_enterprise_license WHERE enterprise_id = ?",
         )
@@ -120,29 +169,29 @@ impl EnterpriseService {
         .fetch_optional(&self.pool)
         .await
         {
-            Err(_) => return Ok(()), // billing not installed → no enforcement
+            Err(_) => return Ok(true), // billing not installed → no enforcement
             Ok(Some((tier, Some(override_limit)))) => {
                 let _ = tier;
-                return self.reject_if_seat_full(enterprise_id, override_limit).await;
+                return self.active_seat_count_below(enterprise_id, override_limit).await;
             }
             Ok(Some((tier, None))) => aionui_common::license::Tier::parse(&tier),
             Ok(None) => aionui_common::license::Tier::Free,
         };
-        if let Some(limit) = aionui_common::license::tier_seat_limit(tier) {
-            return self.reject_if_seat_full(enterprise_id, limit as i64).await;
+        match aionui_common::license::tier_seat_limit(tier) {
+            Some(limit) => self.active_seat_count_below(enterprise_id, limit as i64).await,
+            None => Ok(true), // unlimited tier
         }
-        Ok(())
     }
 
-    async fn reject_if_seat_full(&self, enterprise_id: &str, limit: i64) -> Result<(), EnterpriseError> {
-        let used: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ?")
-            .bind(enterprise_id)
-            .fetch_one(&self.pool)
-            .await?;
-        if used >= limit {
-            return Err(EnterpriseError::SeatLimitExceeded);
-        }
-        Ok(())
+    async fn active_seat_count_below(&self, enterprise_id: &str, limit: i64) -> Result<bool, EnterpriseError> {
+        let used: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = ?",
+        )
+        .bind(enterprise_id)
+        .bind(SEAT_STATUS_ACTIVE)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(used < limit)
     }
 
     /// The explicitly-set-up ("manual") company on this server, if any.
@@ -198,31 +247,39 @@ impl EnterpriseService {
     }
 
     /// Upsert a member WITHOUT touching `role` (preserves an existing admin).
-    async fn upsert_member(
-        &self,
-        user_id: &str,
-        enterprise_id: &str,
-        display_name: Option<&str>,
-        department: Option<&str>,
-        job_title: Option<&str>,
-        now: i64,
-    ) -> Result<(), EnterpriseError> {
+    ///
+    /// A named-fields struct rather than positional args: this crate has
+    /// several adjacent `Option<&str>` parameters (display_name, department,
+    /// job_title, seat_status) and a mis-ordered call site would compile and
+    /// silently write the wrong field to the wrong column.
+    async fn upsert_member(&self, input: UpsertMemberInput<'_>) -> Result<(), EnterpriseError> {
+        let UpsertMemberInput {
+            user_id,
+            enterprise_id,
+            display_name,
+            department,
+            job_title,
+            seat_status,
+            now,
+        } = input;
         let display_name = display_name.map(str::trim).filter(|s| !s.is_empty());
         let department = department.map(str::trim).filter(|s| !s.is_empty());
         let job_title = job_title.map(str::trim).filter(|s| !s.is_empty());
         sqlx::query(
             "INSERT INTO one_enterprise_members \
-             (user_id, enterprise_id, display_name, department, job_title, role, joined_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, 'member', ?, ?) \
+             (user_id, enterprise_id, display_name, department, job_title, role, seat_status, joined_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, 'member', ?, ?, ?) \
              ON CONFLICT(user_id) DO UPDATE SET enterprise_id = excluded.enterprise_id, \
                  display_name = excluded.display_name, department = excluded.department, \
-                 job_title = excluded.job_title, updated_at = excluded.updated_at",
+                 job_title = excluded.job_title, seat_status = excluded.seat_status, \
+                 updated_at = excluded.updated_at",
         )
         .bind(user_id)
         .bind(enterprise_id)
         .bind(display_name)
         .bind(department)
         .bind(job_title)
+        .bind(seat_status)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -416,9 +473,10 @@ impl EnterpriseService {
                 Option<String>,
                 Option<String>,
                 String,
+                String,
             ),
         >(
-            "SELECT m.user_id, u.username, m.display_name, m.department, m.job_title, m.role \
+            "SELECT m.user_id, u.username, m.display_name, m.department, m.job_title, m.role, m.seat_status \
              FROM one_enterprise_members m LEFT JOIN users u ON u.id = m.user_id \
              WHERE m.enterprise_id = ? ORDER BY m.joined_at ASC",
         )
@@ -428,13 +486,14 @@ impl EnterpriseService {
         Ok(rows
             .into_iter()
             .map(
-                |(user_id, username, display_name, department, job_title, role)| CompanyMemberDto {
+                |(user_id, username, display_name, department, job_title, role, seat_status)| CompanyMemberDto {
                     user_id,
                     username,
                     display_name,
                     department,
                     job_title,
                     role,
+                    seat_status,
                 },
             )
             .collect())
@@ -643,27 +702,134 @@ mod tests {
             .await
             .unwrap();
 
-        // Seats 2 and 3 fit (cap 3), seat 4 is rejected.
+        // Seats 2 and 3 fit (cap 3), seat 4 does not — but T6-4: it must still
+        // succeed and leave a row, just not an ACTIVE one. Silently dropping it
+        // (the old behavior) is exactly the bug this test now guards against:
+        // no row means one-billing's `resolve_enterprise_id` finds nothing and
+        // treats a company member as a personal user with zero governance.
         svc.sync_member("u2", "feishu", "co", None, None, None).await.unwrap();
         svc.sync_member("u3", "feishu", "co", None, None, None).await.unwrap();
-        let err = svc
-            .sync_member("u4", "feishu", "co", None, None, None)
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), "SEAT_LIMIT_EXCEEDED");
+        svc.sync_member("u4", "feishu", "co", None, None, None).await.unwrap();
+        assert_eq!(seat_status_of(&svc, "u4").await, SEAT_STATUS_PENDING);
+        assert_eq!(active_seat_count(&svc, &eid).await, 3);
 
-        // An existing member re-logging in is never blocked, even at the cap.
+        // An existing ACTIVE member re-logging in is never blocked or
+        // re-evaluated, even at the cap.
         svc.sync_member("u1", "feishu", "co", Some("赵高"), None, None)
             .await
             .unwrap();
+        assert_eq!(seat_status_of(&svc, "u1").await, SEAT_STATUS_ACTIVE);
 
-        // Upgrading the plan lets the new member in.
+        // Upgrading the plan does NOT retroactively promote a pending member —
+        // there is no background job, only "try again next login".
         sqlx::query("UPDATE one_enterprise_license SET tier = 'team' WHERE enterprise_id = ?")
             .bind(&eid)
             .execute(&svc.pool)
             .await
             .unwrap();
+        assert_eq!(seat_status_of(&svc, "u4").await, SEAT_STATUS_PENDING);
+
+        // u4's NEXT login re-checks the cap and promotes them.
         svc.sync_member("u4", "feishu", "co", None, None, None).await.unwrap();
+        assert_eq!(seat_status_of(&svc, "u4").await, SEAT_STATUS_ACTIVE);
+    }
+
+    /// ⚠️ The point of the whole column. If a pending row were never written
+    /// (the pre-fix behavior), `resolve_enterprise_id` in one-billing would
+    /// find nothing for u4 and treat them as a personal user — every
+    /// governance gate silently off. A row must exist so one-billing can find
+    /// AND deny them, not find nothing and wave them through.
+    #[tokio::test]
+    async fn a_member_over_the_seat_cap_still_gets_a_row_one_billing_can_find() {
+        let svc = service().await;
+        sqlx::raw_sql(
+            "CREATE TABLE one_enterprise_license (enterprise_id TEXT PRIMARY KEY, tier TEXT NOT NULL DEFAULT 'free', seat_limit INTEGER, expires_at INTEGER, updated_at INTEGER NOT NULL);",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+        svc.sync_member("u1", "feishu", "co", None, None, None).await.unwrap();
+        let eid: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, updated_at) VALUES (?, 'free', 1, 0)",
+        )
+        .bind(&eid)
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+
+        svc.sync_member("u2", "feishu", "co", None, None, None).await.unwrap();
+
+        let row: Option<(String, String)> =
+            sqlx::query_as("SELECT enterprise_id, seat_status FROM one_enterprise_members WHERE user_id = 'u2'")
+                .fetch_optional(&svc.pool)
+                .await
+                .unwrap();
+        let (row_eid, status) = row.expect("a row must exist for one-billing to find, or governance is bypassed");
+        assert_eq!(row_eid, eid);
+        assert_eq!(status, SEAT_STATUS_PENDING);
+    }
+
+    /// A plan later lowered below today's headcount must not evict or
+    /// de-govern people who already had a working seat.
+    #[tokio::test]
+    async fn lowering_the_cap_never_demotes_an_existing_active_member() {
+        let svc = service().await;
+        sqlx::raw_sql(
+            "CREATE TABLE one_enterprise_license (enterprise_id TEXT PRIMARY KEY, tier TEXT NOT NULL DEFAULT 'free', seat_limit INTEGER, expires_at INTEGER, updated_at INTEGER NOT NULL);",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+        svc.sync_member("u1", "feishu", "co", None, None, None).await.unwrap();
+        let eid: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, updated_at) VALUES (?, 'free', 5, 0)",
+        )
+        .bind(&eid)
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+        svc.sync_member("u2", "feishu", "co", None, None, None).await.unwrap();
+        assert_eq!(seat_status_of(&svc, "u2").await, SEAT_STATUS_ACTIVE);
+
+        // Cap dropped to 1 — below the current headcount of 2.
+        sqlx::query("UPDATE one_enterprise_license SET seat_limit = 1 WHERE enterprise_id = ?")
+            .bind(&eid)
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+
+        svc.sync_member("u2", "feishu", "co", None, None, None).await.unwrap();
+        assert_eq!(
+            seat_status_of(&svc, "u2").await,
+            SEAT_STATUS_ACTIVE,
+            "an already-active member must never be re-evaluated against a later, lower cap"
+        );
+    }
+
+    async fn seat_status_of(svc: &EnterpriseService, user_id: &str) -> String {
+        sqlx::query_scalar("SELECT seat_status FROM one_enterprise_members WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap()
+    }
+
+    async fn active_seat_count(svc: &EnterpriseService, enterprise_id: &str) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = 'active'",
+        )
+        .bind(enterprise_id)
+        .fetch_one(&svc.pool)
+        .await
+        .unwrap()
     }
 
     #[tokio::test]

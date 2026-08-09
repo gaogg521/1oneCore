@@ -280,6 +280,14 @@ fn billing_denial(error: one_billing::BillingError) -> aionui_conversation::Poli
             "BUDGET_EXCEEDED",
             "The team's usage budget for this period has been reached",
         ),
+        // T6-4: arrived after the plan's seat cap filled. Distinct from every
+        // other denial here — it isn't a rule the admin configured, it's the
+        // absence of a seat, and the fix is "wait or ask for more seats" rather
+        // than "wait for the budget window" or "ask for a different model".
+        BillingError::SeatLimitExceeded => aionui_conversation::PolicyDenial::new(
+            "SEAT_LIMIT_EXCEEDED",
+            "Your organization's seat limit has been reached; an administrator needs to free a seat or upgrade the plan before you can send messages",
+        ),
         other => {
             tracing::error!(error = %other, "billing gate failed; blocking the send");
             aionui_conversation::PolicyDenial::new("POLICY_CHECK_FAILED", "Company policy could not be checked.")

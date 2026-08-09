@@ -16,9 +16,16 @@ pub struct EntitlementDto {
 pub struct PlanDto {
     pub enterprise_id: String,
     pub tier: String,
+    /// ACTIVE (governed, billable) seats only — what `seat_limit` actually
+    /// caps. Does not include `seat_pending`.
     pub seat_used: i64,
     /// `null` = unlimited.
     pub seat_limit: Option<i64>,
+    /// Members who logged in while the plan was full: they exist (so they can
+    /// be denied rather than mistaken for personal users) but hold no seat and
+    /// are blocked from every send. Not counted in `seat_used`; a plan upgrade
+    /// or freeing a seat promotes them on their next login (T6-4).
+    pub seat_pending: i64,
     pub expires_at: Option<i64>,
     pub entitlements: Vec<EntitlementDto>,
     /// P1-2 model control: rolling-30-day spend cap (USD-micros); `null` = no cap.

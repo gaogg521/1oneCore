@@ -22,6 +22,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "enterprise_003_directory",
         include_str!("../migrations/enterprise_003_directory.sql"),
     ),
+    (
+        "enterprise_004_seat_status",
+        include_str!("../migrations/enterprise_004_seat_status.sql"),
+    ),
 ];
 
 /// Run all pending one-enterprise migrations. Idempotent; call once at startup

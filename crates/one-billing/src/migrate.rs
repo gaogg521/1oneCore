@@ -80,11 +80,14 @@ pub(crate) mod tests {
     }
 
     /// Minimal `one_enterprises` shape for tests that don't pull in the
-    /// one-enterprise crate.
+    /// one-enterprise crate. `seat_status` mirrors `enterprise_004_seat_status`
+    /// (T6-4) — must stay in sync with that migration, or a test member row
+    /// inserted without the column would silently read back as NULL and get
+    /// mistaken for a pending (unseated) member.
     pub(crate) async fn one_enterprise_tables(pool: &SqlitePool) {
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS one_enterprises (id TEXT PRIMARY KEY, provider TEXT, external_id TEXT, display_name TEXT, created_at INTEGER, updated_at INTEGER);
-             CREATE TABLE IF NOT EXISTS one_enterprise_members (user_id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, display_name TEXT, department TEXT, job_title TEXT, role TEXT NOT NULL DEFAULT 'member', joined_at INTEGER, updated_at INTEGER);",
+             CREATE TABLE IF NOT EXISTS one_enterprise_members (user_id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, display_name TEXT, department TEXT, job_title TEXT, role TEXT NOT NULL DEFAULT 'member', seat_status TEXT NOT NULL DEFAULT 'active', joined_at INTEGER, updated_at INTEGER);",
         )
         .execute(pool)
         .await

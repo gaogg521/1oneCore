@@ -57,6 +57,18 @@ pub fn is_company_admin_role(role: &str) -> bool {
     role == ROLE_COMPANY_ADMIN
 }
 
+/// A `one_enterprise_members` row that consumes a licensed seat and is fully
+/// governed (allowlist, spend cap, feature gating all apply as configured).
+pub const SEAT_STATUS_ACTIVE: &str = "active";
+/// A row created for someone who logged in while the plan's seat cap was
+/// already full. Exists (so governance resolution finds them and denies,
+/// rather than mistaking them for a personal user) but does NOT count toward
+/// the seat cap and is NOT subject to the company's allowlist/spend policy —
+/// there is no seat to have configured a policy for. Every send-adjacent gate
+/// must reject a pending member outright rather than falling through to the
+/// company's normal license checks. See `enterprise_004_seat_status.sql`.
+pub const SEAT_STATUS_PENDING: &str = "pending";
+
 /// The deployment's company as seen by a caller (Direction B, tier above
 /// project groups). `viewer_role` is the caller's own membership role, or
 /// `None` when they aren't a member.
@@ -80,4 +92,10 @@ pub struct CompanyMemberDto {
     pub department: Option<String>,
     pub job_title: Option<String>,
     pub role: String,
+    /// `'active'` (governed, billable) or `'pending'` (arrived after the
+    /// plan's seat cap was full — no policy applies to them, they are simply
+    /// blocked; see `SEAT_STATUS_PENDING`). The admin console needs this to
+    /// tell an actionable "3 people waiting on a seat" apart from a quiet
+    /// roster.
+    pub seat_status: String,
 }

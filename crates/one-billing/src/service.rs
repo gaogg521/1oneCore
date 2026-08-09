@@ -124,6 +124,29 @@ impl BillingService {
         Ok(row)
     }
 
+    /// Whether the caller holds an ACTIVE (governed, billable) seat, as
+    /// opposed to no company row at all, or a `pending` row created when they
+    /// logged in while the plan's seat cap was already full (T6-4).
+    ///
+    /// This is deliberately a separate query from `resolve_enterprise_id`
+    /// rather than folding seat_status into its return: that function's
+    /// `None` means "personal user, skip every check" everywhere it is called,
+    /// and a pending member is the opposite of that — they DO belong to a
+    /// company, and must be denied, not waved through. Reusing `None` for both
+    /// would silently restore the exact bug this column exists to close.
+    async fn has_active_seat(&self, user_id: &str) -> Result<bool, BillingError> {
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT seat_status FROM one_enterprise_members WHERE user_id = ?")
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await
+                .unwrap_or(None);
+        // No row → not a company member at all, handled by `resolve_enterprise_id`
+        // returning `None` upstream; this function is only consulted once a
+        // caller already has `Some(enterprise_id)`.
+        Ok(status.as_deref() == Some("active"))
+    }
+
     async fn license_of(&self, enterprise_id: &str) -> Result<License, BillingError> {
         let row: Option<(String, Option<i64>, Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
             "SELECT tier, seat_limit, expires_at, monthly_cost_cap_micros, allowed_models \
@@ -170,13 +193,28 @@ impl BillingService {
             .or_else(|| tier_seat_limit(license.tier).map(|n| n as i64))
     }
 
+    /// ACTIVE seats only — what `seat_limit` caps. See `PlanDto::seat_used`.
     async fn seat_used(&self, enterprise_id: &str) -> Result<i64, BillingError> {
-        let used: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ?")
-            .bind(enterprise_id)
-            .fetch_one(&self.pool)
-            .await
-            .unwrap_or(0);
+        let used: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = 'active'",
+        )
+        .bind(enterprise_id)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
         Ok(used)
+    }
+
+    /// Members waiting on a seat. See `PlanDto::seat_pending`.
+    async fn seat_pending(&self, enterprise_id: &str) -> Result<i64, BillingError> {
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ? AND seat_status = 'pending'",
+        )
+        .bind(enterprise_id)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+        Ok(pending)
     }
 
     /// Whether the company can take one more member under its plan. Companies
@@ -366,10 +404,21 @@ impl BillingService {
     /// Pre-send gate (P1-2): reject when the company is over its spend budget,
     /// or the requested `model` is not on its allowlist. Personal / no-company
     /// users, and companies with neither control set, always pass (red line).
+    ///
+    /// ⚠️ T6-4: a company member is not automatically a GOVERNED member. Someone
+    /// who logged in after the plan's seat cap filled has a row (so they are
+    /// found here, not mistaken for personal) but no assigned seat, and
+    /// therefore no policy that was configured for them — the only correct
+    /// answer is to deny outright, before even looking at the allowlist/budget
+    /// (which, on a company with neither control set, would otherwise pass
+    /// everyone through unconditionally).
     pub async fn check_send_allowed(&self, user_id: &str, model: Option<&str>) -> Result<(), BillingError> {
         let Some(enterprise_id) = self.resolve_enterprise_id(user_id).await? else {
             return Ok(());
         };
+        if !self.has_active_seat(user_id).await? {
+            return Err(BillingError::SeatLimitExceeded);
+        }
         let license = self.license_of(&enterprise_id).await?;
 
         // Model allowlist.
@@ -392,10 +441,17 @@ impl BillingService {
     /// Allowlist-only check (P1-2): whether `model` may be selected under the
     /// company policy. Used at the model-switch point (budget is enforced
     /// separately at send). Personal / no-allowlist → allowed.
+    ///
+    /// Same T6-4 guard as `check_send_allowed`: a pending (unseated) member is
+    /// denied outright rather than falling through to a possibly-empty
+    /// allowlist that would otherwise let them pick any model.
     pub async fn check_model_allowed(&self, user_id: &str, model: &str) -> Result<(), BillingError> {
         let Some(enterprise_id) = self.resolve_enterprise_id(user_id).await? else {
             return Ok(());
         };
+        if !self.has_active_seat(user_id).await? {
+            return Err(BillingError::SeatLimitExceeded);
+        }
         let license = self.license_of(&enterprise_id).await?;
         let model = model.trim();
         if !license.allowed_models.is_empty() && !model.is_empty() && !license.allowed_models.iter().any(|m| m == model)
@@ -502,6 +558,7 @@ impl BillingService {
             tier: license.tier.as_str().to_owned(),
             seat_used: self.seat_used(enterprise_id).await?,
             seat_limit: Self::effective_seat_limit(&license),
+            seat_pending: self.seat_pending(enterprise_id).await?,
             expires_at: license.expires_at,
             entitlements,
             cost_cap_micros: license.cost_cap_micros,
@@ -986,6 +1043,86 @@ mod tests {
         let plan = svc.plan("entX").await.unwrap();
         assert_eq!(plan.cost_cap_micros, Some(100));
         assert!(plan.cost_used_micros >= 100);
+    }
+
+    async fn add_pending_member(svc: &BillingService, enterprise_id: &str, user_id: &str) {
+        sqlx::query(
+            "INSERT INTO one_enterprise_members (user_id, enterprise_id, role, seat_status, joined_at, updated_at) \
+             VALUES (?, ?, 'member', 'pending', 0, 0)",
+        )
+        .bind(user_id)
+        .bind(enterprise_id)
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+    }
+
+    /// ⚠️ T6-4, the regression this whole column exists to close. Before it,
+    /// a member arriving over the seat cap got no row at all, so
+    /// `resolve_enterprise_id` found nothing and treated them as personal —
+    /// every gate here would have returned `Ok(())`. The company deliberately
+    /// has NEITHER an allowlist NOR a spend cap configured (the worst case:
+    /// the two checks below this point would pass literally everyone), so a
+    /// green result here can only mean the seat check itself is doing its job.
+    #[tokio::test]
+    async fn a_pending_member_is_denied_even_with_no_allowlist_or_cap_configured() {
+        let svc = service().await;
+        add_pending_member(&svc, "entP", "waiting").await;
+
+        assert_eq!(
+            svc.check_send_allowed("waiting", Some("gpt-4"))
+                .await
+                .unwrap_err()
+                .code(),
+            "SEAT_LIMIT_EXCEEDED"
+        );
+        assert_eq!(
+            svc.check_model_allowed("waiting", "gpt-4").await.unwrap_err().code(),
+            "SEAT_LIMIT_EXCEEDED"
+        );
+        assert_eq!(
+            svc.check_media_allowed("waiting", "seedance-2-0-fast")
+                .await
+                .unwrap_err()
+                .code(),
+            "SEAT_LIMIT_EXCEEDED"
+        );
+
+        // An ACTIVE member in the very same, still-unconfigured company passes
+        // — the denial is about this one user's seat, not a company-wide lock.
+        add_members(&svc, "entP", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'seated' WHERE enterprise_id = 'entP' AND user_id != 'waiting'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        assert!(svc.check_send_allowed("seated", Some("gpt-4")).await.is_ok());
+    }
+
+    /// `seat_used` feeds the "X / Y seats" dashboard number and `can_add_seat`;
+    /// both must count only ACTIVE seats, or a pending row would either read as
+    /// consumed capacity that was never actually granted, or (worse) make
+    /// `can_add_seat` refuse forever since a pending row never goes away on its
+    /// own.
+    #[tokio::test]
+    async fn seat_used_and_pending_are_reported_and_counted_separately() {
+        let svc = service().await;
+        force_tier(&svc, "entP", Tier::Free, None).await;
+        sqlx::query("UPDATE one_enterprise_license SET seat_limit = 2 WHERE enterprise_id = 'entP'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        add_members(&svc, "entP", 2).await; // both default to 'active'
+        add_pending_member(&svc, "entP", "waiting1").await;
+        add_pending_member(&svc, "entP", "waiting2").await;
+
+        let plan = svc.plan("entP").await.unwrap();
+        assert_eq!(plan.seat_used, 2, "pending rows must not inflate the billed seat count");
+        assert_eq!(plan.seat_pending, 2);
+        assert_eq!(plan.seat_limit, Some(2));
+
+        // At the cap with 2 pending on top — still full, not "4/2 so there's
+        // negative room somehow".
+        assert!(!svc.can_add_seat(Some("entP")).await.unwrap());
     }
 
     /// Billing is enterprise-scoped, so the guard must be too.

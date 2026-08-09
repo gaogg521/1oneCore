@@ -1,0 +1,11 @@
+-- Distinguish a governed, billable seat from a member who logged in while the
+-- plan's seat cap was already full.
+--
+-- Before this column existed, a new member arriving over the cap got no row
+-- at all (`enforce_seat_for_new_member` errored, the caller swallowed it) —
+-- which meant `resolve_enterprise_id` in one-billing found nothing for them
+-- and treated them as a personal user: every governance gate (allowlist,
+-- spend cap, feature gating) was silently OFF. `seat_status = 'pending'` lets
+-- the row exist (so governance resolution finds them and can deny) without
+-- counting toward the seat cap or being treated as a normal governed member.
+ALTER TABLE one_enterprise_members ADD COLUMN seat_status TEXT NOT NULL DEFAULT 'active';
