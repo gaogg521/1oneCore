@@ -11,6 +11,7 @@ use serde::Deserialize;
 use aionui_api_types::ApiResponse;
 use aionui_auth::CurrentUser;
 
+use crate::directory::{DepartedMemberDto, DirectorySyncStateDto};
 use crate::error::EnterpriseError;
 use crate::models::{CompanyMemberDto, CompanyOverviewDto, EnterpriseIdentityDto};
 use crate::rbac::RequireCompanyAdmin;
@@ -30,7 +31,35 @@ pub fn one_enterprise_routes(state: OneEnterpriseRouterState) -> Router {
             "/api/one/enterprise/company/members/{user_id}/role",
             put(company_set_member_role),
         )
+        .route("/api/one/enterprise/directory/status", get(directory_status))
+        .route("/api/one/enterprise/directory/departed", get(directory_departed))
         .with_state(state)
+}
+
+/// Last directory sync's outcome, for the console's status line.
+///
+/// `null` before the first run ever. A `partial` status is not a cosmetic
+/// detail: it means the mirror is stale and no departures were derived, so the
+/// console has to say so rather than showing an empty "everyone is here".
+async fn directory_status(
+    State(state): State<OneEnterpriseRouterState>,
+    admin: RequireCompanyAdmin,
+) -> Result<Json<ApiResponse<Option<DirectorySyncStateDto>>>, EnterpriseError> {
+    let status = state.service.directory_sync_state(&admin.enterprise_id).await?;
+    Ok(Json(ApiResponse::ok(status)))
+}
+
+/// Company members the directory no longer vouches for.
+///
+/// A *suggestion list*, never an action: offboarding removes access, rotates
+/// tokens and reassigns work, so it stays behind the admin's existing remove
+/// dialog rather than happening because an API said somebody was missing.
+async fn directory_departed(
+    State(state): State<OneEnterpriseRouterState>,
+    admin: RequireCompanyAdmin,
+) -> Result<Json<ApiResponse<Vec<DepartedMemberDto>>>, EnterpriseError> {
+    let departed = state.service.list_departed_members(&admin.enterprise_id).await?;
+    Ok(Json(ApiResponse::ok(departed)))
 }
 
 /// The caller's own enterprise-org identity (SSO company + department), or

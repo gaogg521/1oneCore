@@ -11,6 +11,7 @@
 //! our own migration ledger (prefix `enterprise_`), upstream touch points are
 //! only the route merge in aionui-app and public aionui-auth / aionui-db APIs.
 
+pub mod directory;
 pub mod error;
 pub mod migrate;
 pub mod models;

@@ -25,6 +25,62 @@ pub trait CompanyAdminCheck: Send + Sync {
     async fn is_company_admin(&self, user_id: &str) -> bool;
 }
 
+/// Where a completed directory pull goes (T6). Implemented by the app layer
+/// over `one_enterprise::EnterpriseService::apply_directory_snapshot`.
+///
+/// A trait for the same reason as [`EnterpriseSync`]: one-sso knows how to talk
+/// to Feishu, one-enterprise owns the company's tables, and they are the same
+/// layer. Unwired (personal edition, tests) the pull simply has nowhere to go
+/// and the sync is a no-op.
+///
+/// ⚠️ `complete` must be carried through faithfully. It is what tells the
+/// storage side whether absence from `people` means "left the company" or
+/// merely "we didn't manage to fetch them" — see
+/// `one_enterprise::directory`'s module docs.
+#[async_trait]
+pub trait DirectorySink: Send + Sync {
+    /// The company this deployment syncs into, or `None` when none is set up
+    /// (which is also the signal that directory sync should not run at all).
+    async fn enterprise_id(&self) -> Option<String>;
+
+    async fn apply_snapshot(&self, enterprise_id: &str, snapshot: DirectorySnapshotPayload);
+}
+
+/// The provider-neutral payload handed across the seam. Mirrors
+/// `one_enterprise::directory`'s input types without either crate depending on
+/// the other.
+///
+/// Named fields rather than tuples on purpose: this crate has twice shipped
+/// positional-argument bugs that compiled fine and silently did the wrong thing
+/// (`upsert_dlp_rule`'s six `&str`s, `record_media_usage`'s seven mostly-`i64`
+/// values). A person here is four optional-ish strings and a bool — exactly the
+/// shape where a swapped pair is invisible.
+#[derive(Debug, Clone)]
+pub struct DirectorySnapshotPayload {
+    pub provider: String,
+    pub external_id_field: String,
+    pub departments: Vec<DirectoryDepartmentPayload>,
+    pub people: Vec<DirectoryPersonPayload>,
+    pub complete: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DirectoryDepartmentPayload {
+    pub external_id: String,
+    pub parent_external_id: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DirectoryPersonPayload {
+    pub external_id: String,
+    pub name: Option<String>,
+    pub job_title: Option<String>,
+    pub department_external_id: Option<String>,
+    pub active: bool,
+}
+
 #[async_trait]
 pub trait EnterpriseSync: Send + Sync {
     /// Called after a successful SSO login that carried a company identifier

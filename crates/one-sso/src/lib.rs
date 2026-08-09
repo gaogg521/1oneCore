@@ -7,6 +7,7 @@
 //! merge in aionui-app and public upstream service APIs (IUserRepository,
 //! JwtSecret, hash_password).
 
+pub mod directory;
 pub mod enterprise;
 pub mod error;
 pub mod migrate;
@@ -18,7 +19,10 @@ pub mod routes;
 pub mod service;
 pub mod state;
 
-pub use enterprise::{CompanyAdminCheck, EnterpriseSync};
+pub use enterprise::{
+    CompanyAdminCheck, DirectoryDepartmentPayload, DirectoryPersonPayload, DirectorySink, DirectorySnapshotPayload,
+    EnterpriseSync,
+};
 pub use error::SsoError;
 pub use migrate::run_one_sso_migrations;
 pub use org_hooks::OrgAutoJoin;

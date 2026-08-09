@@ -106,6 +106,68 @@ impl one_org::CredentialRevoker for ModelChannelRevoker {
     }
 }
 
+/// Stores a completed directory pull (T6). one-sso knows how to talk to Feishu,
+/// one-enterprise owns the company's tables, and they are the same layer — so
+/// they meet here.
+struct DirectorySinkAdapter(std::sync::Arc<one_enterprise::EnterpriseService>);
+
+#[async_trait::async_trait]
+impl one_sso::DirectorySink for DirectorySinkAdapter {
+    async fn enterprise_id(&self) -> Option<String> {
+        // No company set up → nothing to attribute a directory to, and the
+        // caller treats that as "skip", not "fail".
+        self.0.deployment_company_id().await.ok().flatten()
+    }
+
+    async fn apply_snapshot(&self, enterprise_id: &str, snapshot: one_sso::DirectorySnapshotPayload) {
+        let input = one_enterprise::directory::DirectorySyncInput {
+            provider: snapshot.provider,
+            external_id_field: snapshot.external_id_field,
+            departments: snapshot
+                .departments
+                .into_iter()
+                .map(|d| one_enterprise::directory::DirectoryDepartmentInput {
+                    external_id: d.external_id,
+                    parent_external_id: d.parent_external_id,
+                    name: d.name,
+                })
+                .collect(),
+            people: snapshot
+                .people
+                .into_iter()
+                .map(|p| one_enterprise::directory::DirectoryPersonInput {
+                    external_id: p.external_id,
+                    name: p.name,
+                    job_title: p.job_title,
+                    department_external_id: p.department_external_id,
+                    active: p.active,
+                })
+                .collect(),
+            // Carried through verbatim. This is the flag that decides whether
+            // absence means "left the company" — quietly defaulting it either
+            // way would be the worst bug this feature could have.
+            complete: snapshot.complete,
+            error: snapshot.error,
+        };
+
+        match self.0.apply_directory_snapshot(enterprise_id, &input).await {
+            Ok(report) => tracing::info!(
+                enterprise_id,
+                departments = report.departments,
+                people = report.people,
+                newly_missing = report.newly_missing,
+                returned = report.returned,
+                complete = report.complete,
+                "directory sync applied"
+            ),
+            // Swallowed so a storage failure cannot unwind the background loop.
+            // Logged at error because a directory that silently stops updating
+            // is exactly how offboarding suggestions go stale.
+            Err(error) => tracing::error!(%error, enterprise_id, "directory sync could not be stored"),
+        }
+    }
+}
+
 struct EnterpriseSyncAdapter(std::sync::Arc<one_enterprise::EnterpriseService>);
 
 #[async_trait::async_trait]
@@ -246,6 +308,12 @@ use super::trace::with_access_log;
 pub struct RouterRuntime {
     pub client_pref_service: ClientPrefService,
     pub team_service: Arc<TeamSessionService>,
+    /// The two halves of T6 directory sync, handed back so `cmd_server` can
+    /// drive them on a timer. Built here because this is where every service is
+    /// already assembled; whether they ever do anything is decided at run time
+    /// by whether this machine holds the company's SSO config.
+    pub sso_service: Arc<one_sso::SsoService>,
+    pub directory_sink: Arc<dyn one_sso::DirectorySink>,
 }
 
 /// Create the application router with all routes and global middleware.
@@ -363,11 +431,29 @@ pub async fn create_router_with_runtime(services: &AppServices) -> Result<(Route
         elapsed_ms = boot.elapsed().as_millis(),
         "startup: router assembly completed"
     );
+
+    // T6 directory sync's two halves, for cmd_server's scheduler. Built here
+    // rather than threaded out of the route builder because that function is
+    // also a public test entry point returning only a Router. A second
+    // `SsoService` over the same pool is harmless: the sync path touches only
+    // the provider config table, never the in-memory OAuth state this instance
+    // also carries.
+    let directory_sso_service = Arc::new(one_sso::SsoService::new(
+        services.database.pool().clone(),
+        services.user_repo.clone(),
+        services.jwt_service.clone(),
+        services.cookie_config.clone(),
+    ));
+    let directory_sink: Arc<dyn one_sso::DirectorySink> = Arc::new(DirectorySinkAdapter(Arc::new(
+        one_enterprise::EnterpriseService::new(services.database.pool().clone()),
+    )));
     Ok((
         router,
         RouterRuntime {
             client_pref_service,
             team_service,
+            sso_service: directory_sso_service,
+            directory_sink,
         },
     ))
 }
@@ -633,7 +719,14 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // P2-4 onboarding: auto-join a project group by email-domain policy. No-op
     // for logins whose IdP profile isn't email-shaped, or when no tenant has
     // `allowed_email_domains` set (the default).
-    .with_org_auto_join(std::sync::Arc::new(OrgAutoJoinAdapter(one_org_service.clone())));
+    .with_org_auto_join(std::sync::Arc::new(OrgAutoJoinAdapter(one_org_service.clone())))
+    // T6 directory sync: where a completed Feishu directory pull is stored.
+    // Wiring it does not start anything — a pull only happens when an admin
+    // asks or the scheduler fires, and both find nothing to do unless this
+    // machine actually holds the company's SSO config.
+    .with_directory_sink(std::sync::Arc::new(DirectorySinkAdapter(
+        one_enterprise_service.clone(),
+    )));
     let one_sso_public = one_sso::one_sso_public_routes(one_sso_state.clone());
     let one_sso_admin = one_sso::one_sso_admin_routes(one_sso_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));

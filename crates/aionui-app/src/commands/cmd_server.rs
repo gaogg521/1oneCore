@@ -285,6 +285,18 @@ pub(crate) async fn run_server(
         Some(scan_interval_secs),
         Some(idle_cleanup_coordinator),
     );
+    // T6 directory sync. ⚠️ This binary is what every desktop install runs, not
+    // a server-only process, so the loop has to be harmless on a member's
+    // laptop — and it is: its gate is "does THIS database hold an enabled
+    // Feishu provider and a company". In client mode that config lives on the
+    // company server, so a member's local database has neither and every tick
+    // is two cheap queries that find nothing. Personal installs likewise.
+    let directory_sync_handle = one_sso::directory::start_directory_sync_scheduler(
+        router_runtime.sso_service.clone(),
+        router_runtime.directory_sink.clone(),
+        shutdown_tx.subscribe(),
+        None,
+    );
     let conversation_runtime_state = services.conversation_runtime_state.clone();
     let worker_task_manager = services.worker_task_manager.clone();
     let client_pref_service = router_runtime.client_pref_service.clone();
@@ -346,6 +358,18 @@ pub(crate) async fn run_server(
             stage = "idle_scanner.join",
             error = %e,
             "idle scanner join failed"
+        );
+    }
+
+    // Same contract as the scanner above: it wakes on the shutdown watch. Both
+    // must be joined before the pool closes, or a sync mid-write would find the
+    // database gone.
+    if let Err(e) = directory_sync_handle.await {
+        warn!(
+            code = "BOOTSTRAP_DEGRADED_DIRECTORY_SYNC",
+            stage = "directory_sync.join",
+            error = %e,
+            "directory sync scheduler join failed"
         );
     }
 

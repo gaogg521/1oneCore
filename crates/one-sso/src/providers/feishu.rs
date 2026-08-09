@@ -17,6 +17,18 @@ const USER_INFO_PATH: &str = "/open-apis/authen/v1/user_info";
 const TENANT_TOKEN_PATH: &str = "/open-apis/auth/v3/tenant_access_token/internal";
 const CONTACT_USER_PATH: &str = "/open-apis/contact/v3/users";
 const CONTACT_DEPARTMENT_PATH: &str = "/open-apis/contact/v3/departments";
+/// Users of one department, paged. Appended to `CONTACT_USER_PATH`.
+const CONTACT_USERS_BY_DEPARTMENT_SEGMENT: &str = "find_by_department";
+/// Descendants of one department, paged. Appended after a department id.
+const CONTACT_DEPARTMENT_CHILDREN_SEGMENT: &str = "children";
+/// Feishu's id for "the root of the company tree".
+pub(crate) const FEISHU_ROOT_DEPARTMENT_ID: &str = "0";
+/// Upper bound Feishu accepts for `page_size` on the two list endpoints.
+const CONTACT_PAGE_SIZE: &str = "50";
+/// Refuse to loop forever if `has_more`/`page_token` never terminate. At 50 per
+/// page this is 50k departments or people — far past any real tenant, but a
+/// bounded number rather than a hung sync holding a DB connection.
+const MAX_PAGES: usize = 1_000;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,6 +106,106 @@ struct FeishuDepartmentWrapper {
 pub struct FeishuOrgProfile {
     pub job_title: Option<String>,
     pub department_name: Option<String>,
+}
+
+// ── Bulk directory pull (T6) ────────────────────────────────────────────────
+//
+// ⚠️ **The wire shapes below are written from Feishu's public documentation,
+// not from captured traffic.** Everything else in this file was translated from
+// a working reference implementation; these two endpoints have never been
+// called by this codebase. The consequence, stated plainly because it is easy
+// to forget once the tests go green: the wiremock tests around this prove that
+// our paging and reconcile logic is correct *against the shape we assumed* —
+// they cannot prove Feishu actually sends that shape. Only one run against a
+// real tenant can, and until that happens this is unverified.
+//
+// The structs are kept deliberately small and every field optional so a wrong
+// guess degrades to a missing value rather than a failed parse, and so that
+// correcting the shape after a real run is a local edit.
+
+/// One page of a Feishu list endpoint.
+///
+/// The explicit `bound` is load-bearing: `#[serde(default)]` on a field whose
+/// type mentions `T` makes serde's derive infer `T: Default` as well, which the
+/// item types have no reason to satisfy.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(bound(deserialize = "T: serde::Deserialize<'de>"))]
+struct FeishuPage<T> {
+    #[serde(default)]
+    items: Option<Vec<T>>,
+    #[serde(default)]
+    page_token: Option<String>,
+    #[serde(default)]
+    has_more: Option<bool>,
+}
+
+// Hand-written so the item type does not have to be `Default` — `derive` would
+// add that bound and force it onto every caller for no reason. An empty page is
+// the right fallback when `data` is absent or unparseable.
+impl<T> Default for FeishuPage<T> {
+    fn default() -> Self {
+        Self {
+            items: None,
+            page_token: None,
+            has_more: None,
+        }
+    }
+}
+
+/// A department as returned by the children listing.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+struct FeishuListedDepartment {
+    open_department_id: Option<String>,
+    department_id: Option<String>,
+    parent_department_id: Option<String>,
+    name: Option<String>,
+}
+
+/// A person as returned by the per-department user listing.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+struct FeishuListedUser {
+    open_id: Option<String>,
+    union_id: Option<String>,
+    name: Option<String>,
+    job_title: Option<String>,
+    department_ids: Option<Vec<String>>,
+    /// Feishu marks leavers here rather than removing them from the directory.
+    /// Treated as authoritative when present — see `DirectoryPerson::active`.
+    status: Option<FeishuUserStatus>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+struct FeishuUserStatus {
+    /// The only status we act on. `is_activated` is deliberately NOT read: a
+    /// not-yet-activated account is a new hire who has not signed in, and
+    /// treating that as a departure would offboard people on their first day.
+    is_resigned: Option<bool>,
+}
+
+/// One department in the company tree, provider-neutral.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryDepartment {
+    pub external_id: String,
+    /// `None` for a top-level department.
+    pub parent_external_id: Option<String>,
+    pub name: String,
+}
+
+/// One person in the company directory, provider-neutral.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryPerson {
+    /// The id this person is matched on. Same field the SSO identity binds by,
+    /// so a directory row can be tied back to a local account.
+    pub external_id: String,
+    pub name: Option<String>,
+    pub job_title: Option<String>,
+    pub department_external_ids: Vec<String>,
+    /// `false` when the IdP says they have left. A resigned person is still
+    /// *in* the directory, so absence is not the only departure signal.
+    pub active: bool,
 }
 
 pub struct FeishuProvider;
@@ -268,6 +380,177 @@ impl FeishuProvider {
             .and_then(|v| v.as_str())
             .map(str::to_owned)
             .ok_or_else(|| SsoError::Internal("Feishu tenant token: missing tenant_access_token".into()))
+    }
+
+    /// Mint an app-level token. `pub(crate)` so the directory sync can hold one
+    /// for a whole run instead of minting per call, which is what the
+    /// single-user path does (fine for one login, wasteful across hundreds of
+    /// paged requests).
+    pub(crate) async fn tenant_access_token(config: &FeishuProviderConfig) -> Result<String, SsoError> {
+        Self::fetch_tenant_access_token(config.base(), &config.app_id, &config.app_secret).await
+    }
+
+    /// GET one page of a Feishu list endpoint and unwrap the `{code,msg,data}`
+    /// envelope. Factored out because the three single-entity fetches above
+    /// each hand-roll this and a fourth copy is where they start to drift.
+    async fn get_page<T: serde::de::DeserializeOwned>(
+        url: &str,
+        tenant_token: &str,
+        query: &[(&str, &str)],
+        what: &str,
+    ) -> Result<FeishuPage<T>, SsoError> {
+        let client = reqwest::Client::builder()
+            .timeout(FEISHU_HTTP_TIMEOUT)
+            .build()
+            .map_err(|e| SsoError::Internal(format!("http client: {e}")))?;
+        let resp = client.get(url).query(query).bearer_auth(tenant_token).send().await?;
+        let status = resp.status();
+        let json: serde_json::Value = resp.json().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(SsoError::Internal(format!("Feishu {what}: HTTP {status}")));
+        }
+        let code = json.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
+        if code != 0 {
+            let msg = json.get("msg").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            return Err(SsoError::Internal(format!("Feishu {what} request failed: {msg}")));
+        }
+        Ok(json
+            .get("data")
+            .and_then(|d| serde_json::from_value(d.clone()).ok())
+            .unwrap_or_default())
+    }
+
+    /// Walk every page of one list endpoint, collecting items.
+    ///
+    /// Any page failing aborts the whole walk with an error rather than
+    /// returning what it got so far. That is the important half: a caller that
+    /// received a partial directory and treated it as complete would conclude
+    /// that everyone on the missing pages had left the company.
+    async fn collect_pages<T: serde::de::DeserializeOwned>(
+        url: &str,
+        tenant_token: &str,
+        base_query: &[(&str, &str)],
+        what: &str,
+    ) -> Result<Vec<T>, SsoError> {
+        let mut out = Vec::new();
+        let mut page_token: Option<String> = None;
+        for _ in 0..MAX_PAGES {
+            let mut query: Vec<(&str, &str)> = base_query.to_vec();
+            query.push(("page_size", CONTACT_PAGE_SIZE));
+            if let Some(token) = page_token.as_deref() {
+                query.push(("page_token", token));
+            }
+            let page: FeishuPage<T> = Self::get_page(url, tenant_token, &query, what).await?;
+            out.extend(page.items.unwrap_or_default());
+
+            // Feishu signals "more" two ways; require both to agree before
+            // asking again, so a stale token with has_more=false stops.
+            match (page.has_more.unwrap_or(false), page.page_token) {
+                (true, Some(token)) if !token.is_empty() => page_token = Some(token),
+                _ => return Ok(out),
+            }
+        }
+        Err(SsoError::Internal(format!(
+            "Feishu {what}: pagination did not terminate after {MAX_PAGES} pages"
+        )))
+    }
+
+    /// Every department in the company, flattened.
+    ///
+    /// Asks for the root's descendants recursively rather than walking the tree
+    /// ourselves: one paged call instead of one call per node, which for a
+    /// thousand-department tenant is the difference between a sync that
+    /// finishes and one that gets rate-limited.
+    pub async fn fetch_all_departments(
+        config: &FeishuProviderConfig,
+        tenant_token: &str,
+    ) -> Result<Vec<DirectoryDepartment>, SsoError> {
+        let url = format!(
+            "{}{CONTACT_DEPARTMENT_PATH}/{FEISHU_ROOT_DEPARTMENT_ID}/{CONTACT_DEPARTMENT_CHILDREN_SEGMENT}",
+            config.base()
+        );
+        let raw: Vec<FeishuListedDepartment> = Self::collect_pages(
+            &url,
+            tenant_token,
+            &[("department_id_type", "open_department_id"), ("fetch_child", "true")],
+            "department children",
+        )
+        .await?;
+
+        Ok(raw
+            .into_iter()
+            .filter_map(|d| {
+                // Prefer the open id: it is what the single-user path already
+                // stores, so both halves agree on identity.
+                let external_id = d.open_department_id.or(d.department_id)?;
+                let external_id = external_id.trim().to_owned();
+                if external_id.is_empty() {
+                    return None;
+                }
+                let parent = d
+                    .parent_department_id
+                    .map(|p| p.trim().to_owned())
+                    .filter(|p| !p.is_empty() && p != FEISHU_ROOT_DEPARTMENT_ID);
+                Some(DirectoryDepartment {
+                    external_id,
+                    parent_external_id: parent,
+                    name: d.name.unwrap_or_default(),
+                })
+            })
+            .collect())
+    }
+
+    /// Every person in one department.
+    ///
+    /// `id_type` must match what SSO logins bind by (`external_id_field`), or
+    /// directory rows and local accounts will never line up.
+    pub async fn fetch_department_members(
+        config: &FeishuProviderConfig,
+        tenant_token: &str,
+        department_id: &str,
+        id_type: &str,
+    ) -> Result<Vec<DirectoryPerson>, SsoError> {
+        let url = format!(
+            "{}{CONTACT_USER_PATH}/{CONTACT_USERS_BY_DEPARTMENT_SEGMENT}",
+            config.base()
+        );
+        let raw: Vec<FeishuListedUser> = Self::collect_pages(
+            &url,
+            tenant_token,
+            &[
+                ("department_id", department_id),
+                ("user_id_type", id_type),
+                ("department_id_type", "open_department_id"),
+            ],
+            "department members",
+        )
+        .await?;
+
+        Ok(raw
+            .into_iter()
+            .filter_map(|u| {
+                let external_id = if id_type == "open_id" {
+                    u.open_id.clone()
+                } else {
+                    u.union_id.clone()
+                }?;
+                let external_id = external_id.trim().to_owned();
+                if external_id.is_empty() {
+                    return None;
+                }
+                // Absent status = present and working. Only an explicit
+                // `is_resigned` marks someone as gone; `is_activated == false`
+                // is a not-yet-onboarded account, not a departure.
+                let active = !u.status.as_ref().and_then(|s| s.is_resigned).unwrap_or(false);
+                Some(DirectoryPerson {
+                    external_id,
+                    name: u.name.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()),
+                    job_title: u.job_title.map(|j| j.trim().to_owned()).filter(|j| !j.is_empty()),
+                    department_external_ids: u.department_ids.unwrap_or_default(),
+                    active,
+                })
+            })
+            .collect())
     }
 
     async fn fetch_contact_user(
@@ -684,5 +967,178 @@ mod tests {
         let profile = FeishuProvider::fetch_org_profile(&cfg, "ou_abc", "open_id").await;
         assert_eq!(profile.job_title.as_deref(), Some("高级工程师"));
         assert_eq!(profile.department_name, None);
+    }
+
+    // ── Bulk directory pull (T6) ────────────────────────────────────────────
+    //
+    // ⚠️ These stub the shape we *believe* Feishu returns (see the note above
+    // `FeishuPage`). They prove our paging, id selection and error propagation
+    // are right given that shape; they cannot prove the shape. Read them as
+    // "our half is correct", not "the integration works".
+
+    const DEPT_CHILDREN_PATH: &str = "/open-apis/contact/v3/departments/0/children";
+    const USERS_BY_DEPT_PATH: &str = "/open-apis/contact/v3/users/find_by_department";
+
+    async fn mount_tenant_token(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/open-apis/auth/v3/tenant_access_token/internal"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0, "msg": "ok", "tenant_access_token": "t-tenant"
+            })))
+            .mount(server)
+            .await;
+    }
+
+    /// Every page must be walked. A sync that stopped at page one would report
+    /// everyone after it as having left the company.
+    #[tokio::test]
+    async fn fetch_all_departments_follows_every_page() {
+        let server = MockServer::start().await;
+        mount_tenant_token(&server).await;
+
+        // wiremock matches most-recently-mounted first, so mount the
+        // second page (guarded by its token) before the unguarded first.
+        Mock::given(method("GET"))
+            .and(path(DEPT_CHILDREN_PATH))
+            .and(wiremock::matchers::query_param("page_token", "p2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0, "msg": "ok",
+                "data": { "has_more": false, "items": [
+                    { "open_department_id": "od_2", "parent_department_id": "od_1", "name": "后端组" }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(DEPT_CHILDREN_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0, "msg": "ok",
+                "data": { "has_more": true, "page_token": "p2", "items": [
+                    { "open_department_id": "od_1", "parent_department_id": "0", "name": "研发中心" }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = feishu_config_with_base(&server.uri());
+        let departments = FeishuProvider::fetch_all_departments(&cfg, "t-tenant").await.unwrap();
+
+        assert_eq!(departments.len(), 2, "both pages must be collected");
+        assert_eq!(departments[0].external_id, "od_1");
+        // The root id is not a real parent — a top-level department must come
+        // back parentless or the tree cannot be assembled.
+        assert_eq!(departments[0].parent_external_id, None);
+        assert_eq!(departments[1].parent_external_id.as_deref(), Some("od_1"));
+    }
+
+    /// A failed page must abort the walk. Returning what we got so far is the
+    /// dangerous alternative: downstream reads absence as departure.
+    #[tokio::test]
+    async fn a_failing_page_aborts_rather_than_returning_a_partial_list() {
+        let server = MockServer::start().await;
+        mount_tenant_token(&server).await;
+
+        Mock::given(method("GET"))
+            .and(path(DEPT_CHILDREN_PATH))
+            .and(wiremock::matchers::query_param("page_token", "p2"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(DEPT_CHILDREN_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0, "msg": "ok",
+                "data": { "has_more": true, "page_token": "p2", "items": [
+                    { "open_department_id": "od_1", "name": "研发中心" }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = feishu_config_with_base(&server.uri());
+        let result = FeishuProvider::fetch_all_departments(&cfg, "t-tenant").await;
+        assert!(result.is_err(), "a partial directory must not be returned as success");
+    }
+
+    /// A non-zero `code` in a 200 body is Feishu's real failure channel.
+    #[tokio::test]
+    async fn a_non_zero_code_is_an_error_even_with_http_200() {
+        let server = MockServer::start().await;
+        mount_tenant_token(&server).await;
+        Mock::given(method("GET"))
+            .and(path(DEPT_CHILDREN_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 99991663, "msg": "app permission denied"
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = feishu_config_with_base(&server.uri());
+        let err = FeishuProvider::fetch_all_departments(&cfg, "t-tenant")
+            .await
+            .expect_err("code != 0 must be an error");
+        assert!(format!("{err}").contains("app permission denied"));
+    }
+
+    /// The id we key on must match what SSO logins bind by, or directory rows
+    /// and local accounts never line up.
+    #[tokio::test]
+    async fn members_are_keyed_by_the_configured_id_field() {
+        let server = MockServer::start().await;
+        mount_tenant_token(&server).await;
+        Mock::given(method("GET"))
+            .and(path(USERS_BY_DEPT_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0, "msg": "ok",
+                "data": { "has_more": false, "items": [
+                    { "open_id": "ou_1", "union_id": "on_1", "name": "张三", "job_title": "工程师",
+                      "department_ids": ["od_1"] }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = feishu_config_with_base(&server.uri());
+
+        let by_open = FeishuProvider::fetch_department_members(&cfg, "t-tenant", "od_1", "open_id")
+            .await
+            .unwrap();
+        assert_eq!(by_open[0].external_id, "ou_1");
+        assert_eq!(by_open[0].name.as_deref(), Some("张三"));
+        assert!(by_open[0].active, "no status block means present, not gone");
+
+        let by_union = FeishuProvider::fetch_department_members(&cfg, "t-tenant", "od_1", "union_id")
+            .await
+            .unwrap();
+        assert_eq!(by_union[0].external_id, "on_1");
+    }
+
+    /// Feishu keeps leavers in the directory and flags them, so absence is not
+    /// the only departure signal — `is_resigned` has to be read.
+    #[tokio::test]
+    async fn a_resigned_person_comes_back_inactive() {
+        let server = MockServer::start().await;
+        mount_tenant_token(&server).await;
+        Mock::given(method("GET"))
+            .and(path(USERS_BY_DEPT_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0, "msg": "ok",
+                "data": { "has_more": false, "items": [
+                    { "open_id": "ou_gone", "name": "李四", "status": { "is_resigned": true } },
+                    // Not yet activated is NOT a departure — they just haven't
+                    // onboarded. Treating it as one would remove new hires.
+                    { "open_id": "ou_new", "name": "王五", "status": { "is_activated": false } }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = feishu_config_with_base(&server.uri());
+        let people = FeishuProvider::fetch_department_members(&cfg, "t-tenant", "od_1", "open_id")
+            .await
+            .unwrap();
+
+        assert!(!people[0].active, "is_resigned must mark them gone");
+        assert!(people[1].active, "not-yet-activated is not a departure");
     }
 }

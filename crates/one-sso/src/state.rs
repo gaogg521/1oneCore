@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::enterprise::{CompanyAdminCheck, EnterpriseSync};
+use crate::enterprise::{CompanyAdminCheck, DirectorySink, EnterpriseSync};
 use crate::org_hooks::OrgAutoJoin;
 use crate::service::SsoService;
 
@@ -22,6 +22,10 @@ pub struct OneSsoRouterState {
     /// `None` — personal edition, unit tests — means SSO login never auto-joins
     /// a project group; membership stays invite-code-only, exactly as before.
     pub org_auto_join: Option<Arc<dyn OrgAutoJoin>>,
+    /// Where a directory pull is stored (T6). `None` — personal edition, tests,
+    /// or any build without the enterprise dimension — means directory sync has
+    /// nowhere to write and therefore never runs.
+    pub directory_sink: Option<Arc<dyn DirectorySink>>,
 }
 
 impl OneSsoRouterState {
@@ -31,6 +35,7 @@ impl OneSsoRouterState {
             enterprise_sync: None,
             company_admin_check: None,
             org_auto_join: None,
+            directory_sink: None,
         }
     }
 
@@ -46,6 +51,11 @@ impl OneSsoRouterState {
 
     pub fn with_org_auto_join(mut self, hook: Arc<dyn OrgAutoJoin>) -> Self {
         self.org_auto_join = Some(hook);
+        self
+    }
+
+    pub fn with_directory_sink(mut self, sink: Arc<dyn DirectorySink>) -> Self {
+        self.directory_sink = Some(sink);
         self
     }
 }

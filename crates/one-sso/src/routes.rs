@@ -33,7 +33,74 @@ pub fn one_sso_admin_routes(state: OneSsoRouterState) -> Router {
     Router::new()
         .route("/api/one/admin/sso/providers", get(list_provider_configs))
         .route("/api/one/admin/sso/{provider}", put(upsert_provider))
+        .route("/api/one/admin/sso/directory/sync", post(run_directory_sync_now))
         .with_state(state)
+}
+
+/// Outcome of an admin-triggered directory sync.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectorySyncResultDto {
+    /// `false` when this deployment has no directory to sync — see
+    /// `directory::DirectorySyncSkipped`.
+    ran: bool,
+    /// Why nothing ran, when `ran` is false.
+    skipped: Option<String>,
+    /// ⚠️ `ran && !complete` is the case worth surfacing: a pull happened but
+    /// did not finish, so the mirror was refreshed and **no** departure
+    /// conclusions were drawn from it.
+    complete: bool,
+    departments: usize,
+    people: usize,
+    error: Option<String>,
+}
+
+/// Pull the company directory now, rather than waiting for the timer.
+///
+/// Runs the same code path as the scheduled sync — an admin pressing this
+/// should not be able to get a different answer than the loop would.
+async fn run_directory_sync_now(
+    State(state): State<OneSsoRouterState>,
+    _admin: RequireSsoAdmin,
+) -> Result<Json<ApiResponse<DirectorySyncResultDto>>, SsoError> {
+    let Some(sink) = state.directory_sink.as_ref() else {
+        return Ok(Json(ApiResponse::ok(DirectorySyncResultDto {
+            ran: false,
+            skipped: Some("directory sync is not available on this deployment".into()),
+            complete: false,
+            departments: 0,
+            people: 0,
+            error: None,
+        })));
+    };
+
+    let dto = match crate::directory::run_directory_sync(&state.service, sink.as_ref()).await {
+        crate::directory::DirectorySyncRun::Skipped(reason) => DirectorySyncResultDto {
+            ran: false,
+            skipped: Some(
+                match reason {
+                    crate::directory::DirectorySyncSkipped::ProviderNotConfigured => {
+                        "no enabled Feishu provider with an app secret is configured"
+                    }
+                    crate::directory::DirectorySyncSkipped::NoCompany => "no company has been set up",
+                }
+                .to_owned(),
+            ),
+            complete: false,
+            departments: 0,
+            people: 0,
+            error: None,
+        },
+        crate::directory::DirectorySyncRun::Ran(snapshot) => DirectorySyncResultDto {
+            ran: true,
+            skipped: None,
+            complete: snapshot.complete,
+            departments: snapshot.departments.len(),
+            people: snapshot.people.len(),
+            error: snapshot.error,
+        },
+    };
+    Ok(Json(ApiResponse::ok(dto)))
 }
 
 #[derive(Deserialize)]

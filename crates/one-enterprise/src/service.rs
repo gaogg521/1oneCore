@@ -24,6 +24,12 @@ impl EnterpriseService {
         Self { pool }
     }
 
+    /// Pool access for sibling modules in this crate (`directory`), so their
+    /// `impl EnterpriseService` blocks do not need the field to be public.
+    pub(crate) fn pool_ref(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     /// Attach the caller's membership to the deployment's company at SSO login
     /// (via the `EnterpriseSync` hook wired in aionui-app). Never touches
     /// `one_tenants`. Which company they join:
@@ -137,7 +143,11 @@ impl EnterpriseService {
 
     /// The single company this deployment hosts (explicit preferred, else the
     /// oldest SSO-bootstrapped one). One server = one company.
-    async fn deployment_company_id(&self) -> Result<Option<String>, EnterpriseError> {
+    ///
+    /// `pub` so the T6 directory sync can ask "is there a company here at all",
+    /// which is half of its should-I-run gate — a machine with no company has
+    /// no directory to sync.
+    pub async fn deployment_company_id(&self) -> Result<Option<String>, EnterpriseError> {
         if let Some(id) = self.manual_company_id().await? {
             return Ok(Some(id));
         }
