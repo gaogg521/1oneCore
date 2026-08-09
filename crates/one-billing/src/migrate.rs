@@ -19,6 +19,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "billing_003_license_activation",
         include_str!("../migrations/billing_003_license_activation.sql"),
     ),
+    (
+        "billing_004_department_budgets",
+        include_str!("../migrations/billing_004_department_budgets.sql"),
+    ),
 ];
 
 /// Run all pending one-billing migrations. Idempotent; call once at startup

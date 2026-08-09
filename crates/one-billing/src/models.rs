@@ -77,6 +77,8 @@ pub struct UsageSummaryDto {
     pub by_user: Vec<UsageBucketDto>,
     pub by_model: Vec<UsageBucketDto>,
     pub by_day: Vec<UsageBucketDto>,
+    /// Bucket key `"unassigned"` covers members with no department (T7).
+    pub by_department: Vec<UsageBucketDto>,
     /// How many media generations in this window were metered at zero because
     /// nothing priced them.
     ///
@@ -89,6 +91,22 @@ pub struct UsageSummaryDto {
     /// The models behind `unpriced_media_calls`, so the admin knows exactly
     /// which ones need a price rather than having to hunt.
     pub unpriced_media_models: Vec<String>,
+}
+
+/// One department's spend cap and usage this window (T7). `department_id` is
+/// opaque here — one-billing does not depend on one-org, so it never resolves
+/// a name; the caller (an admin UI that already fetched the department list
+/// for its own tree view) joins by id.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepartmentBudgetDto {
+    pub department_id: String,
+    /// `null` = no department-level cap (only the company-wide one, if any,
+    /// applies to this department's members).
+    pub cost_cap_micros: Option<i64>,
+    /// Estimated spend this budget window (USD-micros), same rolling window
+    /// as the company-level figure.
+    pub cost_used_micros: i64,
 }
 
 /// Result of a checkout attempt. Real payment is not wired: the manual provider

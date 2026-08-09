@@ -20,6 +20,8 @@ pub enum BillingError {
     SeatLimitExceeded,
     #[error("The team's usage budget for this period has been reached")]
     BudgetExceeded,
+    #[error("This department's usage budget for this period has been reached")]
+    DepartmentBudgetExceeded,
     #[error("Model '{0}' is not allowed by the team's policy")]
     ModelNotAllowed(String),
     #[error("Upgrading the plan requires activating a license key")]
@@ -43,6 +45,7 @@ impl BillingError {
             Self::EnterpriseNotFound => "ENTERPRISE_NOT_FOUND",
             Self::SeatLimitExceeded => "SEAT_LIMIT_EXCEEDED",
             Self::BudgetExceeded => "BUDGET_EXCEEDED",
+            Self::DepartmentBudgetExceeded => "DEPARTMENT_BUDGET_EXCEEDED",
             Self::ModelNotAllowed(_) => "MODEL_NOT_ALLOWED",
             Self::UpgradeRequiresLicense => "UPGRADE_REQUIRES_LICENSE",
             Self::InvalidLicenseKey(_) => "INVALID_LICENSE_KEY",
@@ -55,7 +58,10 @@ impl BillingError {
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::EnterpriseNotFound => StatusCode::NOT_FOUND,
-            Self::SeatLimitExceeded | Self::BudgetExceeded | Self::ModelNotAllowed(_) => StatusCode::CONFLICT,
+            Self::SeatLimitExceeded
+            | Self::BudgetExceeded
+            | Self::DepartmentBudgetExceeded
+            | Self::ModelNotAllowed(_) => StatusCode::CONFLICT,
             // The request was well-formed and authorized; it is the *plan* that
             // forbids it — same 409 family as the other entitlement refusals.
             Self::UpgradeRequiresLicense => StatusCode::CONFLICT,

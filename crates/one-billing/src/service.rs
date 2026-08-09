@@ -15,7 +15,9 @@ use aionui_common::{generate_prefixed_id, now_ms};
 use sqlx::SqlitePool;
 
 use crate::error::BillingError;
-use crate::models::{CheckoutResultDto, EntitlementDto, LicenseInfoDto, PlanDto, UsageBucketDto, UsageSummaryDto};
+use crate::models::{
+    CheckoutResultDto, DepartmentBudgetDto, EntitlementDto, LicenseInfoDto, PlanDto, UsageBucketDto, UsageSummaryDto,
+};
 
 /// Pluggable payment backend. The default `ManualBillingProvider` is a stub
 /// (no real payments); a real Stripe/… provider can drop in later without
@@ -147,8 +149,30 @@ impl BillingService {
         Ok(status.as_deref() == Some("active"))
     }
 
+    /// The caller's CURRENT department (T7), or `None` if unassigned. Reads
+    /// `one_user_org.department_id` — owned by one-org, same cross-crate raw-
+    /// SQL idiom this file already uses for `one_enterprise_members` — and is
+    /// tolerant of the table being absent (standalone/personal builds, or a
+    /// deployment where P2-3 departments were never migrated).
+    async fn resolve_department_id(&self, user_id: &str) -> Result<Option<String>, BillingError> {
+        // Double `Option`: the outer one is "does the membership row exist",
+        // the inner one is the column's own nullability (unassigned). Only
+        // the outer layer is truly "value absent" — collapsing both without
+        // this would need the column decode to fail for a NULL department_id,
+        // which is not an error, it is the overwhelmingly common case.
+        let row: Option<Option<String>> =
+            sqlx::query_scalar("SELECT department_id FROM one_user_org WHERE user_id = ?")
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await
+                .unwrap_or(None);
+        Ok(row.flatten())
+    }
+
     async fn license_of(&self, enterprise_id: &str) -> Result<License, BillingError> {
-        let row: Option<(String, Option<i64>, Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
+        // tier, seat_limit, expires_at, cost_cap_micros, allowed_models(json)
+        type LicenseRow = (String, Option<i64>, Option<i64>, Option<i64>, Option<String>);
+        let row: Option<LicenseRow> = sqlx::query_as(
             "SELECT tier, seat_limit, expires_at, monthly_cost_cap_micros, allowed_models \
              FROM one_enterprise_license WHERE enterprise_id = ?",
         )
@@ -401,6 +425,83 @@ impl BillingService {
         Ok(used)
     }
 
+    /// Set (or, with `None`, clear) a department's spend cap (T7). Same
+    /// rolling-30-day window as the company-level cap; a department cap is a
+    /// tighter constraint layered UNDER the company one, never a replacement
+    /// for it — a department under its own cap can still be blocked by the
+    /// company running out of budget, and vice versa.
+    pub async fn set_department_budget(
+        &self,
+        enterprise_id: &str,
+        department_id: &str,
+        cost_cap_micros: Option<i64>,
+    ) -> Result<(), BillingError> {
+        sqlx::query(
+            "INSERT INTO one_department_budgets (department_id, enterprise_id, cost_cap_micros, updated_at) \
+             VALUES (?, ?, ?, ?) \
+             ON CONFLICT(department_id) DO UPDATE SET \
+                 cost_cap_micros = excluded.cost_cap_micros, updated_at = excluded.updated_at",
+        )
+        .bind(department_id)
+        .bind(enterprise_id)
+        .bind(cost_cap_micros)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn department_budget_cap(&self, department_id: &str) -> Result<Option<i64>, BillingError> {
+        let cap: Option<Option<i64>> =
+            sqlx::query_scalar("SELECT cost_cap_micros FROM one_department_budgets WHERE department_id = ?")
+                .bind(department_id)
+                .fetch_optional(&self.pool)
+                .await
+                .unwrap_or(None);
+        Ok(cap.flatten())
+    }
+
+    /// Estimated spend (USD-micros) for one department over the rolling
+    /// budget window. Reads `one_usage_events.department_id`, stamped at
+    /// record time — see the migration's doc comment for why that is
+    /// denormalized rather than resolved live from `one_user_org`.
+    async fn department_budget_used_micros(&self, department_id: &str) -> Result<i64, BillingError> {
+        let since = now_ms() - BUDGET_WINDOW_MS;
+        let used: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(estimated_cost_micros), 0) FROM one_usage_events \
+             WHERE department_id = ? AND created_at >= ?",
+        )
+        .bind(department_id)
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+        Ok(used)
+    }
+
+    /// Every department that has ever had a cap configured for this company,
+    /// with current-window spend (T7 dashboard). Departments with no cap and
+    /// no spend simply do not appear — nothing to show an admin about them.
+    pub async fn list_department_budgets(&self, enterprise_id: &str) -> Result<Vec<DepartmentBudgetDto>, BillingError> {
+        let rows: Vec<(String, Option<i64>)> = sqlx::query_as(
+            "SELECT department_id, cost_cap_micros FROM one_department_budgets \
+             WHERE enterprise_id = ? ORDER BY updated_at DESC",
+        )
+        .bind(enterprise_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (department_id, cost_cap_micros) in rows {
+            let cost_used_micros = self.department_budget_used_micros(&department_id).await?;
+            out.push(DepartmentBudgetDto {
+                department_id,
+                cost_cap_micros,
+                cost_used_micros,
+            });
+        }
+        Ok(out)
+    }
+
     /// Pre-send gate (P1-2): reject when the company is over its spend budget,
     /// or the requested `model` is not on its allowlist. Personal / no-company
     /// users, and companies with neither control set, always pass (red line).
@@ -429,11 +530,22 @@ impl BillingService {
             return Err(BillingError::ModelNotAllowed(model.to_owned()));
         }
 
-        // Spend cap.
+        // Spend cap — company-wide first: if the whole company is out of
+        // budget that is the more useful thing to tell the caller, and it
+        // blocks everyone regardless of department.
         if let Some(cap) = license.cost_cap_micros
             && self.budget_used_micros(&enterprise_id).await? >= cap
         {
             return Err(BillingError::BudgetExceeded);
+        }
+
+        // T7: a department cap is a tighter constraint layered under the
+        // company one. Unassigned members have no department to check.
+        if let Some(department_id) = self.resolve_department_id(user_id).await?
+            && let Some(cap) = self.department_budget_cap(&department_id).await?
+            && self.department_budget_used_micros(&department_id).await? >= cap
+        {
+            return Err(BillingError::DepartmentBudgetExceeded);
         }
         Ok(())
     }
@@ -496,6 +608,7 @@ impl BillingService {
             conversation_id,
         } = usage;
         let enterprise_id = self.resolve_enterprise_id(user_id).await?;
+        let department_id = self.resolve_department_id(user_id).await?;
         // A price the user entered for their own provider beats our built-in
         // table: the table is a coarse illustration, theirs is the contract they
         // are actually billed under.
@@ -528,12 +641,13 @@ impl BillingService {
         }
         sqlx::query(
             "INSERT INTO one_usage_events \
-                (id, user_id, enterprise_id, conversation_id, model, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) \
-             VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
+                (id, user_id, enterprise_id, department_id, conversation_id, model, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
         )
         .bind(generate_prefixed_id("usage"))
         .bind(user_id)
         .bind(enterprise_id)
+        .bind(department_id)
         .bind(conversation_id)
         .bind(model)
         .bind(cost)
@@ -579,6 +693,11 @@ impl BillingService {
         output_tokens: Option<i64>,
     ) -> Result<(), BillingError> {
         let enterprise_id = self.resolve_enterprise_id(user_id).await?;
+        // T7: stamped from the user's department AT THIS MOMENT, not resolved
+        // live when a report is later pulled — see the migration's doc
+        // comment for why (a department is a cost center; reassigning someone
+        // must not reshuffle where past spend counted).
+        let department_id = self.resolve_department_id(user_id).await?;
         let total_tokens = match (input_tokens, output_tokens) {
             (None, None) => None,
             (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
@@ -586,12 +705,13 @@ impl BillingService {
         let cost = model.map(|m| estimate_cost_micros(m, input_tokens.unwrap_or(0), output_tokens.unwrap_or(0)));
         sqlx::query(
             "INSERT INTO one_usage_events \
-                (id, user_id, enterprise_id, conversation_id, model, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (id, user_id, enterprise_id, department_id, conversation_id, model, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(generate_prefixed_id("usage"))
         .bind(user_id)
         .bind(enterprise_id)
+        .bind(department_id)
         .bind(conversation_id)
         .bind(model)
         .bind(input_tokens)
@@ -617,6 +737,9 @@ impl BillingService {
                 since_ms,
                 "strftime('%Y-%m-%d', created_at / 1000, 'unixepoch')",
             )
+            .await?;
+        let by_department = self
+            .buckets(enterprise_id, since_ms, "COALESCE(department_id, 'unassigned')")
             .await?;
 
         let (total_turns, total_tokens, total_cost): (i64, i64, i64) = sqlx::query_as(
@@ -651,6 +774,7 @@ impl BillingService {
             by_user,
             by_model,
             by_day,
+            by_department,
             unpriced_media_calls,
             unpriced_media_models: unpriced_models
                 .unwrap_or_default()
@@ -1411,5 +1535,155 @@ mod tests {
         .await
         .unwrap();
         assert!(none_conversation.is_none());
+    }
+
+    /// Minimal `one_user_org` shape for T7 tests — this crate doesn't own the
+    /// table (one-org does) so it isn't created by `run_one_billing_migrations`;
+    /// tests exercising department resolution must stand up their own copy,
+    /// same as `billing_admin_is_enterprise_scoped_not_project_group_scoped`
+    /// already does for role resolution.
+    async fn add_user_org(svc: &BillingService, user_id: &str, department_id: Option<&str>) {
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL, department_id TEXT, PRIMARY KEY (user_id, tenant_id))",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO one_user_org (user_id, tenant_id, role, department_id) VALUES (?, 't1', 'member', ?)")
+            .bind(user_id)
+            .bind(department_id)
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+    }
+
+    /// T7: `record_turn` and `record_media_usage` both stamp the user's
+    /// CURRENT department at write time. A user with no `one_user_org` row
+    /// (or no department) gets a NULL — never an error, since one-billing
+    /// must keep working for personal/standalone installs that have no
+    /// one-org table at all.
+    #[tokio::test]
+    async fn department_id_is_stamped_at_record_time() {
+        let svc = service().await;
+        add_user_org(&svc, "dana", Some("deptA")).await;
+
+        svc.record_turn("dana", None, Some("gpt-4"), Some(10), Some(10))
+            .await
+            .unwrap();
+        svc.record_media_usage(MediaUsage {
+            user_id: "dana",
+            kind: "image",
+            model: "gpt-image-2",
+            count: 1,
+            duration_seconds: 0,
+            unit_price_micros: None,
+            conversation_id: None,
+        })
+        .await
+        .unwrap();
+
+        let depts: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT department_id FROM one_usage_events WHERE user_id = 'dana' ORDER BY created_at")
+                .fetch_all(&svc.pool)
+                .await
+                .unwrap();
+        assert_eq!(depts, vec![Some("deptA".to_owned()), Some("deptA".to_owned())]);
+
+        // No one_user_org row at all → NULL, not an error.
+        svc.record_turn("no_org_row", None, Some("gpt-4"), Some(10), Some(10))
+            .await
+            .unwrap();
+        let none_dept: Option<String> =
+            sqlx::query_scalar("SELECT department_id FROM one_usage_events WHERE user_id = 'no_org_row' LIMIT 1")
+                .fetch_one(&svc.pool)
+                .await
+                .unwrap();
+        assert!(none_dept.is_none());
+    }
+
+    /// The department cap is a tighter constraint layered UNDER the
+    /// company-wide one: it must bind even when no company cap is configured
+    /// at all, and it must leave members of other departments (and members
+    /// with no department) untouched.
+    #[tokio::test]
+    async fn department_budget_gates_sends_independently_of_company_wide_budget() {
+        let svc = service().await;
+        add_members(&svc, "entD", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'dana' WHERE enterprise_id = 'entD'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        add_user_org(&svc, "dana", Some("deptA")).await;
+        add_user_org(&svc, "gio", None).await; // same company, no department
+
+        // No company-wide cap anywhere; only a department cap.
+        svc.set_department_budget("entD", "deptA", Some(100)).await.unwrap();
+        assert!(svc.check_send_allowed("dana", Some("gpt-4")).await.is_ok());
+
+        svc.record_turn("dana", Some("c1"), Some("claude-opus-4-8"), Some(1000), Some(1000))
+            .await
+            .unwrap(); // ~90000 micros >> 100
+        assert_eq!(
+            svc.check_send_allowed("dana", Some("gpt-4")).await.unwrap_err().code(),
+            "DEPARTMENT_BUDGET_EXCEEDED"
+        );
+        // check_media_allowed delegates to check_send_allowed, so media is gated too.
+        assert_eq!(
+            svc.check_media_allowed("dana", "gpt-4").await.unwrap_err().code(),
+            "DEPARTMENT_BUDGET_EXCEEDED"
+        );
+
+        // A member with no department is never subject to a department cap.
+        assert!(svc.check_send_allowed("gio", Some("gpt-4")).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_department_budgets_reports_cap_and_usage() {
+        let svc = service().await;
+        add_user_org(&svc, "dana", Some("deptA")).await;
+        svc.set_department_budget("entD", "deptA", Some(500)).await.unwrap();
+        svc.record_turn("dana", Some("c1"), Some("claude-opus-4-8"), Some(1000), Some(1000))
+            .await
+            .unwrap();
+
+        let budgets = svc.list_department_budgets("entD").await.unwrap();
+        assert_eq!(budgets.len(), 1);
+        assert_eq!(budgets[0].department_id, "deptA");
+        assert_eq!(budgets[0].cost_cap_micros, Some(500));
+        assert!(budgets[0].cost_used_micros > 0);
+
+        // Clearing the cap keeps the row (still reportable) but drops the cap.
+        svc.set_department_budget("entD", "deptA", None).await.unwrap();
+        let cleared = svc.list_department_budgets("entD").await.unwrap();
+        assert_eq!(cleared[0].cost_cap_micros, None);
+    }
+
+    /// Write-time denormalization, not a live join: past spend must stay
+    /// attributed to the department a user was in AT THE TIME, or reassigning
+    /// someone would retroactively move last month's spend to their new
+    /// department's cap.
+    #[tokio::test]
+    async fn reassigning_a_users_department_does_not_reshuffle_past_spend() {
+        let svc = service().await;
+        add_user_org(&svc, "dana", Some("deptA")).await;
+        svc.record_turn("dana", Some("c1"), Some("claude-opus-4-8"), Some(1000), Some(1000))
+            .await
+            .unwrap();
+
+        // Move dana to deptB going forward.
+        sqlx::query("UPDATE one_user_org SET department_id = 'deptB' WHERE user_id = 'dana'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        svc.record_turn("dana", Some("c2"), Some("claude-opus-4-8"), Some(1000), Some(1000))
+            .await
+            .unwrap();
+
+        let depts: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT department_id FROM one_usage_events WHERE user_id = 'dana' ORDER BY created_at")
+                .fetch_all(&svc.pool)
+                .await
+                .unwrap();
+        assert_eq!(depts, vec![Some("deptA".to_owned()), Some("deptB".to_owned())]);
     }
 }

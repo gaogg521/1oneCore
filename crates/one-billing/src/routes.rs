@@ -14,7 +14,7 @@ use aionui_common::license::Tier;
 use aionui_common::now_ms;
 
 use crate::error::BillingError;
-use crate::models::{CheckoutResultDto, LicenseInfoDto, PlanDto, UsageSummaryDto};
+use crate::models::{CheckoutResultDto, DepartmentBudgetDto, LicenseInfoDto, PlanDto, UsageSummaryDto};
 use crate::service::MediaUsage;
 use crate::state::OneBillingRouterState;
 
@@ -32,6 +32,10 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
         .route("/api/one/billing/webhook", post(billing_webhook))
         .route("/api/one/billing/media-precheck", post(billing_media_precheck))
         .route("/api/one/billing/media-usage", post(billing_media_usage))
+        .route(
+            "/api/one/billing/department-budgets",
+            get(billing_list_department_budgets).put(billing_set_department_budget),
+        )
         .with_state(state)
 }
 
@@ -309,4 +313,60 @@ async fn billing_checkout(
 /// real provider can post here without a 404.
 async fn billing_webhook(State(_state): State<OneBillingRouterState>) -> Json<ApiResponse<()>> {
     Json(ApiResponse::ok(()))
+}
+
+/// Every department budget for the caller's company (T7). Admin-only, same
+/// gate as the usage dashboard — a cap is spend policy, not a member's own
+/// business.
+async fn billing_list_department_budgets(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<DepartmentBudgetDto>>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden("department budgets are admin-only".into()));
+    }
+    let eid = state
+        .service
+        .resolve_enterprise_id(&user.id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.list_department_budgets(&eid).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetDepartmentBudgetBody {
+    department_id: String,
+    /// `null` = remove the department-level cap.
+    #[serde(default)]
+    cost_cap_micros: Option<i64>,
+}
+
+/// Set (or clear) one department's spend cap. Billing-admin only. Does not
+/// validate `department_id` against one-org — this crate never depends on
+/// one-org (same reason `record_turn` denormalizes rather than joins); an
+/// id for a department that is later renamed or removed just becomes an
+/// orphaned budget row, harmless and cleanable by re-setting it.
+async fn billing_set_department_budget(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<SetDepartmentBudgetBody>,
+) -> Result<Json<ApiResponse<Vec<DepartmentBudgetDto>>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden("department budgets are admin-only".into()));
+    }
+    let eid = state
+        .service
+        .resolve_enterprise_id(&user.id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)?;
+    state
+        .service
+        .set_department_budget(&eid, &body.department_id, body.cost_cap_micros)
+        .await?;
+    Ok(Json(ApiResponse::ok(
+        state.service.list_department_budgets(&eid).await?,
+    )))
 }

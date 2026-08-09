@@ -314,6 +314,13 @@ fn billing_denial(error: one_billing::BillingError) -> aionui_conversation::Poli
             "SEAT_LIMIT_EXCEEDED",
             "Your organization's seat limit has been reached; an administrator needs to free a seat or upgrade the plan before you can send messages",
         ),
+        // T7: a tighter cap layered under the company-wide budget, scoped to
+        // this member's department. Distinct code so the UI can point at the
+        // department's own budget panel rather than the company one.
+        BillingError::DepartmentBudgetExceeded => aionui_conversation::PolicyDenial::new(
+            "DEPARTMENT_BUDGET_EXCEEDED",
+            "This department's usage budget for this period has been reached",
+        ),
         other => {
             tracing::error!(error = %other, "billing gate failed; blocking the send");
             aionui_conversation::PolicyDenial::new("POLICY_CHECK_FAILED", "Company policy could not be checked.")
