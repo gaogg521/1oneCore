@@ -8,6 +8,7 @@ use crate::models::{
     CompanyMemberDto, CompanyOverviewDto, EnterpriseIdentityDto, ROLE_COMPANY_ADMIN, ROLE_COMPANY_MEMBER,
     is_company_admin_role,
 };
+use crate::session_revoker::{NoopSessionRevoker, SessionRevoker};
 
 /// Desktop-operator sentinel user id (mirrors `one_org::models::SYSTEM_DEFAULT_USER_ID`).
 /// Defaults to system_admin when it has no explicit `one_user_org` row.
@@ -17,11 +18,23 @@ const ROLE_SYSTEM_ADMIN: &str = "system_admin";
 
 pub struct EnterpriseService {
     pool: SqlitePool,
+    session_revoker: std::sync::Arc<dyn SessionRevoker>,
 }
 
 impl EnterpriseService {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            session_revoker: std::sync::Arc::new(NoopSessionRevoker),
+        }
+    }
+
+    /// Wire the credential revocation that makes a company removal actually cut
+    /// off access. Required on whichever instance serves the removal route —
+    /// see [`crate::session_revoker`].
+    pub fn with_session_revoker(mut self, revoker: std::sync::Arc<dyn SessionRevoker>) -> Self {
+        self.session_revoker = revoker;
+        self
     }
 
     /// Pool access for sibling modules in this crate (`directory`), so their
@@ -482,6 +495,13 @@ impl EnterpriseService {
     /// membership lives in `one_user_org` and is removed separately by
     /// `OrgService::remove_member`. The two tiers are deliberately independent
     /// (企业 ⊃ 项目组), so an offboarding flow calls both.
+    ///
+    /// It does, however, revoke their credentials — see
+    /// [`crate::session_revoker`]. Company membership is the identity tier, and
+    /// a member who has been removed from the company but is still holding a
+    /// live session is the exact failure the departure flow exists to prevent.
+    /// A person who is in no project group has no other removal to fall back
+    /// on, so this call has to be sufficient on its own.
     pub async fn remove_member(
         &self,
         enterprise_id: &str,
@@ -520,6 +540,10 @@ impl EnterpriseService {
             .bind(enterprise_id)
             .execute(&self.pool)
             .await?;
+        // After the delete, never before: a guard rejection above must not cost
+        // somebody their session, and a revocation failure must not leave the
+        // seat occupied.
+        self.session_revoker.revoke_sessions(target_user_id).await;
         Ok(())
     }
 
@@ -822,5 +846,61 @@ mod tests {
         // Unknown target → 404.
         let err = svc.set_member_role(&ent, "ghost", "admin").await.unwrap_err();
         assert_eq!(err.code(), "COMPANY_MEMBER_NOT_FOUND");
+    }
+
+    /// Records who was revoked, so the tests can tell "we removed them" apart
+    /// from "we also cut off their access".
+    #[derive(Default)]
+    struct RecordingRevoker(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl SessionRevoker for RecordingRevoker {
+        async fn revoke_sessions(&self, user_id: &str) {
+            self.0.lock().unwrap().push(user_id.to_string());
+        }
+    }
+
+    /// ⚠️ The point of the whole departure flow. Deleting the seat row without
+    /// revoking leaves the leaver holding a valid session and a company model
+    /// channel token — and somebody in no project group has no second removal
+    /// to fall back on.
+    #[tokio::test]
+    async fn removing_a_company_member_cuts_off_their_access() {
+        let revoker = std::sync::Arc::new(RecordingRevoker::default());
+        let db = aionui_db::init_database_memory().await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        let svc = EnterpriseService::new(db.pool().clone()).with_session_revoker(revoker.clone());
+
+        svc.sync_member("u1", "feishu", "co", None, None, None).await.unwrap();
+        svc.sync_member("u2", "feishu", "co", None, None, None).await.unwrap();
+        let ent: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap();
+
+        svc.remove_member(&ent, "u1", "u2").await.unwrap();
+        assert_eq!(revoker.0.lock().unwrap().as_slice(), ["u2"]);
+    }
+
+    /// A rejected removal must not cost anybody their session — the guards run
+    /// before the revocation for exactly this reason.
+    #[tokio::test]
+    async fn a_rejected_removal_revokes_nothing() {
+        let revoker = std::sync::Arc::new(RecordingRevoker::default());
+        let db = aionui_db::init_database_memory().await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        let svc = EnterpriseService::new(db.pool().clone()).with_session_revoker(revoker.clone());
+
+        svc.sync_member("u1", "feishu", "co", None, None, None).await.unwrap();
+        let ent: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap();
+
+        // Not a member of this company.
+        assert!(svc.remove_member(&ent, "u1", "ghost").await.is_err());
+        // Removing yourself is refused too.
+        assert!(svc.remove_member(&ent, "u1", "u1").await.is_err());
+        assert!(revoker.0.lock().unwrap().is_empty());
     }
 }

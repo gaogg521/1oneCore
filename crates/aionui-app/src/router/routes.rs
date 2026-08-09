@@ -106,6 +106,24 @@ impl one_org::CredentialRevoker for ModelChannelRevoker {
     }
 }
 
+/// Lets a company removal cut off the leaver's access without one-enterprise
+/// depending on one-org (same layer). one-org owns the per-user JWT secret and,
+/// via its own `CredentialRevoker`, the company model channel tokens — so both
+/// tiers of removal end up rotating exactly the same set of credentials.
+struct OrgSessionRevoker(std::sync::Arc<one_org::OrgService>);
+
+#[async_trait::async_trait]
+impl one_enterprise::SessionRevoker for OrgSessionRevoker {
+    async fn revoke_sessions(&self, user_id: &str) {
+        // Never block the removal: a member who could not be fully
+        // de-provisioned must still lose their seat. Logged at error because it
+        // leaves a live session behind and needs following up.
+        if let Err(error) = self.0.invalidate_user_tokens(user_id).await {
+            tracing::error!(%error, user_id, "failed to revoke sessions on company removal");
+        }
+    }
+}
+
 /// Stores a completed directory pull (T6). one-sso knows how to talk to Feishu,
 /// one-enterprise owns the company's tables, and they are the same layer — so
 /// they meet here.
@@ -627,9 +645,12 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .with_credential_revoker(std::sync::Arc::new(ModelChannelRevoker(one_devops_service.clone()))),
     );
     // one-enterprise service (真实企业 / company tier) — constructed here so its
-    // company-admin bridges can be wired into one-org and one-sso below.
-    let one_enterprise_service =
-        std::sync::Arc::new(one_enterprise::EnterpriseService::new(services.database.pool().clone()));
+    // company-admin bridges can be wired into one-org and one-sso below, and so
+    // it can borrow one-org's credential revocation (built just above).
+    let one_enterprise_service = std::sync::Arc::new(
+        one_enterprise::EnterpriseService::new(services.database.pool().clone())
+            .with_session_revoker(std::sync::Arc::new(OrgSessionRevoker(one_org_service.clone()))),
+    );
     // Tenant resolver shared by one-employee + one-devops for team-shared
     // employees (A1 L3).
     let tenant_resolver: std::sync::Arc<dyn one_employee::TenantResolver> =

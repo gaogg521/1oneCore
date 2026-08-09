@@ -72,6 +72,22 @@ pub struct DirectorySyncReport {
     pub complete: bool,
 }
 
+/// A project group the departed member still belongs to.
+///
+/// Offboarding is project-group scoped — `OrgService::remove_member` acts on
+/// the caller's *active* group and refuses a user who is not in it, and a
+/// resource hand-over additionally requires the recipient to be in that same
+/// group. So the console cannot offer "remove" until it knows which groups the
+/// person is actually in; without this it would fire a call that fails, leave
+/// the seat occupied, and report a raw backend error.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepartedTenantRef {
+    pub tenant_id: String,
+    /// `None` only if the group row vanished under the membership.
+    pub name: Option<String>,
+}
+
 /// A person the directory no longer vouches for, who still holds a company
 /// membership here.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -82,6 +98,10 @@ pub struct DepartedMemberDto {
     pub display_name: Option<String>,
     pub department: Option<String>,
     pub missing_since: i64,
+    /// Project groups this person is still in. Empty is a real answer: a
+    /// company member who never joined a group only needs the company-level
+    /// removal.
+    pub tenants: Vec<DepartedTenantRef>,
 }
 
 impl EnterpriseService {
@@ -234,7 +254,7 @@ impl EnterpriseService {
         .fetch_all(self.pool_ref())
         .await?;
 
-        Ok(rows
+        let mut members: Vec<DepartedMemberDto> = rows
             .into_iter()
             .map(
                 |(user_id, external_id, display_name, department, missing_since)| DepartedMemberDto {
@@ -243,9 +263,57 @@ impl EnterpriseService {
                     display_name,
                     department,
                     missing_since,
+                    tenants: Vec::new(),
                 },
             )
-            .collect())
+            .collect();
+
+        let mut groups = self
+            .project_groups_of(&members.iter().map(|m| m.user_id.clone()).collect::<Vec<_>>())
+            .await?;
+        for member in &mut members {
+            member.tenants = groups.remove(&member.user_id).unwrap_or_default();
+        }
+        Ok(members)
+    }
+
+    /// Project-group memberships for the given users, keyed by user id.
+    ///
+    /// `one_user_org` / `one_tenants` belong to one-org. A deployment that has
+    /// no project groups at all — standalone/personal, or a test that only ran
+    /// this crate's migrations — simply has nothing to report here, which is an
+    /// empty answer rather than a failure: the departed list must still render.
+    async fn project_groups_of(
+        &self,
+        user_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, Vec<DepartedTenantRef>>, EnterpriseError> {
+        let mut out: std::collections::HashMap<String, Vec<DepartedTenantRef>> = std::collections::HashMap::new();
+        if user_ids.is_empty() {
+            return Ok(out);
+        }
+        let placeholders = vec!["?"; user_ids.len()].join(", ");
+        let sql = format!(
+            "SELECT o.user_id, o.tenant_id, t.name \
+             FROM one_user_org o \
+             LEFT JOIN one_tenants t ON t.id = o.tenant_id \
+             WHERE o.user_id IN ({placeholders}) \
+             ORDER BY o.user_id, t.name, o.tenant_id"
+        );
+        let mut query = sqlx::query_as::<_, (String, String, Option<String>)>(&sql);
+        for user_id in user_ids {
+            query = query.bind(user_id);
+        }
+        let rows = match query.fetch_all(self.pool_ref()).await {
+            Ok(rows) => rows,
+            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => return Ok(out),
+            Err(e) => return Err(e.into()),
+        };
+        for (user_id, tenant_id, name) in rows {
+            out.entry(user_id)
+                .or_default()
+                .push(DepartedTenantRef { tenant_id, name });
+        }
+        Ok(out)
     }
 
     /// Last-run status for the admin console.
@@ -317,6 +385,54 @@ mod tests {
             complete,
             error: None,
         }
+    }
+
+    /// one-org owns the project-group tables. Stand up just enough of them to
+    /// exercise the join; tests that skip this are the standalone deployment,
+    /// where the tables genuinely do not exist.
+    async fn with_project_groups(svc: &EnterpriseService) {
+        sqlx::query("CREATE TABLE one_tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL)")
+            .execute(svc.pool_ref())
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL)")
+            .execute(svc.pool_ref())
+            .await
+            .unwrap();
+    }
+
+    async fn join_group(svc: &EnterpriseService, user_id: &str, tenant_id: &str, name: &str) {
+        sqlx::query("INSERT OR IGNORE INTO one_tenants (id, name) VALUES (?, ?)")
+            .bind(tenant_id)
+            .bind(name)
+            .execute(svc.pool_ref())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO one_user_org (user_id, tenant_id, role) VALUES (?, ?, 'member')")
+            .bind(user_id)
+            .bind(tenant_id)
+            .execute(svc.pool_ref())
+            .await
+            .unwrap();
+    }
+
+    async fn make_departed(svc: &EnterpriseService, external_id: &str, user_id: &str) {
+        svc.apply_directory_snapshot("ent1", &snapshot(vec![person(external_id, true)], true))
+            .await
+            .unwrap();
+        svc.apply_directory_snapshot("ent1", &snapshot(vec![], true))
+            .await
+            .unwrap();
+        bind_identity(svc, external_id, user_id).await;
+        sqlx::query(
+            "INSERT INTO one_enterprise_members (user_id, enterprise_id, display_name, role, joined_at, updated_at) \
+             VALUES (?, 'ent1', ?, 'member', 0, 0)",
+        )
+        .bind(user_id)
+        .bind(user_id)
+        .execute(svc.pool_ref())
+        .await
+        .unwrap();
     }
 
     async fn bind_identity(svc: &EnterpriseService, external_id: &str, user_id: &str) {
@@ -458,6 +574,55 @@ mod tests {
         assert_eq!(departed.len(), 1);
         assert_eq!(departed[0].user_id, "u_b");
         assert_eq!(departed[0].display_name.as_deref(), Some("李四"));
+    }
+
+    /// Removing somebody is project-group scoped, so the console has to be told
+    /// which groups they are in before it can offer to do it.
+    #[tokio::test]
+    async fn a_departure_carries_the_project_groups_the_person_is_still_in() {
+        let svc = service().await;
+        with_project_groups(&svc).await;
+        make_departed(&svc, "ou_b", "u_b").await;
+        join_group(&svc, "u_b", "t_1", "研发组").await;
+        join_group(&svc, "u_b", "t_2", "市场组").await;
+        // Somebody else's membership must not leak onto this row.
+        join_group(&svc, "u_other", "t_3", "财务组").await;
+
+        let departed = svc.list_departed_members("ent1").await.unwrap();
+        assert_eq!(departed.len(), 1);
+        let mut names: Vec<&str> = departed[0].tenants.iter().filter_map(|t| t.name.as_deref()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["市场组", "研发组"]);
+        assert!(
+            departed[0].tenants.iter().all(|t| t.tenant_id != "t_3"),
+            "another user's project group must not leak onto this row"
+        );
+    }
+
+    /// A company member who never joined a project group is still a departure —
+    /// they just only need the company-level removal. An empty list here is an
+    /// answer, not a missing one.
+    #[tokio::test]
+    async fn a_member_in_no_project_group_reports_an_empty_group_list() {
+        let svc = service().await;
+        with_project_groups(&svc).await;
+        make_departed(&svc, "ou_b", "u_b").await;
+
+        let departed = svc.list_departed_members("ent1").await.unwrap();
+        assert_eq!(departed.len(), 1);
+        assert!(departed[0].tenants.is_empty());
+    }
+
+    /// Standalone/personal deployments have no project-group tables at all.
+    /// The departed list must still render rather than 500.
+    #[tokio::test]
+    async fn a_deployment_without_project_group_tables_still_lists_departures() {
+        let svc = service().await;
+        make_departed(&svc, "ou_b", "u_b").await;
+
+        let departed = svc.list_departed_members("ent1").await.unwrap();
+        assert_eq!(departed.len(), 1);
+        assert!(departed[0].tenants.is_empty());
     }
 
     /// The status line has to say a sync failed. A silent failure reads as

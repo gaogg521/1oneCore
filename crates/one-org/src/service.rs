@@ -290,7 +290,11 @@ impl OrgService {
     /// here too — otherwise a removed member would keep a working key to the
     /// company's models, which is exactly what channel provisioning exists to
     /// prevent. See `credential_revoker`.
-    async fn invalidate_user_tokens(&self, user_id: &str) -> Result<(), OrgError> {
+    ///
+    /// Public because the company tier removes members too (企业 ⊃ 项目组) and
+    /// must cut off the same credentials; one-enterprise reaches this through
+    /// its own `SessionRevoker` trait, wired in aionui-app.
+    pub async fn invalidate_user_tokens(&self, user_id: &str) -> Result<(), OrgError> {
         let secret = generate_random_secret_string();
         self.user_repo.update_jwt_secret(user_id, &secret).await?;
         self.credential_revoker.revoke_for_user(user_id).await;

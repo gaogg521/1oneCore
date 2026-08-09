@@ -18,6 +18,7 @@ pub mod models;
 pub mod rbac;
 pub mod routes;
 pub mod service;
+pub mod session_revoker;
 pub mod state;
 
 pub use error::EnterpriseError;
@@ -25,4 +26,5 @@ pub use migrate::run_one_enterprise_migrations;
 pub use models::{CompanyMemberDto, CompanyOverviewDto, EnterpriseIdentityDto};
 pub use routes::one_enterprise_routes;
 pub use service::EnterpriseService;
+pub use session_revoker::{NoopSessionRevoker, SessionRevoker};
 pub use state::OneEnterpriseRouterState;
