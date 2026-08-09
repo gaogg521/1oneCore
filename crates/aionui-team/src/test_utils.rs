@@ -962,6 +962,7 @@ pub(crate) mod workspace_harness {
                 model_settings: "{}".into(),
                 bedrock_config: None,
                 is_full_url: false,
+                managed_by: None,
                 created_at: 0,
                 updated_at: 0,
             }])

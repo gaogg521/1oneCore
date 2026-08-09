@@ -560,6 +560,7 @@ mod tests {
             bedrock_config: None,
             is_full_url: false,
             key_status: ProviderKeyStatus::default(),
+            managed_by: None,
             created_at: 1712345678000,
             updated_at: 1712345678000,
         };
@@ -595,6 +596,7 @@ mod tests {
             bedrock_config: None,
             is_full_url: false,
             key_status: ProviderKeyStatus::default(),
+            managed_by: None,
             created_at: 0,
             updated_at: 0,
         };
