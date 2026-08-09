@@ -59,6 +59,13 @@ const BACKUP_TABLES: &[&str] = &[
     // one-billing
     "one_enterprise_license",
     "one_license_activation",
+    // one-billing T8: the media ledger is unlike `one_usage_events` (excluded
+    // above for being unbounded event telemetry) — it is the actual record of
+    // what was generated, and losing it on a restore is losing the artifacts'
+    // only durable trail (the files themselves are not part of this backup;
+    // only their paths and metadata are).
+    "one_media_assets",
+    "one_media_ledger_settings",
     // one-sso (provider wiring; identities are per-user login state, not config)
     "one_sso_providers",
     // one-devops shared registries

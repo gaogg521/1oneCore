@@ -109,6 +109,38 @@ pub struct DepartmentBudgetDto {
     pub cost_used_micros: i64,
 }
 
+/// One generated media asset, for the T8 consolidated ledger.
+///
+/// One row per FILE, not per generation job — a job that produces 4 images
+/// is 4 rows here, each individually findable.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaAssetDto {
+    pub id: String,
+    pub user_id: String,
+    /// Opaque, same reasoning as `DepartmentBudgetDto.department_id` — this
+    /// crate does not depend on one-org, so it never resolves a name.
+    pub department_id: Option<String>,
+    pub conversation_id: Option<String>,
+    /// "image" | "video"
+    pub kind: String,
+    pub model: Option<String>,
+    pub file_path: String,
+    /// `null` unless the company has opted into prompt retention. Enforced
+    /// server-side at write time — see `billing_005_media_ledger.sql`.
+    pub prompt: Option<String>,
+    pub created_at: i64,
+}
+
+/// Whether a company has opted into storing generation prompts in the
+/// media ledger. Off by default: recording what people typed is a
+/// content-retention decision, not something this product assumes for them.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaLedgerSettingsDto {
+    pub retain_prompts: bool,
+}
+
 /// Result of a checkout attempt. Real payment is not wired: the manual provider
 /// returns `manual`, telling the client to contact an admin for provisioning.
 #[derive(Debug, Clone, Serialize)]

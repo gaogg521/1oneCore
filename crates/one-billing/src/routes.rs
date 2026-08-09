@@ -14,8 +14,11 @@ use aionui_common::license::Tier;
 use aionui_common::now_ms;
 
 use crate::error::BillingError;
-use crate::models::{CheckoutResultDto, DepartmentBudgetDto, LicenseInfoDto, PlanDto, UsageSummaryDto};
-use crate::service::MediaUsage;
+use crate::models::{
+    CheckoutResultDto, DepartmentBudgetDto, LicenseInfoDto, MediaAssetDto, MediaLedgerSettingsDto, PlanDto,
+    UsageSummaryDto,
+};
+use crate::service::{MediaAssetFilters, MediaUsage};
 use crate::state::OneBillingRouterState;
 
 pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
@@ -35,6 +38,12 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
         .route(
             "/api/one/billing/department-budgets",
             get(billing_list_department_budgets).put(billing_set_department_budget),
+        )
+        .route("/api/one/billing/media-ledger/report", post(billing_report_media_asset))
+        .route("/api/one/billing/media-ledger", get(billing_list_media_assets))
+        .route(
+            "/api/one/billing/media-ledger/settings",
+            get(billing_get_media_ledger_settings).put(billing_set_media_ledger_settings),
         )
         .with_state(state)
 }
@@ -313,6 +322,131 @@ async fn billing_checkout(
 /// real provider can post here without a 404.
 async fn billing_webhook(State(_state): State<OneBillingRouterState>) -> Json<ApiResponse<()>> {
     Json(ApiResponse::ok(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportMediaAssetBody {
+    kind: String,
+    model: Option<String>,
+    file_path: String,
+    /// Always sent by the client; the server decides whether it is actually
+    /// persisted based on the company's retention setting.
+    prompt: Option<String>,
+    conversation_id: Option<String>,
+}
+
+/// T8: record one generated file in the consolidated ledger. Called once per
+/// asset (a multi-image job calls this N times), right after the existing
+/// `/media-usage` cost report — additive, does not touch that path. No-op for
+/// personal/no-company callers (enforced in the service layer).
+async fn billing_report_media_asset(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<ReportMediaAssetBody>,
+) -> Result<Json<ApiResponse<()>>, BillingError> {
+    state
+        .service
+        .record_media_asset(
+            &user.id,
+            &body.kind,
+            body.model.as_deref(),
+            &body.file_path,
+            body.prompt.as_deref(),
+            body.conversation_id.as_deref(),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+struct MediaLedgerQuery {
+    kind: Option<String>,
+    model: Option<String>,
+    #[serde(rename = "userId")]
+    user_id: Option<String>,
+    since: Option<i64>,
+    #[serde(rename = "promptContains")]
+    prompt_contains: Option<String>,
+    limit: Option<i64>,
+}
+
+/// Admin-only search over generated media assets (T8).
+async fn billing_list_media_assets(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<MediaLedgerQuery>,
+) -> Result<Json<ApiResponse<Vec<MediaAssetDto>>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden("the media ledger is admin-only".into()));
+    }
+    let eid = state
+        .service
+        .resolve_enterprise_id(&user.id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)?;
+    let assets = state
+        .service
+        .list_media_assets(
+            &eid,
+            MediaAssetFilters {
+                kind: q.kind.as_deref(),
+                model: q.model.as_deref(),
+                user_id: q.user_id.as_deref(),
+                since: q.since,
+                prompt_contains: q.prompt_contains.as_deref(),
+                limit: q.limit,
+            },
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(assets)))
+}
+
+/// Whether the company has opted into storing generation prompts (T8).
+async fn billing_get_media_ledger_settings(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<MediaLedgerSettingsDto>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden("media ledger settings are admin-only".into()));
+    }
+    let eid = state
+        .service
+        .resolve_enterprise_id(&user.id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)?;
+    let retain_prompts = state.service.media_ledger_retain_prompts(&eid).await?;
+    Ok(Json(ApiResponse::ok(MediaLedgerSettingsDto { retain_prompts })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetMediaLedgerSettingsBody {
+    retain_prompts: bool,
+}
+
+/// Opt the company in or out of prompt retention (T8). Admin-only — this is a
+/// content-retention decision, not a member's own business.
+async fn billing_set_media_ledger_settings(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(body): Json<SetMediaLedgerSettingsBody>,
+) -> Result<Json<ApiResponse<MediaLedgerSettingsDto>>, BillingError> {
+    if !state.service.is_billing_admin(&user.id).await? {
+        return Err(BillingError::Forbidden("media ledger settings are admin-only".into()));
+    }
+    let eid = state
+        .service
+        .resolve_enterprise_id(&user.id)
+        .await?
+        .ok_or(BillingError::EnterpriseNotFound)?;
+    state
+        .service
+        .set_media_ledger_retain_prompts(&eid, body.retain_prompts)
+        .await?;
+    Ok(Json(ApiResponse::ok(MediaLedgerSettingsDto {
+        retain_prompts: body.retain_prompts,
+    })))
 }
 
 /// Every department budget for the caller's company (T7). Admin-only, same

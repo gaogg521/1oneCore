@@ -16,7 +16,8 @@ use sqlx::SqlitePool;
 
 use crate::error::BillingError;
 use crate::models::{
-    CheckoutResultDto, DepartmentBudgetDto, EntitlementDto, LicenseInfoDto, PlanDto, UsageBucketDto, UsageSummaryDto,
+    CheckoutResultDto, DepartmentBudgetDto, EntitlementDto, LicenseInfoDto, MediaAssetDto, PlanDto, UsageBucketDto,
+    UsageSummaryDto,
 };
 
 /// Pluggable payment backend. The default `ManualBillingProvider` is a stub
@@ -89,6 +90,57 @@ pub struct MediaUsage<'a> {
     /// an admin follow a charge back to somewhere. Optional because a caller may
     /// genuinely not have one.
     pub conversation_id: Option<&'a str>,
+}
+
+/// T8 ledger search filters. A named struct (not positional params) because
+/// there are more than clippy's `too_many_arguments` threshold once
+/// `enterprise_id` and `&self` are added, and because most of these are the
+/// same primitive `Option<&str>` shape — position-mixups would compile.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MediaAssetFilters<'a> {
+    pub kind: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub user_id: Option<&'a str>,
+    pub since: Option<i64>,
+    /// Only meaningful when the company has opted into prompt retention —
+    /// see `list_media_assets`'s doc comment for why no special-casing is
+    /// needed when it hasn't.
+    pub prompt_contains: Option<&'a str>,
+    /// Defaults to 200, clamped to [1, 1000] — this is a search UI, not an
+    /// unbounded export.
+    pub limit: Option<i64>,
+}
+
+/// Raw row shape for `list_media_assets`, before the enterprise-scoped filter
+/// context is folded away — `sqlx::FromRow` needs a concrete struct, and
+/// `enterprise_id` itself is not projected back (it's already the filter).
+#[derive(sqlx::FromRow)]
+struct MediaAssetRow {
+    id: String,
+    user_id: String,
+    department_id: Option<String>,
+    conversation_id: Option<String>,
+    kind: String,
+    model: Option<String>,
+    file_path: String,
+    prompt: Option<String>,
+    created_at: i64,
+}
+
+impl MediaAssetRow {
+    fn into_dto(self) -> MediaAssetDto {
+        MediaAssetDto {
+            id: self.id,
+            user_id: self.user_id,
+            department_id: self.department_id,
+            conversation_id: self.conversation_id,
+            kind: self.kind,
+            model: self.model,
+            file_path: self.file_path,
+            prompt: self.prompt,
+            created_at: self.created_at,
+        }
+    }
 }
 
 /// Ordering for "is this an upgrade?". Kept local rather than deriving `Ord` on
@@ -500,6 +552,136 @@ impl BillingService {
             });
         }
         Ok(out)
+    }
+
+    /// T8: whether this company has opted into storing generation prompts.
+    /// Absent row = default = never store them.
+    pub async fn media_ledger_retain_prompts(&self, enterprise_id: &str) -> Result<bool, BillingError> {
+        let retain: Option<bool> =
+            sqlx::query_scalar("SELECT retain_prompts FROM one_media_ledger_settings WHERE enterprise_id = ?")
+                .bind(enterprise_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(retain.unwrap_or(false))
+    }
+
+    /// Admin-only: opt the company in or out of prompt retention.
+    pub async fn set_media_ledger_retain_prompts(
+        &self,
+        enterprise_id: &str,
+        retain_prompts: bool,
+    ) -> Result<(), BillingError> {
+        sqlx::query(
+            "INSERT INTO one_media_ledger_settings (enterprise_id, retain_prompts, updated_at) \
+             VALUES (?, ?, ?) \
+             ON CONFLICT(enterprise_id) DO UPDATE SET \
+                 retain_prompts = excluded.retain_prompts, updated_at = excluded.updated_at",
+        )
+        .bind(enterprise_id)
+        .bind(retain_prompts)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// T8: record one generated FILE in the consolidated ledger (a job that
+    /// produces N assets is N calls, not one). Enterprise-scoped only — a
+    /// personal/no-company user is a no-op, same red line every other
+    /// governance surface in this crate honors, and it keeps this table from
+    /// silently becoming a per-user media index nobody asked for.
+    ///
+    /// `prompt` is always accepted from the caller but only persisted when
+    /// the company has opted in — enforced HERE, not trusted from the client,
+    /// same principle as every other policy check in this file.
+    pub async fn record_media_asset(
+        &self,
+        user_id: &str,
+        kind: &str,
+        model: Option<&str>,
+        file_path: &str,
+        prompt: Option<&str>,
+        conversation_id: Option<&str>,
+    ) -> Result<(), BillingError> {
+        let Some(enterprise_id) = self.resolve_enterprise_id(user_id).await? else {
+            return Ok(());
+        };
+        let department_id = self.resolve_department_id(user_id).await?;
+        let retained_prompt = if self.media_ledger_retain_prompts(&enterprise_id).await? {
+            prompt
+        } else {
+            None
+        };
+        sqlx::query(
+            "INSERT INTO one_media_assets \
+                (id, user_id, enterprise_id, department_id, conversation_id, kind, model, file_path, prompt, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(generate_prefixed_id("media"))
+        .bind(user_id)
+        .bind(&enterprise_id)
+        .bind(department_id)
+        .bind(conversation_id)
+        .bind(kind)
+        .bind(model)
+        .bind(file_path)
+        .bind(retained_prompt)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// T8: admin-only search over the ledger. `filters.prompt_contains` is
+    /// harmless to pass even when the company never opted into retention —
+    /// the column is NULL for every row in that case, so a `LIKE` against it
+    /// simply matches nothing, no special-casing required.
+    pub async fn list_media_assets(
+        &self,
+        enterprise_id: &str,
+        filters: MediaAssetFilters<'_>,
+    ) -> Result<Vec<MediaAssetDto>, BillingError> {
+        let mut sql = String::from(
+            "SELECT id, user_id, department_id, conversation_id, kind, model, file_path, prompt, created_at \
+             FROM one_media_assets WHERE enterprise_id = ?",
+        );
+        if filters.kind.is_some() {
+            sql.push_str(" AND kind = ?");
+        }
+        if filters.model.is_some() {
+            sql.push_str(" AND model = ?");
+        }
+        if filters.user_id.is_some() {
+            sql.push_str(" AND user_id = ?");
+        }
+        if filters.since.is_some() {
+            sql.push_str(" AND created_at >= ?");
+        }
+        if filters.prompt_contains.is_some() {
+            sql.push_str(" AND prompt LIKE ?");
+        }
+        sql.push_str(" ORDER BY created_at DESC LIMIT ?");
+
+        let mut query = sqlx::query_as::<_, MediaAssetRow>(&sql).bind(enterprise_id);
+        if let Some(kind) = filters.kind {
+            query = query.bind(kind);
+        }
+        if let Some(model) = filters.model {
+            query = query.bind(model);
+        }
+        if let Some(user_id) = filters.user_id {
+            query = query.bind(user_id);
+        }
+        if let Some(since) = filters.since {
+            query = query.bind(since);
+        }
+        if let Some(needle) = filters.prompt_contains {
+            query = query.bind(format!("%{}%", needle.replace('%', "\\%").replace('_', "\\_")));
+        }
+        query = query.bind(filters.limit.unwrap_or(200).clamp(1, 1000));
+
+        let rows = query.fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(MediaAssetRow::into_dto).collect())
     }
 
     /// Pre-send gate (P1-2): reject when the company is over its spend budget,
@@ -1685,5 +1867,187 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(depts, vec![Some("deptA".to_owned()), Some("deptB".to_owned())]);
+    }
+
+    /// T8: enterprise-scoped only — a personal/no-company user's generation
+    /// must never create a ledger row. Same red line every other governance
+    /// surface in this crate honors.
+    #[tokio::test]
+    async fn record_media_asset_is_a_noop_for_personal_users() {
+        let svc = service().await;
+        svc.record_media_asset(
+            "nobody",
+            "image",
+            Some("gpt-image-2"),
+            "/tmp/img.png",
+            Some("a cat"),
+            None,
+        )
+        .await
+        .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_media_assets")
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    /// Prompt retention defaults to OFF and is enforced server-side: the
+    /// caller can send whatever it wants, only the company's own opt-in
+    /// decides whether it lands in the column.
+    #[tokio::test]
+    async fn media_asset_prompt_is_retained_only_after_company_opts_in() {
+        let svc = service().await;
+        add_members(&svc, "entL", 1).await;
+        sqlx::query("UPDATE one_enterprise_members SET user_id = 'lee' WHERE enterprise_id = 'entL'")
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        add_user_org(&svc, "lee", Some("deptL")).await;
+
+        // Default: prompt is dropped even though the caller sent one.
+        svc.record_media_asset(
+            "lee",
+            "image",
+            Some("gpt-image-2"),
+            "/w/a.png",
+            Some("a red fox"),
+            Some("c1"),
+        )
+        .await
+        .unwrap();
+        let prompt_before: Option<String> =
+            sqlx::query_scalar("SELECT prompt FROM one_media_assets WHERE file_path = '/w/a.png'")
+                .fetch_one(&svc.pool)
+                .await
+                .unwrap();
+        assert!(prompt_before.is_none());
+
+        // Opt in, then the same caller behavior actually retains it.
+        svc.set_media_ledger_retain_prompts("entL", true).await.unwrap();
+        assert!(svc.media_ledger_retain_prompts("entL").await.unwrap());
+        svc.record_media_asset(
+            "lee",
+            "image",
+            Some("gpt-image-2"),
+            "/w/b.png",
+            Some("a blue fox"),
+            Some("c1"),
+        )
+        .await
+        .unwrap();
+        let prompt_after: Option<String> =
+            sqlx::query_scalar("SELECT prompt FROM one_media_assets WHERE file_path = '/w/b.png'")
+                .fetch_one(&svc.pool)
+                .await
+                .unwrap();
+        assert_eq!(prompt_after.as_deref(), Some("a blue fox"));
+
+        // Department was resolved and attached, same as T7's usage rows.
+        let department: Option<String> =
+            sqlx::query_scalar("SELECT department_id FROM one_media_assets WHERE file_path = '/w/b.png'")
+                .fetch_one(&svc.pool)
+                .await
+                .unwrap();
+        assert_eq!(department.as_deref(), Some("deptL"));
+    }
+
+    #[tokio::test]
+    async fn list_media_assets_filters_by_kind_model_user_since_and_prompt() {
+        let svc = service().await;
+        svc.set_media_ledger_retain_prompts("entS", true).await.unwrap();
+        // `record_media_asset` requires a real enterprise membership row to
+        // attribute to (T7/T8 both no-op for personal users) — seeding rows
+        // directly here keeps the test focused on `list_media_assets`'s own
+        // filter logic rather than membership setup.
+        let now = aionui_common::now_ms();
+        for (i, (user, kind, model, path, prompt)) in [
+            ("ann", "image", "gpt-image-2", "/w/1.png", "a cat in a hat"),
+            ("ann", "video", "seedance-2-0-fast", "/w/2.mp4", "a cat running"),
+            ("bo", "image", "flux-pro", "/w/3.png", "a dog"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            sqlx::query(
+                "INSERT INTO one_media_assets (id, user_id, enterprise_id, department_id, conversation_id, kind, model, file_path, prompt, created_at) \
+                 VALUES (?, ?, 'entS', NULL, NULL, ?, ?, ?, ?, ?)",
+            )
+            .bind(format!("media_{i}"))
+            .bind(user)
+            .bind(kind)
+            .bind(model)
+            .bind(path)
+            .bind(prompt)
+            .bind(now + i as i64)
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        }
+
+        let by_kind = svc
+            .list_media_assets(
+                "entS",
+                MediaAssetFilters {
+                    kind: Some("video"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(by_kind.len(), 1);
+        assert_eq!(by_kind[0].file_path, "/w/2.mp4");
+
+        let by_user = svc
+            .list_media_assets(
+                "entS",
+                MediaAssetFilters {
+                    user_id: Some("ann"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(by_user.len(), 2);
+
+        let by_prompt = svc
+            .list_media_assets(
+                "entS",
+                MediaAssetFilters {
+                    prompt_contains: Some("cat"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(by_prompt.len(), 2);
+
+        let by_since = svc
+            .list_media_assets(
+                "entS",
+                MediaAssetFilters {
+                    since: Some(now + 2),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(by_since.len(), 1);
+        assert_eq!(by_since[0].file_path, "/w/3.png");
+
+        // A company that never opted into retention has NULL prompts, so a
+        // prompt search finds nothing — no special-casing, just how NULL LIKE
+        // behaves.
+        let unretained = svc
+            .list_media_assets(
+                "entU",
+                MediaAssetFilters {
+                    prompt_contains: Some("cat"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(unretained.is_empty());
     }
 }
