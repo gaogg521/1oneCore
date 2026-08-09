@@ -20,14 +20,15 @@ use aionui_common::{decrypt_string, encrypt_string, now_ms};
 use aionui_db::IUserRepository;
 
 use crate::credential_revoker::{CredentialRevoker, NoopCredentialRevoker};
+use crate::directory_bridge::DirectoryDepartmentRef;
 use crate::email::{EmailSender, SendEmailResult, StubEmailSender};
 use crate::error::OrgError;
 use crate::integration::{IntegrationCredentials, IntegrationProvider, IntegrationTestResult, StubIntegrationProvider};
 use crate::models::{
-    AdminUserDto, AgentAuditEntry, AuditLogRow, DEFAULT_TENANT_ID, DepartmentDto, EnterpriseTenantDto, IntegrationDto,
-    InviteDto, InviteRow, MyTenantDto, OrgContextDto, ROLE_MEMBER, ROLE_ORG_ADMIN, ROLE_SYSTEM_ADMIN, ResetLocalResult,
-    RuntimeNodeDto, RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, SmtpConfigDto, TenantRow, UserOrgRow, is_admin_role,
-    is_enterprise_tenant_id, is_system_admin_role,
+    AdminUserDto, AgentAuditEntry, AuditLogRow, DEFAULT_TENANT_ID, DepartmentDto, DirectoryMapReport,
+    EnterpriseTenantDto, IntegrationDto, InviteDto, InviteRow, MyTenantDto, OrgContextDto, ROLE_MEMBER, ROLE_ORG_ADMIN,
+    ROLE_SYSTEM_ADMIN, ResetLocalResult, RuntimeNodeDto, RuntimeNodeRow, SYSTEM_DEFAULT_USER_ID, SmtpConfigDto,
+    TenantRow, UserOrgRow, is_admin_role, is_enterprise_tenant_id, is_system_admin_role,
 };
 
 pub struct OrgService {
@@ -1792,6 +1793,282 @@ impl OrgService {
         Ok(())
     }
 
+    /// Move a department under a different parent (or to top-level, `None`)
+    /// without delete+recreate — which `delete_department` refuses whenever
+    /// there are children or assigned members, and which would orphan
+    /// `one_user_org.department_id` (a bare FK to the department's id) and,
+    /// for a directory-mapped row, the id a re-sync matches against.
+    pub async fn set_department_parent(
+        &self,
+        tenant_id: &str,
+        department_id: &str,
+        new_parent_id: Option<&str>,
+    ) -> Result<DepartmentDto, OrgError> {
+        if Some(department_id) == new_parent_id {
+            return Err(OrgError::BadRequest("a department cannot be its own parent".into()));
+        }
+        if let Some(pid) = new_parent_id {
+            let exists: bool =
+                sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_departments WHERE id = ? AND tenant_id = ?")
+                    .bind(pid)
+                    .bind(tenant_id)
+                    .fetch_one(&self.pool)
+                    .await?;
+            if !exists {
+                return Err(OrgError::DepartmentNotFound);
+            }
+            // Cycle guard: the new parent must not be `department_id` itself
+            // (checked above) or any of its descendants — walking that chain
+            // back up would otherwise loop the tree.
+            if self.is_descendant_of(tenant_id, pid, department_id).await? {
+                return Err(OrgError::BadRequest(
+                    "cannot move a department under its own descendant".into(),
+                ));
+            }
+        }
+        let updated =
+            sqlx::query("UPDATE one_departments SET parent_id = ?, updated_at = ? WHERE id = ? AND tenant_id = ?")
+                .bind(new_parent_id)
+                .bind(now_ms() as i64)
+                .bind(department_id)
+                .bind(tenant_id)
+                .execute(&self.pool)
+                .await?;
+        if updated.rows_affected() == 0 {
+            return Err(OrgError::DepartmentNotFound);
+        }
+        sqlx::query_as::<_, DepartmentDto>("SELECT * FROM one_departments WHERE id = ?")
+            .bind(department_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Whether `candidate` is `ancestor` or a descendant of it, by walking
+    /// `candidate`'s parent chain. Bounded by `one_departments`' row count so
+    /// a corrupted chain (should never happen — every insert here is FK- and
+    /// tenant-checked) cannot spin forever.
+    async fn is_descendant_of(&self, tenant_id: &str, candidate: &str, ancestor: &str) -> Result<bool, OrgError> {
+        let mut current = candidate.to_string();
+        let mut hops = 0u32;
+        loop {
+            if current == ancestor {
+                return Ok(true);
+            }
+            hops += 1;
+            if hops > 10_000 {
+                return Ok(false);
+            }
+            let parent: Option<String> =
+                sqlx::query_scalar("SELECT parent_id FROM one_departments WHERE id = ? AND tenant_id = ?")
+                    .bind(&current)
+                    .bind(tenant_id)
+                    .fetch_optional(&self.pool)
+                    .await?
+                    .flatten();
+            match parent {
+                Some(p) => current = p,
+                None => return Ok(false),
+            }
+        }
+    }
+
+    /// Map a subtree of the company directory mirror into this project
+    /// group's department tree (T6 stage 3). `all` is the deployment's whole
+    /// directory mirror (the route handler reads it from
+    /// `OneOrgRouterState.directory_source` — a router-state-level bridge,
+    /// like `company_resolver`, rather than a field on this service, because
+    /// one-enterprise is constructed AFTER one-org in `aionui-app` and baking
+    /// the dependency into this service's constructor would create a
+    /// construction-order cycle between the two). `root_external_id` is the
+    /// directory department to use as the mapping's root — it becomes a
+    /// TOP-LEVEL local department regardless of its own upstream parent
+    /// (mapping one branch must not try to also reconstruct everything above
+    /// it, which may not even make sense as a project-group tree).
+    ///
+    /// Re-runnable: matches existing mapped rows by `directory_external_id`
+    /// and updates name/parent in place rather than duplicating. A directory
+    /// node that dropped out of the subtree since the last run is removed
+    /// via `delete_department` — which is what keeps this function from ever
+    /// having to reimplement "only if empty of children/members": that guard
+    /// already exists and already protects any manually-added child hanging
+    /// off a mapped row, so a stale row with real local structure under it is
+    /// left in place and reported, not force-deleted.
+    ///
+    /// **Never touches a `source IS NULL` (manual) row.** The three
+    /// invariants here mirror `aionui-system::managed_provider`: only ever
+    /// create/update/delete rows this mapping owns, match by a stable
+    /// externally-derived key so re-sync updates instead of duplicating, and
+    /// scope deletion to exactly the set this run determined it owns.
+    pub async fn map_directory_subtree(
+        &self,
+        tenant_id: &str,
+        root_external_id: &str,
+        all: &[DirectoryDepartmentRef],
+    ) -> Result<DirectoryMapReport, OrgError> {
+        let root_external_id = root_external_id.trim();
+        if root_external_id.is_empty() {
+            return Err(OrgError::BadRequest("a directory department must be selected".into()));
+        }
+        if all.is_empty() {
+            return Err(OrgError::BadRequest(
+                "no company directory data to map yet; sync the directory first".into(),
+            ));
+        }
+        if !all.iter().any(|d| d.external_id == root_external_id) {
+            return Err(OrgError::BadRequest("unknown directory department".into()));
+        }
+
+        // BFS from the root, following parent_external_id edges downward, to
+        // find every node "under" it — the subtree this mapping owns.
+        let mut subtree_ids = std::collections::HashSet::new();
+        subtree_ids.insert(root_external_id.to_owned());
+        loop {
+            let before = subtree_ids.len();
+            for d in all {
+                if let Some(p) = &d.parent_external_id
+                    && subtree_ids.contains(p)
+                {
+                    subtree_ids.insert(d.external_id.clone());
+                }
+            }
+            if subtree_ids.len() == before {
+                break;
+            }
+        }
+        let subtree: Vec<&DirectoryDepartmentRef> =
+            all.iter().filter(|d| subtree_ids.contains(&d.external_id)).collect();
+
+        // Process parents before children: a node's local `parent_id` needs
+        // its parent's local id to already be known.
+        let mut ordered: Vec<&DirectoryDepartmentRef> = Vec::new();
+        let mut frontier = vec![root_external_id.to_owned()];
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(root_external_id.to_owned());
+        while !frontier.is_empty() {
+            let mut next = Vec::new();
+            for ext in &frontier {
+                if let Some(d) = subtree.iter().find(|d| &d.external_id == ext) {
+                    ordered.push(d);
+                }
+                for d in &subtree {
+                    if d.parent_external_id.as_deref() == Some(ext.as_str()) && visited.insert(d.external_id.clone()) {
+                        next.push(d.external_id.clone());
+                    }
+                }
+            }
+            frontier = next;
+        }
+
+        // Reject an overlap with a DIFFERENT mapping before writing anything:
+        // if this subtree contains a node another mapping already owns (two
+        // admins mapped overlapping branches, or the same admin mapped a
+        // broad root and later a narrower one inside it), inserting it here
+        // would collide with the unique `(tenant_id, directory_external_id)`
+        // index. Caught explicitly so the admin gets a reason, not a raw
+        // constraint-violation 500.
+        let subtree_externals: Vec<&str> = subtree.iter().map(|d| d.external_id.as_str()).collect();
+        if !subtree_externals.is_empty() {
+            let placeholders = vec!["?"; subtree_externals.len()].join(", ");
+            let sql = format!(
+                "SELECT name FROM one_departments \
+                 WHERE tenant_id = ? AND source = 'directory' \
+                   AND directory_map_root_external_id != ? \
+                   AND directory_external_id IN ({placeholders}) LIMIT 1"
+            );
+            let mut query = sqlx::query_scalar::<_, String>(&sql)
+                .bind(tenant_id)
+                .bind(root_external_id);
+            for ext in &subtree_externals {
+                query = query.bind(*ext);
+            }
+            if let Some(conflicting_name) = query.fetch_optional(&self.pool).await? {
+                return Err(OrgError::BadRequest(format!(
+                    "'{conflicting_name}' is already mapped by a different directory mapping in this project group; \
+                     overlapping mappings are not supported"
+                )));
+            }
+        }
+
+        // Scoped to THIS root, not every directory-mapped row in the tenant —
+        // otherwise mapping subtree B after subtree A would see A's rows as
+        // "fell out of scope" and try to remove an unrelated, still-valid
+        // mapping this run never touched. `directory_map_root_external_id` is
+        // what makes two independent mappings coexist safely.
+        let existing: Vec<(String, Option<String>, String)> = sqlx::query_as(
+            "SELECT id, directory_external_id, name FROM one_departments \
+             WHERE tenant_id = ? AND source = 'directory' AND directory_map_root_external_id = ?",
+        )
+        .bind(tenant_id)
+        .bind(root_external_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut by_external: std::collections::HashMap<String, String> = existing
+            .iter()
+            .filter_map(|(id, ext, _)| ext.clone().map(|e| (e, id.clone())))
+            .collect();
+
+        let mut report = DirectoryMapReport::default();
+        let now = now_ms() as i64;
+
+        for d in &ordered {
+            let is_root = d.external_id == root_external_id;
+            let local_parent_id: Option<String> = if is_root {
+                None
+            } else {
+                d.parent_external_id.as_ref().and_then(|p| by_external.get(p).cloned())
+            };
+
+            if let Some(existing_id) = by_external.get(&d.external_id).cloned() {
+                sqlx::query("UPDATE one_departments SET name = ?, parent_id = ?, updated_at = ? WHERE id = ?")
+                    .bind(&d.name)
+                    .bind(&local_parent_id)
+                    .bind(now)
+                    .bind(&existing_id)
+                    .execute(&self.pool)
+                    .await?;
+                report.updated.push(d.name.clone());
+            } else {
+                let id = short_id("dept");
+                sqlx::query(
+                    "INSERT INTO one_departments \
+                     (id, tenant_id, parent_id, name, source, directory_external_id, \
+                      directory_map_root_external_id, created_at, updated_at) \
+                     VALUES (?, ?, ?, ?, 'directory', ?, ?, ?, ?)",
+                )
+                .bind(&id)
+                .bind(tenant_id)
+                .bind(&local_parent_id)
+                .bind(&d.name)
+                .bind(&d.external_id)
+                .bind(root_external_id)
+                .bind(now)
+                .bind(now)
+                .execute(&self.pool)
+                .await?;
+                by_external.insert(d.external_id.clone(), id);
+                report.created.push(d.name.clone());
+            }
+        }
+
+        // Anything previously mapped that fell out of the subtree this run —
+        // remove it, but only if `delete_department`'s existing safety rule
+        // allows it (no children, no assigned members). A row it refuses is
+        // real local structure and is reported, not force-deleted.
+        for (id, ext, name) in &existing {
+            let Some(ext) = ext else { continue };
+            if subtree_ids.contains(ext) {
+                continue;
+            }
+            match self.delete_department(tenant_id, id).await {
+                Ok(()) => report.removed.push(name.clone()),
+                Err(_) => report.kept_with_local_data.push(name.clone()),
+            }
+        }
+
+        Ok(report)
+    }
+
     /// Promote/demote a user's role within a tenant. `role` must be one of
     /// `member`/`org_admin`/`system_admin` — validated by the caller (route
     /// handler) so we keep the service free of string validation.
@@ -2179,6 +2456,361 @@ mod tests {
                 .code(),
             "FORBIDDEN"
         );
+    }
+
+    #[tokio::test]
+    async fn set_department_parent_moves_and_rejects_cycles() {
+        let (_db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let eng = service
+            .create_department(&tenant_id, "Engineering", None)
+            .await
+            .unwrap();
+        let backend = service
+            .create_department(&tenant_id, "Backend", Some(&eng.id))
+            .await
+            .unwrap();
+        let sales = service.create_department(&tenant_id, "Sales", None).await.unwrap();
+
+        // Move Backend under Sales instead of Engineering.
+        let moved = service
+            .set_department_parent(&tenant_id, &backend.id, Some(&sales.id))
+            .await
+            .unwrap();
+        assert_eq!(moved.parent_id.as_deref(), Some(sales.id.as_str()));
+
+        // Move it back to top-level.
+        let top = service
+            .set_department_parent(&tenant_id, &backend.id, None)
+            .await
+            .unwrap();
+        assert_eq!(top.parent_id, None);
+
+        // A department cannot become its own parent.
+        assert_eq!(
+            service
+                .set_department_parent(&tenant_id, &eng.id, Some(&eng.id))
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+
+        // Cannot move a department under its own descendant — would loop the
+        // tree. Backend is currently top-level; put it back under Engineering
+        // first so this is a genuine cycle attempt.
+        service
+            .set_department_parent(&tenant_id, &backend.id, Some(&eng.id))
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .set_department_parent(&tenant_id, &eng.id, Some(&backend.id))
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+
+        // Unknown parent → DEPARTMENT_NOT_FOUND.
+        assert_eq!(
+            service
+                .set_department_parent(&tenant_id, &eng.id, Some("nope"))
+                .await
+                .unwrap_err()
+                .code(),
+            "DEPARTMENT_NOT_FOUND"
+        );
+    }
+
+    fn dref(external_id: &str, parent: Option<&str>, name: &str) -> DirectoryDepartmentRef {
+        DirectoryDepartmentRef {
+            external_id: external_id.to_owned(),
+            parent_external_id: parent.map(str::to_owned),
+            name: name.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn map_directory_subtree_builds_the_tree_with_root_as_top_level() {
+        let (_db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        // od_root's own upstream parent (od_company) is deliberately NOT part
+        // of the mapped subtree — mapping one branch must not try to also
+        // reconstruct everything above it.
+        let all = vec![
+            dref("od_company", None, "总公司"),
+            dref("od_root", Some("od_company"), "研发中心"),
+            dref("od_child", Some("od_root"), "后端组"),
+            dref("od_other", None, "不相关的部门"),
+        ];
+
+        let report = service
+            .map_directory_subtree(&tenant_id, "od_root", &all)
+            .await
+            .unwrap();
+        assert_eq!(report.created, vec!["研发中心", "后端组"]);
+        assert!(report.updated.is_empty());
+
+        let depts = service.list_departments(&tenant_id).await.unwrap();
+        assert_eq!(depts.len(), 2, "only the mapped subtree, not od_company or od_other");
+        let root = depts.iter().find(|d| d.name == "研发中心").unwrap();
+        assert_eq!(root.parent_id, None, "the mapping root is always top-level locally");
+        assert_eq!(root.source.as_deref(), Some("directory"));
+        let child = depts.iter().find(|d| d.name == "后端组").unwrap();
+        assert_eq!(child.parent_id.as_deref(), Some(root.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn map_directory_subtree_is_rerunnable_updates_in_place() {
+        let (_db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        let first = vec![
+            dref("od_root", None, "研发中心"),
+            dref("od_child", Some("od_root"), "后端组"),
+        ];
+        service
+            .map_directory_subtree(&tenant_id, "od_root", &first)
+            .await
+            .unwrap();
+        let ids_before: std::collections::HashSet<_> = service
+            .list_departments(&tenant_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+
+        // Upstream renamed the child. Re-running must update the SAME row,
+        // not create a second one.
+        let renamed = vec![
+            dref("od_root", None, "研发中心"),
+            dref("od_child", Some("od_root"), "后端与平台组"),
+        ];
+        let report = service
+            .map_directory_subtree(&tenant_id, "od_root", &renamed)
+            .await
+            .unwrap();
+        assert_eq!(report.updated, vec!["研发中心", "后端与平台组"]);
+        assert!(report.created.is_empty(), "re-sync must not duplicate");
+
+        let depts = service.list_departments(&tenant_id).await.unwrap();
+        assert_eq!(depts.len(), 2);
+        let ids_after: std::collections::HashSet<_> = depts.iter().map(|d| d.id.clone()).collect();
+        assert_eq!(ids_before, ids_after, "same rows, just updated");
+        assert!(depts.iter().any(|d| d.name == "后端与平台组"));
+    }
+
+    /// ⚠️ The safety rule the whole reconcile step leans on: a mapped row that
+    /// fell out of the subtree is removed ONLY if `delete_department`'s
+    /// existing empty-check allows it. One with a manually-added child or an
+    /// assigned member is real local structure and must survive, reported
+    /// instead of force-deleted.
+    #[tokio::test]
+    async fn map_directory_subtree_keeps_stale_rows_that_have_local_data() {
+        let (_db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        let with_two = vec![
+            dref("od_root", None, "研发中心"),
+            dref("od_child", Some("od_root"), "后端组"),
+        ];
+        service
+            .map_directory_subtree(&tenant_id, "od_root", &with_two)
+            .await
+            .unwrap();
+        let backend_id = service
+            .list_departments(&tenant_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|d| d.name == "后端组")
+            .unwrap()
+            .id;
+
+        // A member gets assigned to the mapped department locally.
+        let alice = create_user(&user_repo, "alice").await;
+        let (_, code) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, None, None)
+            .await
+            .unwrap();
+        service.join_with_invite(&alice, &code).await.unwrap();
+        service
+            .assign_member_department(&tenant_id, &alice, Some(&backend_id))
+            .await
+            .unwrap();
+
+        // Upstream deletes the child department entirely.
+        let root_only = vec![dref("od_root", None, "研发中心")];
+        let report = service
+            .map_directory_subtree(&tenant_id, "od_root", &root_only)
+            .await
+            .unwrap();
+        assert_eq!(report.kept_with_local_data, vec!["后端组"]);
+        assert!(report.removed.is_empty());
+
+        // Still there, still has the member assigned.
+        let depts = service.list_departments(&tenant_id).await.unwrap();
+        assert!(depts.iter().any(|d| d.id == backend_id));
+        let alice_row = service
+            .list_users(&tenant_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|u| u.user_id == alice)
+            .unwrap();
+        assert_eq!(alice_row.department_id.as_deref(), Some(backend_id.as_str()));
+    }
+
+    /// A department dropping out of the subtree with nothing local hanging
+    /// off it is actually removed — not just marked/kept forever.
+    #[tokio::test]
+    async fn map_directory_subtree_removes_empty_stale_rows() {
+        let (_db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let with_two = vec![
+            dref("od_root", None, "研发中心"),
+            dref("od_child", Some("od_root"), "后端组"),
+        ];
+        service
+            .map_directory_subtree(&tenant_id, "od_root", &with_two)
+            .await
+            .unwrap();
+
+        let root_only = vec![dref("od_root", None, "研发中心")];
+        let report = service
+            .map_directory_subtree(&tenant_id, "od_root", &root_only)
+            .await
+            .unwrap();
+        assert_eq!(report.removed, vec!["后端组"]);
+        assert_eq!(service.list_departments(&tenant_id).await.unwrap().len(), 1);
+    }
+
+    /// ⚠️ The core "never touch manual rows" invariant, mirrored from
+    /// `managed_provider`. A manually-created department that happens to have
+    /// the same name as a directory-mapped one must survive a sync untouched
+    /// and unrelated — matching is by `directory_external_id`, never by name.
+    #[tokio::test]
+    async fn map_directory_subtree_never_touches_manual_departments() {
+        let (_db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let manual = service.create_department(&tenant_id, "研发中心", None).await.unwrap();
+
+        let all = vec![dref("od_root", None, "研发中心")];
+        let report = service
+            .map_directory_subtree(&tenant_id, "od_root", &all)
+            .await
+            .unwrap();
+        assert_eq!(report.created, vec!["研发中心"]);
+
+        let depts = service.list_departments(&tenant_id).await.unwrap();
+        assert_eq!(depts.len(), 2, "the manual row and the mapped row are separate");
+        let manual_row = depts.iter().find(|d| d.id == manual.id).unwrap();
+        assert_eq!(manual_row.source, None, "untouched by the sync");
+
+        // A second run must not disturb the manual row either.
+        service
+            .map_directory_subtree(&tenant_id, "od_root", &all)
+            .await
+            .unwrap();
+        assert_eq!(service.list_departments(&tenant_id).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn map_directory_subtree_rejects_empty_or_unknown_root() {
+        let (_db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        // No directory data synced yet.
+        assert_eq!(
+            service
+                .map_directory_subtree(&tenant_id, "od_root", &[])
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+
+        let all = vec![dref("od_root", None, "研发中心")];
+        assert_eq!(
+            service
+                .map_directory_subtree(&tenant_id, "od_ghost", &all)
+                .await
+                .unwrap_err()
+                .code(),
+            "BAD_REQUEST"
+        );
+    }
+
+    /// ⚠️ The regression this test guards against was found on the real dev
+    /// backend, not in a unit test: mapping subtree B after subtree A had
+    /// already been mapped silently deleted every one of A's departments,
+    /// because the reconcile step originally scoped "existing mapped rows" to
+    /// the whole tenant instead of to the root being mapped this run.
+    #[tokio::test]
+    async fn two_independent_directory_mappings_coexist() {
+        let (_db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        let all = vec![dref("od_eng", None, "研发中心"), dref("od_sales", None, "销售中心")];
+
+        service.map_directory_subtree(&tenant_id, "od_eng", &all).await.unwrap();
+        let after_first = service.list_departments(&tenant_id).await.unwrap();
+        assert_eq!(after_first.len(), 1);
+
+        // Mapping a completely unrelated second root must not touch the
+        // first mapping at all.
+        let report = service
+            .map_directory_subtree(&tenant_id, "od_sales", &all)
+            .await
+            .unwrap();
+        assert_eq!(report.created, vec!["销售中心"]);
+        assert!(
+            report.removed.is_empty(),
+            "an unrelated mapping's departments must never be reported as removed"
+        );
+
+        let after_second = service.list_departments(&tenant_id).await.unwrap();
+        assert_eq!(after_second.len(), 2, "both mappings must coexist");
+        assert!(after_second.iter().any(|d| d.name == "研发中心"));
+        assert!(after_second.iter().any(|d| d.name == "销售中心"));
+
+        // Re-running the FIRST mapping again still only touches its own rows.
+        let report2 = service.map_directory_subtree(&tenant_id, "od_eng", &all).await.unwrap();
+        assert_eq!(report2.updated, vec!["研发中心"]);
+        assert!(report2.removed.is_empty());
+        assert_eq!(service.list_departments(&tenant_id).await.unwrap().len(), 2);
+    }
+
+    /// Mapping a root whose subtree overlaps a node another mapping already
+    /// owns must fail clearly rather than hit the unique-index constraint.
+    #[tokio::test]
+    async fn overlapping_directory_mappings_are_rejected() {
+        let (_db, service, _user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+
+        let all = vec![
+            dref("od_company", None, "总公司"),
+            dref("od_eng", Some("od_company"), "研发中心"),
+        ];
+
+        // Map the broad root first (owns both od_company and od_eng).
+        service
+            .map_directory_subtree(&tenant_id, "od_company", &all)
+            .await
+            .unwrap();
+
+        // Now try to map od_eng as its OWN separate root — it overlaps.
+        let err = service
+            .map_directory_subtree(&tenant_id, "od_eng", &all)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "BAD_REQUEST");
+
+        // Nothing was written by the rejected attempt.
+        assert_eq!(service.list_departments(&tenant_id).await.unwrap().len(), 2);
     }
 
     #[tokio::test]

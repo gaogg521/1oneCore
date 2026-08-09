@@ -124,6 +124,32 @@ impl one_enterprise::SessionRevoker for OrgSessionRevoker {
     }
 }
 
+/// Lets one-org read the company directory mirror to map a subtree into a
+/// project group's department tree (T6 stage 3), without depending on
+/// one-enterprise (same layer). No company, or no directory sync ever run →
+/// empty, which the caller treats as "nothing to map" rather than an error.
+struct DirectoryTreeSourceAdapter(std::sync::Arc<one_enterprise::EnterpriseService>);
+
+#[async_trait::async_trait]
+impl one_org::DirectoryTreeSource for DirectoryTreeSourceAdapter {
+    async fn directory_departments(&self) -> Vec<one_org::DirectoryDepartmentRef> {
+        let Some(enterprise_id) = self.0.deployment_company_id().await.ok().flatten() else {
+            return Vec::new();
+        };
+        self.0
+            .list_directory_departments(&enterprise_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| one_org::DirectoryDepartmentRef {
+                external_id: d.external_id,
+                parent_external_id: d.parent_external_id,
+                name: d.name,
+            })
+            .collect()
+    }
+}
+
 /// Stores a completed directory pull (T6). one-sso knows how to talk to Feishu,
 /// one-enterprise owns the company's tables, and they are the same layer — so
 /// they meet here.
@@ -664,10 +690,16 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let tenant_resolver: std::sync::Arc<dyn one_employee::TenantResolver> =
         std::sync::Arc::new(OrgTenantResolver(one_org_service.clone()));
     // Direction B: let a company admin create/list the project groups their
-    // company owns (system_admin still governs everything as before).
-    let one_org_state = one_org::OneOrgRouterState::new(one_org_service.clone()).with_company_admin_resolver(
-        std::sync::Arc::new(CompanyAdminResolverAdapter(one_enterprise_service.clone())),
-    );
+    // company owns (system_admin still governs everything as before). T6
+    // stage 3: also let a project-group admin map a company directory
+    // subtree into their own department tree.
+    let one_org_state = one_org::OneOrgRouterState::new(one_org_service.clone())
+        .with_company_admin_resolver(std::sync::Arc::new(CompanyAdminResolverAdapter(
+            one_enterprise_service.clone(),
+        )))
+        .with_directory_source(std::sync::Arc::new(DirectoryTreeSourceAdapter(
+            one_enterprise_service.clone(),
+        )));
     let one_org_authenticated =
         one_org::one_org_routes(one_org_state).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 

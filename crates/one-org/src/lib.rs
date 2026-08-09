@@ -12,6 +12,7 @@
 pub mod backup;
 pub mod bridge;
 pub mod credential_revoker;
+pub mod directory_bridge;
 pub mod email;
 pub mod error;
 pub mod integration;
@@ -24,6 +25,7 @@ pub mod state;
 
 pub use bridge::CompanyAdminResolver;
 pub use credential_revoker::{CredentialRevoker, NoopCredentialRevoker};
+pub use directory_bridge::{DirectoryDepartmentRef, DirectoryTreeSource, NoopDirectoryTreeSource};
 pub use email::{EmailSender, SendEmailResult, StubEmailSender};
 pub use error::OrgError;
 pub use integration::{

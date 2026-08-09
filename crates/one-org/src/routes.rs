@@ -15,8 +15,8 @@ use crate::email::SendEmailResult;
 use crate::error::OrgError;
 use crate::integration::IntegrationTestResult;
 use crate::models::{
-    AdminUserDto, AgentAuditEntry, AuditLogRow, DepartmentDto, EnterpriseTenantDto, IntegrationDto, InviteDto,
-    MyTenantDto, OrgContextDto, ResetLocalResult, RuntimeNodeDto, SmtpConfigDto, TenantSummaryDto,
+    AdminUserDto, AgentAuditEntry, AuditLogRow, DepartmentDto, DirectoryMapReport, EnterpriseTenantDto, IntegrationDto,
+    InviteDto, MyTenantDto, OrgContextDto, ResetLocalResult, RuntimeNodeDto, SmtpConfigDto, TenantSummaryDto,
     is_enterprise_tenant_id, is_system_admin_role,
 };
 use crate::rbac::{OrgActor, RequireOrgAdmin, RequireSystemAdmin};
@@ -78,6 +78,18 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         .route(
             "/api/one/admin/departments/{department_id}",
             put(admin_rename_department).delete(admin_delete_department),
+        )
+        .route(
+            "/api/one/admin/departments/{department_id}/parent",
+            put(admin_set_department_parent),
+        )
+        .route(
+            "/api/one/admin/departments/map-from-directory",
+            post(admin_map_directory_department),
+        )
+        .route(
+            "/api/one/admin/departments/directory-candidates",
+            get(admin_list_directory_candidates),
         )
         // P2-1 integration connectors (reserved framework)
         .route("/api/one/admin/integrations", get(admin_list_integrations))
@@ -875,6 +887,88 @@ async fn admin_delete_department(
         )
         .await;
     Ok(Json(ApiResponse::ok(())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetDepartmentParentBody {
+    /// `null` moves the department to top-level.
+    parent_id: Option<String>,
+}
+
+async fn admin_set_department_parent(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Path(department_id): Path<String>,
+    Json(body): Json<SetDepartmentParentBody>,
+) -> Result<Json<ApiResponse<DepartmentDto>>, OrgError> {
+    let dept = state
+        .service
+        .set_department_parent(&actor.tenant_id, &department_id, body.parent_id.as_deref())
+        .await?;
+    state
+        .service
+        .audit(
+            &actor.tenant_id,
+            Some(&actor.user_id),
+            Some(&actor.username),
+            "org.department.move",
+            Some(&department_id),
+        )
+        .await;
+    Ok(Json(ApiResponse::ok(dept)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MapDirectoryDepartmentBody {
+    /// The company directory department (T6 stage 1 mirror) to use as the
+    /// mapping's root; it and everything under it become local departments.
+    root_external_id: String,
+}
+
+/// T6 stage 3: the company directory mirror, for the "pick a subtree to map"
+/// picker. Empty on personal/standalone installs or before any directory sync
+/// has run — the frontend renders that as "nothing to map yet", not an error.
+async fn admin_list_directory_candidates(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(_actor): RequireOrgAdmin,
+) -> Result<Json<ApiResponse<Vec<crate::directory_bridge::DirectoryDepartmentRef>>>, OrgError> {
+    let all = match &state.directory_source {
+        Some(source) => source.directory_departments().await,
+        None => Vec::new(),
+    };
+    Ok(Json(ApiResponse::ok(all)))
+}
+
+/// T6 stage 3: map a subtree of the company directory mirror into this
+/// project group's department tree. Re-runnable — see
+/// `OrgService::map_directory_subtree`'s doc comment for the reconciliation
+/// rules.
+async fn admin_map_directory_department(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Json(body): Json<MapDirectoryDepartmentBody>,
+) -> Result<Json<ApiResponse<DirectoryMapReport>>, OrgError> {
+    let all = match &state.directory_source {
+        Some(source) => source.directory_departments().await,
+        None => Vec::new(),
+    };
+    let report = state
+        .service
+        .map_directory_subtree(&actor.tenant_id, &body.root_external_id, &all)
+        .await?;
+    state
+        .service
+        .audit(
+            &actor.tenant_id,
+            Some(&actor.user_id),
+            Some(&actor.username),
+            "org.department.mapFromDirectory",
+            Some(&body.root_external_id),
+        )
+        .await;
+    Ok(Json(ApiResponse::ok(report)))
 }
 
 #[derive(Deserialize)]

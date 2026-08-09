@@ -316,6 +316,23 @@ impl EnterpriseService {
         Ok(out)
     }
 
+    /// Every department currently in the directory mirror, flat — for T6
+    /// stage 3's "pick a subtree to map into a project group" picker, and for
+    /// the `one_org::DirectoryTreeSource` adapter that reads it.
+    pub async fn list_directory_departments(
+        &self,
+        enterprise_id: &str,
+    ) -> Result<Vec<DirectoryDepartmentDto>, EnterpriseError> {
+        let rows = sqlx::query_as::<_, DirectoryDepartmentDto>(
+            "SELECT external_id, parent_external_id, name \
+             FROM one_directory_departments WHERE enterprise_id = ? ORDER BY name ASC",
+        )
+        .bind(enterprise_id)
+        .fetch_all(self.pool_ref())
+        .await?;
+        Ok(rows)
+    }
+
     /// Last-run status for the admin console.
     pub async fn directory_sync_state(
         &self,
@@ -330,6 +347,15 @@ impl EnterpriseService {
         .await?;
         Ok(row)
     }
+}
+
+/// One department from the directory mirror, flat.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryDepartmentDto {
+    pub external_id: String,
+    pub parent_external_id: Option<String>,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
@@ -623,6 +649,53 @@ mod tests {
         let departed = svc.list_departed_members("ent1").await.unwrap();
         assert_eq!(departed.len(), 1);
         assert!(departed[0].tenants.is_empty());
+    }
+
+    /// T6 stage 3's mapping picker (and its `one_org::DirectoryTreeSource`
+    /// adapter) read this flat list.
+    #[tokio::test]
+    async fn list_directory_departments_returns_the_flat_mirror() {
+        let svc = service().await;
+        svc.apply_directory_snapshot(
+            "ent1",
+            &DirectorySyncInput {
+                provider: "feishu".into(),
+                external_id_field: "open_id".into(),
+                departments: vec![
+                    DirectoryDepartmentInput {
+                        external_id: "od_root".into(),
+                        parent_external_id: None,
+                        name: "研发中心".into(),
+                    },
+                    DirectoryDepartmentInput {
+                        external_id: "od_child".into(),
+                        parent_external_id: Some("od_root".into()),
+                        name: "后端组".into(),
+                    },
+                ],
+                people: vec![],
+                complete: true,
+                error: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let depts = svc.list_directory_departments("ent1").await.unwrap();
+        assert_eq!(depts.len(), 2);
+        assert!(
+            depts
+                .iter()
+                .any(|d| d.external_id == "od_root" && d.parent_external_id.is_none())
+        );
+        assert!(
+            depts
+                .iter()
+                .any(|d| d.external_id == "od_child" && d.parent_external_id.as_deref() == Some("od_root"))
+        );
+
+        // A different enterprise's mirror never leaks in.
+        assert!(svc.list_directory_departments("ent2").await.unwrap().is_empty());
     }
 
     /// The status line has to say a sync failed. A silent failure reads as

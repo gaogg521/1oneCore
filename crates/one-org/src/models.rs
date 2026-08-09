@@ -186,6 +186,25 @@ pub struct AdminUserDto {
     pub created_at: i64,
 }
 
+/// What one directory-mapping run did (T6 stage 3), for the admin console.
+/// Names rather than ids/counts throughout — an admin reading this wants to
+/// know WHICH departments, not just how many.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryMapReport {
+    pub created: Vec<String>,
+    pub updated: Vec<String>,
+    /// Removed because they dropped out of the mapped subtree AND were empty
+    /// (no children, no assigned members).
+    pub removed: Vec<String>,
+    /// Dropped out of the mapped subtree but kept, because real local
+    /// structure — a manually-added child or an assigned member — is still
+    /// hanging off them. Not an error: reported so the admin can reassign
+    /// and re-run, the same "explicit over surprising" rule `delete_department`
+    /// already enforces everywhere else in this file.
+    pub kept_with_local_data: Vec<String>,
+}
+
 /// A department/sub-team node within a project group (P2-3 organizational
 /// hierarchy). `parent_id` is `None` for a top-level department. The frontend
 /// builds the tree client-side from the flat list returned by
@@ -199,6 +218,12 @@ pub struct DepartmentDto {
     pub name: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// `None` for a manually-created department (the overwhelming default).
+    /// `Some("directory")` means a T6 stage 3 mapping sync created/owns this
+    /// row — the admin console renders it read-only-ish (name still editable,
+    /// but it will be overwritten on the next sync from upstream's name) and
+    /// distinct from a department someone typed in by hand.
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

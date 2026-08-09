@@ -1,0 +1,13 @@
+-- T6 stage 3 fix: scope a directory-mapping sync to the subtree it maps, not
+-- every directory-mapped department in the tenant.
+--
+-- Without this, mapping subtree B after subtree A had already been mapped
+-- would treat every one of A's rows as "fell out of B's scope" and try to
+-- remove them — silently destroying an unrelated, still-valid mapping this
+-- run never touched. This column records which mapping root a row came from,
+-- so a sync only ever reconciles rows that trace back to ITS OWN root.
+--
+-- New file, not an edit to 011: that migration has already executed against
+-- a running database this session, and this codebase's migrations are
+-- append-only for exactly that reason (see migrate.rs's header comment).
+ALTER TABLE one_departments ADD COLUMN directory_map_root_external_id TEXT;
