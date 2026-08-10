@@ -45,6 +45,21 @@ const AIONRS_TARGETS: &[&str] = &[
 
 const RAW_AIONRS_PAYLOAD_TARGETS: &[&str] = &["aion_agent", "aion_providers"];
 
+/// `AIONUI_LOG_JSON=1` (or `true`) switches the stdout console layer to the
+/// same JSON format the file layers already use — for container deployments
+/// whose log collector parses stdout, not the desktop dev terminal, which
+/// stays human-readable by default.
+fn console_wants_json() -> bool {
+    parse_log_json_env(std::env::var("AIONUI_LOG_JSON").ok().as_deref())
+}
+
+/// Split out from `console_wants_json()` so the parsing rule is testable
+/// without mutating process-global env state (`cargo test` runs this crate's
+/// tests in parallel within one process).
+fn parse_log_json_env(raw: Option<&str>) -> bool {
+    matches!(raw, Some(v) if v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
 fn build_env_filter(log_level: Option<&str>) -> EnvFilter {
     let user_directives = log_level.unwrap_or("info");
     let suppressions = NOISE_SUPPRESSIONS.join(",");
@@ -99,7 +114,23 @@ pub fn init_tracing(log_dir: &Path, log_level: Option<&str>) -> Result<LogGuards
         .with_field("logDir", active_log_dir.display().to_string())
     })?;
 
-    let console_layer = fmt::layer().with_target(true).with_filter(build_env_filter(log_level));
+    // Container log collectors (Fluentd/Loki/CloudWatch, …) parse stdout
+    // directly and expect structured records; a human-readable console is
+    // right for a desktop dev terminal but wrong for that audience. The file
+    // layers below are already JSON for exactly this reason — this just lets
+    // stdout match them instead of forcing operators to tail a local file
+    // inside a container whose filesystem may not even be persisted.
+    let json_console = console_wants_json();
+    let console_layer: Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync> = if json_console {
+        Box::new(
+            fmt::layer()
+                .json()
+                .with_target(true)
+                .with_filter(build_env_filter(log_level)),
+        )
+    } else {
+        Box::new(fmt::layer().with_target(true).with_filter(build_env_filter(log_level)))
+    };
 
     // Backend file layer — excludes aion_* targets
     let file_appender = DailyDatedLogWriter::new(log_dir.to_path_buf(), "aioncore.log");
@@ -253,6 +284,23 @@ impl Write for DailyDatedLogWriter {
 mod tests {
     use super::*;
     use tracing::Level;
+
+    #[test]
+    fn log_json_env_accepts_one_and_true_case_insensitively() {
+        assert!(parse_log_json_env(Some("1")));
+        assert!(parse_log_json_env(Some("true")));
+        assert!(parse_log_json_env(Some("True")));
+        assert!(parse_log_json_env(Some("TRUE")));
+    }
+
+    #[test]
+    fn log_json_env_defaults_to_off() {
+        assert!(!parse_log_json_env(None));
+        assert!(!parse_log_json_env(Some("")));
+        assert!(!parse_log_json_env(Some("0")));
+        assert!(!parse_log_json_env(Some("false")));
+        assert!(!parse_log_json_env(Some("yes")));
+    }
 
     #[test]
     fn env_filter_suppresses_raw_acp_sdk_jsonrpc_debug_even_when_debug_enabled() {
