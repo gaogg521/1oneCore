@@ -126,7 +126,10 @@ async fn run_probe(
     let mut engine = match build_probe_engine(config_extra).await {
         Ok(engine) => engine,
         Err(error) => {
-            let message = format!("Aionrs probe bootstrap failed: {error}");
+            // Same rebrand as manager/aionrs/error.rs: this message reaches the
+            // "test connection" result in the provider settings UI, so it must
+            // not name the internal engine crate.
+            let message = format!("1ONE CLI probe bootstrap failed: {error}");
             let response = unhealthy_response(provider_id, platform, model, started.elapsed(), message, None);
             log_health_check_result(&response);
             return Ok(response);

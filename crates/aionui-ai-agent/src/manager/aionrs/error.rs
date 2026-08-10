@@ -7,7 +7,12 @@ use aionui_api_types::{
 use crate::protocol::send_error::AgentSendError;
 
 pub(super) fn aionrs_engine_error_to_send_error(error: &AionrsAgentError) -> AgentSendError {
-    let detail = format!("Aionrs agent error: {error}");
+    // "Aionrs" is the internal engine crate name, not a brand the user has
+    // ever seen — this `detail` string is shown verbatim in the error card's
+    // technical-details panel, so it must use the product's own public name
+    // for this backend (matches what `employeeDisplay` and the ACP model
+    // selector call it elsewhere in the desktop UI).
+    let detail = format!("1ONE CLI agent error: {error}");
     match error {
         AionrsAgentError::Provider(provider_error) => aionrs_provider_error_to_send_error(provider_error, detail),
         AionrsAgentError::ToolCallMalformed { .. } => provider_send_error(
