@@ -671,7 +671,7 @@ async fn delete_skill(
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
     audit(&state, &user.id, "devops.skill.delete", Some(&id)).await;
-    state.service.delete_skill(&id).await?;
+    state.service.delete_skill(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -745,7 +745,7 @@ async fn delete_mcp(
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
     audit(&state, &user.id, "devops.mcp.delete", Some(&id)).await;
-    state.service.delete_mcp_registry(&id).await?;
+    state.service.delete_mcp_registry(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -1042,7 +1042,7 @@ async fn delete_rag(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
-    state.service.delete_rag_document(&id).await?;
+    state.service.delete_rag_document(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -1058,7 +1058,7 @@ async fn set_rag_content(
     Json(body): Json<SetRagContentBody>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
-    state.service.set_document_content(&id, &body.content).await?;
+    state.service.set_document_content(&user.id, &id, &body.content).await?;
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -1074,7 +1074,7 @@ async fn process_rag(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<ProcessResult>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
-    let chunk_count = state.service.process_rag_document(&id).await?;
+    let chunk_count = state.service.process_rag_document(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(ProcessResult { chunk_count })))
 }
 

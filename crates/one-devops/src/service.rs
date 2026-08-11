@@ -493,6 +493,50 @@ impl DevopsService {
         }
     }
 
+    /// `user_id`'s currently active project group, or `None` for a standalone
+    /// deployment (no `one_user_org` row) or one where one-org's migrations
+    /// never ran. Same missing-table fallback as `user_org_role`.
+    async fn active_tenant_id(&self, user_id: &str) -> Result<Option<String>, DevopsError> {
+        let result = sqlx::query_scalar::<_, String>("SELECT tenant_id FROM one_active_tenant WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await;
+        match result {
+            Ok(tenant_id) => Ok(tenant_id),
+            Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Whether `actor_user_id` may modify an *existing* registry row scoped to
+    /// `team_id`. `require_registry_admin` (routes.rs) already confirmed the
+    /// actor is an admin of *some* project group before this runs; what it
+    /// cannot confirm is *which* one, since a user's admin role is resolved
+    /// against their own active tenant regardless of which resource they are
+    /// about to touch. Without this check, an admin of project group A could
+    /// delete or overwrite project group B's distributed skill/MCP/RAG
+    /// document just by knowing its id — team scope existed to keep resources
+    /// inside their owning group, and the write path never enforced it.
+    ///
+    /// Org-scoped resources (`team_id = None`) stay reachable by any registry
+    /// admin — that mirrors the read-side ACL (`member_visibility_where`),
+    /// which shows `scope = 'org'` rows to every member regardless of team.
+    /// A standalone/personal owner (no `one_user_org` row) is unrestricted,
+    /// matching `viewer_is_privileged`'s "None role = machine owner" default.
+    pub(crate) async fn actor_can_touch_team(
+        &self,
+        actor_user_id: &str,
+        team_id: Option<&str>,
+    ) -> Result<bool, DevopsError> {
+        let Some(team_id) = team_id else {
+            return Ok(true);
+        };
+        if self.user_org_role(actor_user_id).await?.is_none() {
+            return Ok(true);
+        }
+        Ok(self.active_tenant_id(actor_user_id).await?.as_deref() == Some(team_id))
+    }
+
     // -- ownership transfer (P1-2 offboarding) ----------------------------
 
     /// Gate for admin-only devops operations. Reuses `viewer_is_privileged`,
@@ -830,6 +874,24 @@ impl DevopsService {
         let now = now_ms();
         let id = match id {
             Some(existing) => {
+                // The row's CURRENT scope/team_id, not the incoming one: an
+                // actor editing must already own what the row belongs to today,
+                // otherwise they could both overwrite another team's resource
+                // and re-scope it away from that team in the same call.
+                let current_team_id: Option<String> =
+                    sqlx::query_scalar("SELECT team_id FROM one_skill_registry WHERE id = ?")
+                        .bind(existing)
+                        .fetch_optional(&self.pool)
+                        .await?
+                        .ok_or_else(|| DevopsError::NotFound(format!("skill {existing}")))?;
+                if !self
+                    .actor_can_touch_team(created_by, current_team_id.as_deref())
+                    .await?
+                {
+                    return Err(DevopsError::Forbidden(
+                        "this skill belongs to a different project group".into(),
+                    ));
+                }
                 let updated = sqlx::query(
                     "UPDATE one_skill_registry SET name = ?, description = ?, content = ?, enabled = ?, auto_active = ?, \
                      scope = ?, team_id = ?, visibility = ?, updated_at = ? WHERE id = ?",
@@ -885,7 +947,17 @@ impl DevopsService {
         .map_err(Into::into)
     }
 
-    pub async fn delete_skill(&self, id: &str) -> Result<(), DevopsError> {
+    pub async fn delete_skill(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
+        let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM one_skill_registry WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("skill {id}")))?;
+        if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
+            return Err(DevopsError::Forbidden(
+                "this skill belongs to a different project group".into(),
+            ));
+        }
         let deleted = sqlx::query("DELETE FROM one_skill_registry WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
@@ -961,6 +1033,22 @@ impl DevopsService {
         let now = now_ms();
         let id = match id {
             Some(existing) => {
+                // Same reasoning as upsert_skill: check the row's CURRENT
+                // team_id before applying whatever the request wants it to be.
+                let current_team_id: Option<String> =
+                    sqlx::query_scalar("SELECT team_id FROM one_mcp_registry WHERE id = ?")
+                        .bind(existing)
+                        .fetch_optional(&self.pool)
+                        .await?
+                        .ok_or_else(|| DevopsError::NotFound(format!("mcp registry entry {existing}")))?;
+                if !self
+                    .actor_can_touch_team(created_by, current_team_id.as_deref())
+                    .await?
+                {
+                    return Err(DevopsError::Forbidden(
+                        "this MCP server belongs to a different project group".into(),
+                    ));
+                }
                 let updated = sqlx::query(
                     "UPDATE one_mcp_registry SET name = ?, type = ?, endpoint = ?, enabled = ?, has_keys = ?, secrets_json = ?, \
                      scope = ?, team_id = ?, visibility = ?, updated_at = ? WHERE id = ?",
@@ -1017,7 +1105,17 @@ impl DevopsService {
         .map_err(Into::into)
     }
 
-    pub async fn delete_mcp_registry(&self, id: &str) -> Result<(), DevopsError> {
+    pub async fn delete_mcp_registry(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
+        let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM one_mcp_registry WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("mcp registry entry {id}")))?;
+        if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
+            return Err(DevopsError::Forbidden(
+                "this MCP server belongs to a different project group".into(),
+            ));
+        }
         let deleted = sqlx::query("DELETE FROM one_mcp_registry WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
@@ -1098,7 +1196,17 @@ impl DevopsService {
         .map_err(Into::into)
     }
 
-    pub async fn delete_rag_document(&self, id: &str) -> Result<(), DevopsError> {
+    pub async fn delete_rag_document(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
+        let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM one_rag_documents WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
+        if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
+            return Err(DevopsError::Forbidden(
+                "this document belongs to a different project group".into(),
+            ));
+        }
         // Drop the lexical rows FIRST: they are located through
         // `one_rag_chunks`, so once the chunks are gone there is no way left to
         // find them and the document's full text would sit in the FTS index
@@ -1316,7 +1424,17 @@ impl DevopsService {
     }
 
     /// Set a document's inline content (the text to embed on process).
-    pub async fn set_document_content(&self, id: &str, content: &str) -> Result<(), DevopsError> {
+    pub async fn set_document_content(&self, actor_user_id: &str, id: &str, content: &str) -> Result<(), DevopsError> {
+        let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM one_rag_documents WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
+        if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
+            return Err(DevopsError::Forbidden(
+                "this document belongs to a different project group".into(),
+            ));
+        }
         let updated = sqlx::query("UPDATE one_rag_documents SET content = ? WHERE id = ?")
             .bind(content)
             .bind(id)
@@ -1331,12 +1449,18 @@ impl DevopsService {
     /// Process a document: chunk its content, embed each chunk, replace its
     /// chunk rows, and update status/chunk_count. Records the dimension on
     /// first success. Returns the chunk count.
-    pub async fn process_rag_document(&self, id: &str) -> Result<i64, DevopsError> {
-        let content: Option<String> = sqlx::query_scalar("SELECT content FROM one_rag_documents WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
+    pub async fn process_rag_document(&self, actor_user_id: &str, id: &str) -> Result<i64, DevopsError> {
+        let row: Option<(Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT content, team_id FROM one_rag_documents WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let (content, team_id) = row.ok_or_else(|| DevopsError::NotFound(format!("rag document {id}")))?;
+        if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
+            return Err(DevopsError::Forbidden(
+                "this document belongs to a different project group".into(),
+            ));
+        }
         let content = content.unwrap_or_default();
         let chunks = crate::embedding::chunk_text(&content, 800, 100);
         if chunks.is_empty() {
@@ -2662,6 +2786,190 @@ mod tests {
         assert_eq!(ok.visibility, "admin");
     }
 
+    /// An admin of one project group must not be able to delete, edit, or
+    /// re-scope another project group's team-distributed skill/MCP/RAG
+    /// document just by knowing its id — `require_registry_admin` (routes.rs)
+    /// only confirms "admin of *some* group", not "admin of *this* group's
+    /// resource", and the write path used to stop there.
+    #[tokio::test]
+    async fn registry_write_is_rejected_across_project_groups() {
+        let svc = service().await;
+        seed_two_group_enterprise(&svc).await;
+        // admin2: org_admin of Group B, active tenant tB — the cross-group attacker.
+        sqlx::raw_sql(
+            "INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('admin2', 'tB', 'org_admin');
+             INSERT INTO one_active_tenant (user_id, tenant_id) VALUES ('admin2', 'tB');",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+
+        let skill = svc
+            .upsert_skill(
+                None,
+                "a-only-skill",
+                "d",
+                "c",
+                true,
+                false,
+                "team",
+                Some("tA"),
+                "all",
+                "admin1",
+            )
+            .await
+            .unwrap();
+        let mcp = svc
+            .upsert_mcp_registry(
+                None,
+                "a-only-mcp",
+                "sse",
+                "https://a/sse",
+                true,
+                false,
+                None,
+                "team",
+                Some("tA"),
+                "all",
+                "admin1",
+            )
+            .await
+            .unwrap();
+        let doc = svc
+            .register_rag_document("a-only-doc", None, None, None, "team", Some("tA"), "all", "admin1")
+            .await
+            .unwrap();
+
+        // admin2 (Group B admin) cannot delete Group A's resources.
+        assert!(matches!(
+            svc.delete_skill("admin2", &skill.id).await.unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+        assert!(matches!(
+            svc.delete_mcp_registry("admin2", &mcp.id).await.unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+        assert!(matches!(
+            svc.delete_rag_document("admin2", &doc.id).await.unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+        assert!(matches!(
+            svc.set_document_content("admin2", &doc.id, "hijacked")
+                .await
+                .unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+
+        // admin2 cannot edit it either — not the content, and not a re-scope
+        // to steal it out of Group A. The row must survive untouched, not
+        // merely "the call returned an error" (the update could still have
+        // partially applied before a later check tripped).
+        assert!(matches!(
+            svc.upsert_skill(
+                Some(&skill.id),
+                "hijacked-name",
+                "d",
+                "c",
+                true,
+                false,
+                "org",
+                None,
+                "all",
+                "admin2",
+            )
+            .await
+            .unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+        assert!(matches!(
+            svc.upsert_mcp_registry(
+                Some(&mcp.id),
+                "hijacked-mcp",
+                "sse",
+                "https://evil/sse",
+                true,
+                false,
+                None,
+                "org",
+                None,
+                "all",
+                "admin2",
+            )
+            .await
+            .unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+
+        // Everything is still there, unchanged, and still owned by Group A.
+        let still_there = svc.list_skills("admin1").await.unwrap();
+        let skill_row = still_there.iter().find(|s| s.id == skill.id).unwrap();
+        assert_eq!(skill_row.name, "a-only-skill", "name must not have been overwritten");
+        assert_eq!(skill_row.scope, "team");
+        assert_eq!(
+            skill_row.team_id.as_deref(),
+            Some("tA"),
+            "must not have been re-scoped away from Group A"
+        );
+
+        let mcp_row = svc
+            .list_mcp_registry("admin1")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.id == mcp.id)
+            .unwrap();
+        assert_eq!(mcp_row.name, "a-only-mcp");
+        assert_eq!(
+            mcp_row.endpoint, "https://a/sse",
+            "endpoint must not have been overwritten"
+        );
+        assert_eq!(mcp_row.team_id.as_deref(), Some("tA"));
+
+        // The rightful Group A admin can still manage its own resources.
+        svc.delete_skill("admin1", &skill.id).await.unwrap();
+        svc.delete_mcp_registry("admin1", &mcp.id).await.unwrap();
+        svc.delete_rag_document("admin1", &doc.id).await.unwrap();
+
+        // Org-scoped resources stay reachable by any registry admin regardless
+        // of project group — that mirrors the read-side ACL, which shows
+        // `scope = 'org'` rows to every member. Only team scope is restricted.
+        let org_skill = svc
+            .upsert_skill(
+                None,
+                "org-wide-skill",
+                "",
+                "",
+                true,
+                false,
+                "org",
+                None,
+                "all",
+                "admin1",
+            )
+            .await
+            .unwrap();
+        svc.delete_skill("admin2", &org_skill.id).await.unwrap();
+
+        // A standalone/personal owner (no `one_user_org` row) is unrestricted —
+        // matches `viewer_is_privileged`'s existing "None role = machine owner".
+        let personal_skill = svc
+            .upsert_skill(
+                None,
+                "personal-skill",
+                "",
+                "",
+                true,
+                false,
+                "team",
+                Some("tA"),
+                "all",
+                "admin1",
+            )
+            .await
+            .unwrap();
+        svc.delete_skill("nobody", &personal_skill.id).await.unwrap();
+    }
+
     #[tokio::test]
     async fn registries_crud() {
         let svc = service().await;
@@ -2702,7 +3010,7 @@ mod tests {
         assert!(!skill.enabled);
         assert!(skill.auto_active, "admin can flip a skill to auto-active");
         assert_eq!(svc.list_skills("u1").await.unwrap().len(), 1);
-        svc.delete_skill(&skill.id).await.unwrap();
+        svc.delete_skill("u1", &skill.id).await.unwrap();
         assert!(svc.list_skills("u1").await.unwrap().is_empty());
 
         let mcp = svc
@@ -2728,7 +3036,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));
-        svc.delete_mcp_registry(&mcp.id).await.unwrap();
+        svc.delete_mcp_registry("u1", &mcp.id).await.unwrap();
 
         let doc = svc
             .register_rag_document(
@@ -2745,7 +3053,7 @@ mod tests {
             .unwrap();
         assert_eq!(doc.status, "pending");
         assert_eq!(svc.list_rag_documents("u1").await.unwrap().len(), 1);
-        svc.delete_rag_document(&doc.id).await.unwrap();
+        svc.delete_rag_document("u1", &doc.id).await.unwrap();
         assert!(svc.list_rag_documents("u1").await.unwrap().is_empty());
     }
 
@@ -2908,7 +3216,7 @@ mod tests {
         };
         assert_eq!(indexed().await, 1, "precondition: the text is in the lexical index");
 
-        svc.delete_rag_document(&doc.id).await.unwrap();
+        svc.delete_rag_document("admin1", &doc.id).await.unwrap();
         assert_eq!(indexed().await, 0, "deleted document text must not remain on disk");
     }
 
