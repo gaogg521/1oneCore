@@ -42,12 +42,11 @@ use serde::{Deserialize, Serialize};
 /// Rotating this constant invalidates every previously issued key, so treat a
 /// change here as a breaking release.
 ///
-/// ⚠️ **This is a development placeholder.** Its private half was generated in
-/// a throwaway session and must be considered compromised. Before shipping a
-/// commercial build, run
-/// `cargo run -p one-billing --example license_tool -- keygen`, replace this
-/// constant with the new public key, and store the secret offline.
-pub const LICENSE_PUBLIC_KEY_B64: &str = "Bup1nRSwDqCzT9L5PDgRHZMRqxP7VMCHqVokBxx9PAI";
+/// Rotated 2026-08-11: the prior placeholder's private half had been printed
+/// into a chat transcript (twice) and was retired as compromised before any
+/// real customer license was ever issued against it. The signing secret for
+/// *this* key lives offline in the vendor's password manager only.
+pub const LICENSE_PUBLIC_KEY_B64: &str = "_Nx1PhMApIz8psYTShRHnc3s1jSCB0hXGSp9qqLvc0g";
 
 /// Human-facing prefix, so a pasted key is recognizable and a stray copy of
 /// some other product's token fails fast with a clear message.
