@@ -316,6 +316,29 @@ impl EnterpriseService {
         Ok(out)
     }
 
+    /// Every active person currently in the directory mirror, department name
+    /// resolved — the roster the admin console shows next to the sync status
+    /// and the departed-members diff. Those two other surfaces answer "did
+    /// sync work" and "who left"; this answers the question the mirror was
+    /// never given a UI for: "who is actually in here". Capped like
+    /// `list_agent_audit` — a company with several thousand directory rows
+    /// should not be able to make this endpoint unbounded.
+    pub async fn list_directory_people(&self, enterprise_id: &str) -> Result<Vec<DirectoryPersonDto>, EnterpriseError> {
+        let rows = sqlx::query_as::<_, DirectoryPersonDto>(
+            "SELECT p.external_id, p.name, p.job_title, d.name AS department, p.active \
+             FROM one_directory_people p \
+             LEFT JOIN one_directory_departments d \
+               ON d.enterprise_id = p.enterprise_id AND d.external_id = p.department_external_id \
+             WHERE p.enterprise_id = ? AND p.missing_since IS NULL \
+             ORDER BY d.name ASC, p.name ASC \
+             LIMIT 5000",
+        )
+        .bind(enterprise_id)
+        .fetch_all(self.pool_ref())
+        .await?;
+        Ok(rows)
+    }
+
     /// Every department currently in the directory mirror, flat — for T6
     /// stage 3's "pick a subtree to map into a project group" picker, and for
     /// the `one_org::DirectoryTreeSource` adapter that reads it.
@@ -356,6 +379,17 @@ pub struct DirectoryDepartmentDto {
     pub external_id: String,
     pub parent_external_id: Option<String>,
     pub name: String,
+}
+
+/// One active person from the directory mirror, for the admin console roster.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryPersonDto {
+    pub external_id: String,
+    pub name: Option<String>,
+    pub job_title: Option<String>,
+    pub department: Option<String>,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
@@ -726,5 +760,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(seats, 0, "a directory pull must not consume licensed seats");
+    }
+
+    /// The roster this module never had a reachable endpoint for: everyone a
+    /// complete pull still vouches for, with their department name resolved
+    /// — not just a headcount, and not just the departed-diff.
+    #[tokio::test]
+    async fn list_directory_people_returns_present_members_with_department_names() {
+        let svc = service().await;
+        svc.apply_directory_snapshot(
+            "ent1",
+            &snapshot(vec![person("ou_a", true), person("ou_b", true)], true),
+        )
+        .await
+        .unwrap();
+
+        let people = svc.list_directory_people("ent1").await.unwrap();
+        assert_eq!(people.len(), 2);
+        assert!(people.iter().all(|p| p.department.as_deref() == Some("研发中心")));
+        assert!(people.iter().any(|p| p.external_id == "ou_a"));
+        assert!(people.iter().any(|p| p.external_id == "ou_b"));
+
+        // A person who stops appearing in a later complete pull is "departed",
+        // not "present" — the roster and the departed-diff must never overlap.
+        svc.apply_directory_snapshot("ent1", &snapshot(vec![person("ou_a", true)], true))
+            .await
+            .unwrap();
+        let people = svc.list_directory_people("ent1").await.unwrap();
+        assert_eq!(people.len(), 1);
+        assert_eq!(people[0].external_id, "ou_a");
+
+        // A different enterprise's mirror never leaks in.
+        assert!(svc.list_directory_people("ent2").await.unwrap().is_empty());
     }
 }

@@ -11,7 +11,7 @@ use serde::Deserialize;
 use aionui_api_types::ApiResponse;
 use aionui_auth::CurrentUser;
 
-use crate::directory::{DepartedMemberDto, DirectorySyncStateDto};
+use crate::directory::{DepartedMemberDto, DirectoryPersonDto, DirectorySyncStateDto};
 use crate::error::EnterpriseError;
 use crate::models::{CompanyMemberDto, CompanyOverviewDto, EnterpriseIdentityDto};
 use crate::rbac::RequireCompanyAdmin;
@@ -33,6 +33,7 @@ pub fn one_enterprise_routes(state: OneEnterpriseRouterState) -> Router {
         )
         .route("/api/one/enterprise/directory/status", get(directory_status))
         .route("/api/one/enterprise/directory/departed", get(directory_departed))
+        .route("/api/one/enterprise/directory/people", get(directory_people))
         .with_state(state)
 }
 
@@ -60,6 +61,19 @@ async fn directory_departed(
 ) -> Result<Json<ApiResponse<Vec<DepartedMemberDto>>>, EnterpriseError> {
     let departed = state.service.list_departed_members(&admin.enterprise_id).await?;
     Ok(Json(ApiResponse::ok(departed)))
+}
+
+/// The directory roster itself — everyone the last complete sync still
+/// vouches for. `directory_status` says whether sync worked and
+/// `directory_departed` says who left; neither shows who is actually in the
+/// mirror, which previously had no reachable UI at all despite the sync
+/// status line reporting a headcount.
+async fn directory_people(
+    State(state): State<OneEnterpriseRouterState>,
+    admin: RequireCompanyAdmin,
+) -> Result<Json<ApiResponse<Vec<DirectoryPersonDto>>>, EnterpriseError> {
+    let people = state.service.list_directory_people(&admin.enterprise_id).await?;
+    Ok(Json(ApiResponse::ok(people)))
 }
 
 /// The caller's own enterprise-org identity (SSO company + department), or
