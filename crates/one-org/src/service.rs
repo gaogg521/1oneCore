@@ -1577,6 +1577,7 @@ impl OrgService {
     /// user, tool name, and time; newest first.
     pub async fn list_agent_audit(
         &self,
+        tenant_id: &str,
         user_filter: Option<&str>,
         tool_filter: Option<&str>,
         since_ms: Option<i64>,
@@ -1596,11 +1597,24 @@ impl OrgService {
                           json_extract(m.content,'$.args.url'), json_extract(m.content,'$.args.prompt'), \
                           json_extract(m.content,'$.input.command'), json_extract(m.content,'$.input.path'), \
                           json_extract(m.content,'$.input.prompt'), json_extract(m.content,'$.description'))";
+        // `conversations` carries no tenant_id of its own (a conversation is
+        // purely user-owned, local data — see the module docs on why the
+        // directory mirror and the seat table are kept apart for the same
+        // reason). The only way to scope this to "my tenant's activity" is to
+        // join through current `one_user_org` membership, same as
+        // `list_users` above. BUG this fixes: without this join, any
+        // org_admin on ANY tenant of a server hosting multiple tenants could
+        // read every other tenant's tool-call history (commands run, files
+        // touched, media prompts sent) — `RequireOrgAdmin` only checks the
+        // caller is an admin of *some* tenant, never that the rows returned
+        // belong to it.
         let mut sql = format!(
             "SELECT m.id AS id, m.conversation_id AS conversation_id, c.user_id AS user_id, \
                     {name_expr} AS tool_name, {detail_expr} AS detail, m.status AS status, m.created_at AS created_at \
-             FROM messages m JOIN conversations c ON c.id = m.conversation_id \
-             WHERE m.type IN ('tool_call', 'acp_tool_call')"
+             FROM messages m \
+             JOIN conversations c ON c.id = m.conversation_id \
+             JOIN one_user_org uo ON uo.user_id = c.user_id \
+             WHERE uo.tenant_id = ? AND m.type IN ('tool_call', 'acp_tool_call')"
         );
         if user_filter.is_some() {
             sql.push_str(" AND c.user_id = ?");
@@ -1614,6 +1628,7 @@ impl OrgService {
         sql.push_str(" ORDER BY m.created_at DESC LIMIT ?");
 
         let mut q = sqlx::query_as::<_, AgentAuditEntry>(&sql);
+        q = q.bind(tenant_id);
         if let Some(u) = user_filter {
             q = q.bind(u);
         }
@@ -2884,6 +2899,15 @@ mod tests {
         let (db, service, user_repo) = setup().await;
         let uid = create_user(&user_repo, "alice").await;
         let pool = db.pool();
+        // list_agent_audit scopes to the caller's tenant via one_user_org —
+        // alice needs a membership row or every query returns empty.
+        sqlx::query(
+            "INSERT INTO one_user_org (user_id, tenant_id, role, created_at, updated_at) VALUES (?, 't1', 'member', 0, 0)",
+        )
+        .bind(&uid)
+        .execute(pool)
+        .await
+        .unwrap();
         sqlx::query("INSERT INTO conversations (id, user_id, name, type, created_at, updated_at) VALUES ('c1', ?, 'chat', 'acp', 0, 0)")
             .bind(&uid)
             .execute(pool)
@@ -2904,7 +2928,7 @@ mod tests {
             .unwrap();
 
         // All tool calls, newest first; non-tool message excluded.
-        let all = service.list_agent_audit(None, None, None, 100).await.unwrap();
+        let all = service.list_agent_audit("t1", None, None, None, 100).await.unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].tool_name, "Bash");
         assert_eq!(all[0].detail.as_deref(), Some("ls -la"));
@@ -2915,7 +2939,7 @@ mod tests {
         // Filter by tool + by user.
         assert_eq!(
             service
-                .list_agent_audit(None, Some("Read"), None, 100)
+                .list_agent_audit("t1", None, Some("Read"), None, 100)
                 .await
                 .unwrap()
                 .len(),
@@ -2923,15 +2947,29 @@ mod tests {
         );
         assert!(
             service
-                .list_agent_audit(Some("bob"), None, None, 100)
+                .list_agent_audit("t1", Some("bob"), None, None, 100)
                 .await
                 .unwrap()
                 .is_empty()
         );
         // Time filter drops the older Read (created_at 10 < 15).
         assert_eq!(
-            service.list_agent_audit(None, None, Some(15), 100).await.unwrap().len(),
+            service
+                .list_agent_audit("t1", None, None, Some(15), 100)
+                .await
+                .unwrap()
+                .len(),
             1
+        );
+
+        // A different tenant's admin must not see alice's tool calls at all —
+        // this is the isolation the tenant_id join exists to enforce.
+        assert!(
+            service
+                .list_agent_audit("t2-other-tenant", None, None, None, 100)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 

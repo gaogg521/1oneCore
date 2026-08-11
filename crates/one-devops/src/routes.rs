@@ -130,8 +130,10 @@ pub fn one_devops_routes(state: OneDevopsRouterState) -> Router {
 
 async fn requirements_tree(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<RequirementDto>>>, DevopsError> {
-    Ok(Json(ApiResponse::ok(state.service.requirements_tree().await?)))
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(state.service.requirements_tree(&tenant).await?)))
 }
 
 #[derive(Deserialize)]
@@ -157,9 +159,11 @@ async fn create_requirement(
     Extension(user): Extension<CurrentUser>,
     Json(body): Json<CreateRequirementBody>,
 ) -> Result<Json<ApiResponse<RequirementDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
     let created = state
         .service
         .create_requirement(
+            &tenant,
             &user.id,
             Some(user.username.as_str()),
             CreateRequirementInput {
@@ -218,9 +222,11 @@ async fn update_requirement(
     Path(id): Path<String>,
     Json(body): Json<UpdateRequirementBody>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
     state
         .service
         .update_requirement(
+            &tenant,
             &id,
             UpdateRequirementInput {
                 subject: body.subject,
@@ -240,17 +246,21 @@ async fn update_requirement(
 
 async fn delete_requirement(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
-    state.service.delete_requirement(&id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    state.service.delete_requirement(&tenant, &id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
 
 async fn list_comments(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<RequirementCommentDto>>>, DevopsError> {
-    Ok(Json(ApiResponse::ok(state.service.list_comments(&id).await?)))
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(state.service.list_comments(&tenant, &id).await?)))
 }
 
 #[derive(Deserialize)]
@@ -264,9 +274,10 @@ async fn create_comment(
     Path(id): Path<String>,
     Json(body): Json<CreateCommentBody>,
 ) -> Result<Json<ApiResponse<RequirementCommentDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
     let created = state
         .service
-        .create_comment(&id, &user.id, &user.username, &body.body)
+        .create_comment(&tenant, &id, &user.id, &user.username, &body.body)
         .await?;
     Ok(Json(ApiResponse::ok(created)))
 }
@@ -307,7 +318,8 @@ async fn dispatch_core(state: &OneDevopsRouterState, user_id: &str, id: &str) ->
         .as_ref()
         .ok_or_else(|| DevopsError::Internal("employee runtime not wired".into()))?;
 
-    let req = state.service.get_requirement_row(id).await?;
+    let tenant = state.tenant_of(user_id).await;
+    let req = state.service.get_requirement_row(&tenant, id).await?;
     let assigned_to = req
         .assigned_to
         .as_deref()
@@ -337,13 +349,12 @@ async fn dispatch_core(state: &OneDevopsRouterState, user_id: &str, id: &str) ->
     // double dispatch) can't both fire. A requirement already past pre-dev is
     // a deliberate re-dispatch of an in-progress item — allowed, no claim.
     let was_pre_dev = req.status == "backlog" || req.status == "planning";
-    if was_pre_dev && !state.service.claim_requirement_for_dispatch(id).await? {
+    if was_pre_dev && !state.service.claim_requirement_for_dispatch(&tenant, id).await? {
         return Err(DevopsError::BadRequest(
             "该需求正在被派发（并发抢占已被另一次调用赢得），请勿重复派发".into(),
         ));
     }
 
-    let tenant = state.tenant_of(user_id).await;
     let run = employee
         .run_now_with_context(user_id, &tenant, assigned_to, task_context)
         .await;
@@ -356,6 +367,7 @@ async fn dispatch_core(state: &OneDevopsRouterState, user_id: &str, id: &str) ->
                 let _ = state
                     .service
                     .update_requirement(
+                        &tenant,
                         id,
                         UpdateRequirementInput {
                             status: Some(req.status.clone()),
@@ -377,12 +389,19 @@ async fn dispatch_core(state: &OneDevopsRouterState, user_id: &str, id: &str) ->
     let body = format!("已派发给数字员工，运行中（会话 {conversation_id}）");
     state
         .service
-        .insert_agent_comment(id, "agent", Some(assigned_to), "数字员工", &body, Some(metadata))
+        .insert_agent_comment(
+            &tenant,
+            id,
+            "agent",
+            Some(assigned_to),
+            "数字员工",
+            &body,
+            Some(metadata),
+        )
         .await?;
-    let tenant_for_audit = state.tenant_of(user_id).await;
     state
         .service
-        .audit(&tenant_for_audit, user_id, "devops.requirement.dispatch", Some(id))
+        .audit(&tenant, user_id, "devops.requirement.dispatch", Some(id))
         .await;
 
     // Status was already advanced to `developing` by the atomic claim above
@@ -406,7 +425,8 @@ async fn maybe_autopilot(state: &OneDevopsRouterState, user_id: &str, id: &str) 
     if state.employee.is_none() {
         return;
     }
-    let Ok(req) = state.service.get_requirement_row(id).await else {
+    let tenant = state.tenant_of(user_id).await;
+    let Ok(req) = state.service.get_requirement_row(&tenant, id).await else {
         return;
     };
     if !req.autopilot {
@@ -454,7 +474,8 @@ async fn breakdown_requirement(
         .as_ref()
         .ok_or_else(|| DevopsError::Internal("employee runtime not wired".into()))?;
 
-    let req = state.service.get_requirement_row(&id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    let req = state.service.get_requirement_row(&tenant, &id).await?;
     let assigned_to = req
         .assigned_to
         .as_deref()
@@ -463,7 +484,6 @@ async fn breakdown_requirement(
         .ok_or_else(|| DevopsError::BadRequest("requirement has no assigned digital employee".into()))?;
 
     let prompt = crate::breakdown::build_breakdown_prompt(&req);
-    let tenant = state.tenant_of(&user.id).await;
     let run = employee
         .run_prompt_blocking(&user.id, &tenant, assigned_to, prompt)
         .await
@@ -481,6 +501,7 @@ async fn breakdown_requirement(
         state
             .service
             .insert_agent_comment(
+                &tenant,
                 &id,
                 "agent",
                 Some(assigned_to),
@@ -494,7 +515,7 @@ async fn breakdown_requirement(
 
     let created = state
         .service
-        .create_breakdown_children(&id, &user.id, Some(user.username.as_str()), &items)
+        .create_breakdown_children(&tenant, &id, &user.id, Some(user.username.as_str()), &items)
         .await?;
 
     let child_ids: Vec<&str> = created.iter().map(|c| c.id.as_str()).collect();
@@ -511,7 +532,15 @@ async fn breakdown_requirement(
     );
     state
         .service
-        .insert_agent_comment(&id, "agent", Some(assigned_to), "数字员工", &body, Some(metadata))
+        .insert_agent_comment(
+            &tenant,
+            &id,
+            "agent",
+            Some(assigned_to),
+            "数字员工",
+            &body,
+            Some(metadata),
+        )
         .await?;
 
     state
@@ -1141,8 +1170,10 @@ async fn transfer_ownership(
 
 async fn list_milestones(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<MilestoneDto>>>, DevopsError> {
-    Ok(Json(ApiResponse::ok(state.service.list_milestones().await?)))
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(state.service.list_milestones(&tenant).await?)))
 }
 
 #[derive(Deserialize)]
@@ -1160,9 +1191,11 @@ async fn create_milestone(
     Extension(user): Extension<CurrentUser>,
     Json(body): Json<CreateMilestoneBody>,
 ) -> Result<Json<ApiResponse<MilestoneDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
     let dto = state
         .service
         .create_milestone(
+            &tenant,
             &user.id,
             Some(user.username.as_str()),
             &body.title,
@@ -1189,12 +1222,15 @@ struct UpdateMilestoneBody {
 
 async fn update_milestone(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
     Json(body): Json<UpdateMilestoneBody>,
 ) -> Result<Json<ApiResponse<MilestoneDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
     let dto = state
         .service
         .update_milestone(
+            &tenant,
             &id,
             body.title.as_deref(),
             body.description.as_ref().map(|d| d.as_deref()),
@@ -1207,9 +1243,11 @@ async fn update_milestone(
 
 async fn delete_milestone(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
-    state.service.delete_milestone(&id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    state.service.delete_milestone(&tenant, &id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -1217,8 +1255,10 @@ async fn delete_milestone(
 
 async fn list_test_plans(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<TestPlanDto>>>, DevopsError> {
-    Ok(Json(ApiResponse::ok(state.service.list_test_plans().await?)))
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(state.service.list_test_plans(&tenant).await?)))
 }
 
 #[derive(Deserialize)]
@@ -1236,9 +1276,11 @@ async fn create_test_plan(
     Extension(user): Extension<CurrentUser>,
     Json(body): Json<CreateTestPlanBody>,
 ) -> Result<Json<ApiResponse<TestPlanDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
     let dto = state
         .service
         .create_test_plan(
+            &tenant,
             &user.id,
             Some(user.username.as_str()),
             &body.title,
@@ -1264,12 +1306,15 @@ struct UpdateTestPlanBody {
 
 async fn update_test_plan(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
     Json(body): Json<UpdateTestPlanBody>,
 ) -> Result<Json<ApiResponse<TestPlanDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
     let dto = state
         .service
         .update_test_plan(
+            &tenant,
             &id,
             body.title.as_deref(),
             body.description.as_ref().map(|d| d.as_deref()),
@@ -1282,9 +1327,11 @@ async fn update_test_plan(
 
 async fn delete_test_plan(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
-    state.service.delete_test_plan(&id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    state.service.delete_test_plan(&tenant, &id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -1292,9 +1339,13 @@ async fn delete_test_plan(
 
 async fn list_test_cases(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<TestCaseDto>>>, DevopsError> {
-    Ok(Json(ApiResponse::ok(state.service.list_test_cases(&id).await?)))
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(
+        state.service.list_test_cases(&tenant, &id).await?,
+    )))
 }
 
 #[derive(Deserialize)]
@@ -1315,9 +1366,11 @@ async fn create_test_case(
     Path(plan_id): Path<String>,
     Json(body): Json<CreateTestCaseBody>,
 ) -> Result<Json<ApiResponse<TestCaseDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
     let dto = state
         .service
         .create_test_case(
+            &tenant,
             &plan_id,
             &user.id,
             Some(user.username.as_str()),
@@ -1347,12 +1400,15 @@ struct UpdateTestCaseBody {
 
 async fn update_test_case(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path((_, id)): Path<(String, String)>,
     Json(body): Json<UpdateTestCaseBody>,
 ) -> Result<Json<ApiResponse<TestCaseDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
     let dto = state
         .service
         .update_test_case(
+            &tenant,
             &id,
             body.title.as_deref(),
             body.status.as_deref(),
@@ -1366,9 +1422,11 @@ async fn update_test_case(
 
 async fn delete_test_case(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path((_, id)): Path<(String, String)>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
-    state.service.delete_test_case(&id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    state.service.delete_test_case(&tenant, &id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -1376,8 +1434,10 @@ async fn delete_test_case(
 
 async fn list_pipelines(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<PipelineDto>>>, DevopsError> {
-    Ok(Json(ApiResponse::ok(state.service.list_pipelines().await?)))
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(state.service.list_pipelines(&tenant).await?)))
 }
 
 #[derive(Deserialize)]
@@ -1395,9 +1455,11 @@ async fn create_pipeline(
     Extension(user): Extension<CurrentUser>,
     Json(body): Json<CreatePipelineBody>,
 ) -> Result<Json<ApiResponse<PipelineDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
     let dto = state
         .service
         .create_pipeline(
+            &tenant,
             &user.id,
             Some(user.username.as_str()),
             &body.name,
@@ -1423,12 +1485,15 @@ struct UpdatePipelineBody {
 
 async fn update_pipeline(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
     Json(body): Json<UpdatePipelineBody>,
 ) -> Result<Json<ApiResponse<PipelineDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
     let dto = state
         .service
         .update_pipeline(
+            &tenant,
             &id,
             body.name.as_deref(),
             body.description.as_ref().map(|d| d.as_deref()),
@@ -1441,9 +1506,11 @@ async fn update_pipeline(
 
 async fn delete_pipeline(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
-    state.service.delete_pipeline(&id).await?;
+    let tenant = state.tenant_of(&user.id).await;
+    state.service.delete_pipeline(&tenant, &id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -1451,9 +1518,13 @@ async fn delete_pipeline(
 
 async fn list_pipeline_runs(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<PipelineRunDto>>>, DevopsError> {
-    Ok(Json(ApiResponse::ok(state.service.list_pipeline_runs(&id).await?)))
+    let tenant = state.tenant_of(&user.id).await;
+    Ok(Json(ApiResponse::ok(
+        state.service.list_pipeline_runs(&tenant, &id).await?,
+    )))
 }
 
 async fn create_pipeline_run(
@@ -1461,9 +1532,10 @@ async fn create_pipeline_run(
     Extension(user): Extension<CurrentUser>,
     Path(pipeline_id): Path<String>,
 ) -> Result<Json<ApiResponse<PipelineRunDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
     let dto = state
         .service
-        .create_pipeline_run(&pipeline_id, Some(user.username.as_str()))
+        .create_pipeline_run(&tenant, &pipeline_id, Some(user.username.as_str()))
         .await?;
     Ok(Json(ApiResponse::ok(dto)))
 }
@@ -1483,12 +1555,15 @@ struct UpdatePipelineRunBody {
 
 async fn update_pipeline_run(
     State(state): State<OneDevopsRouterState>,
+    Extension(user): Extension<CurrentUser>,
     Path((_, id)): Path<(String, String)>,
     Json(body): Json<UpdatePipelineRunBody>,
 ) -> Result<Json<ApiResponse<PipelineRunDto>>, DevopsError> {
+    let tenant = state.tenant_of(&user.id).await;
     let dto = state
         .service
         .update_pipeline_run(
+            &tenant,
             &id,
             body.status.as_deref(),
             body.started_at,

@@ -87,12 +87,13 @@ impl DevopsService {
 
     /// Full requirements forest, children nested, roots + children both
     /// ordered by updated_at DESC (matches the 1one tree endpoint).
-    pub async fn requirements_tree(&self) -> Result<Vec<RequirementDto>, DevopsError> {
+    pub async fn requirements_tree(&self, tenant_id: &str) -> Result<Vec<RequirementDto>, DevopsError> {
         let rows = sqlx::query_as::<_, RequirementRow>(
             "SELECT id, parent_id, type, subject, description, status, priority, assigned_to, \
                     milestone_id, autopilot, creator_id, creator_name, created_at, updated_at \
-             FROM one_requirements ORDER BY updated_at DESC",
+             FROM one_requirements WHERE tenant_id = ? ORDER BY updated_at DESC",
         )
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -124,6 +125,7 @@ impl DevopsService {
 
     pub async fn create_requirement(
         &self,
+        tenant_id: &str,
         creator_id: &str,
         creator_name: Option<&str>,
         input: CreateRequirementInput,
@@ -137,7 +139,7 @@ impl DevopsService {
         let priority = input.priority.as_deref().unwrap_or("medium");
         validate_one_of(priority, REQUIREMENT_PRIORITIES, "priority")?;
         if let Some(parent_id) = input.parent_id.as_deref() {
-            self.require_requirement(parent_id).await?;
+            self.require_requirement(tenant_id, parent_id).await?;
         }
 
         let id = new_id("req");
@@ -145,8 +147,8 @@ impl DevopsService {
         sqlx::query(
             "INSERT INTO one_requirements \
                 (id, parent_id, type, subject, description, status, priority, assigned_to, \
-                 milestone_id, autopilot, creator_id, creator_name, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, 'backlog', ?, NULL, ?, ?, ?, ?, ?, ?)",
+                 milestone_id, autopilot, creator_id, creator_name, tenant_id, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, 'backlog', ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&input.parent_id)
@@ -158,12 +160,13 @@ impl DevopsService {
         .bind(input.autopilot.unwrap_or(false))
         .bind(creator_id)
         .bind(creator_name)
+        .bind(tenant_id)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
         .await?;
 
-        Ok(RequirementDto::from_row(self.fetch_requirement(&id).await?))
+        Ok(RequirementDto::from_row(self.fetch_requirement(tenant_id, &id).await?))
     }
 
     /// Create the parsed breakdown children under `parent_id` (A1 L2). Each
@@ -172,16 +175,18 @@ impl DevopsService {
     /// is unexpected and aborts the batch.
     pub async fn create_breakdown_children(
         &self,
+        tenant_id: &str,
         parent_id: &str,
         creator_id: &str,
         creator_name: Option<&str>,
         items: &[crate::breakdown::BreakdownItem],
     ) -> Result<Vec<RequirementDto>, DevopsError> {
-        self.require_requirement(parent_id).await?;
+        self.require_requirement(tenant_id, parent_id).await?;
         let mut created = Vec::with_capacity(items.len());
         for item in items {
             let child = self
                 .create_requirement(
+                    tenant_id,
                     creator_id,
                     creator_name,
                     CreateRequirementInput {
@@ -200,8 +205,13 @@ impl DevopsService {
         Ok(created)
     }
 
-    pub async fn update_requirement(&self, id: &str, input: UpdateRequirementInput) -> Result<(), DevopsError> {
-        let row = self.require_requirement(id).await?;
+    pub async fn update_requirement(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        input: UpdateRequirementInput,
+    ) -> Result<(), DevopsError> {
+        let row = self.require_requirement(tenant_id, id).await?;
 
         if let Some(status) = input.status.as_deref() {
             validate_one_of(status, REQUIREMENT_STATUSES, "status")?;
@@ -213,7 +223,7 @@ impl DevopsService {
             if parent_id == id {
                 return Err(DevopsError::BadRequest("a requirement cannot be its own parent".into()));
             }
-            self.require_requirement(parent_id).await?;
+            self.require_requirement(tenant_id, parent_id).await?;
         }
         let subject = match input.subject.as_deref().map(str::trim) {
             Some("") => return Err(DevopsError::BadRequest("subject cannot be empty".into())),
@@ -265,21 +275,22 @@ impl DevopsService {
     /// quota twice. Claiming before the run guarantees exactly one winner.
     /// Requirements already in `developing` or a later status are not claimable
     /// here; the caller decides whether a deliberate re-dispatch is still allowed.
-    pub async fn claim_requirement_for_dispatch(&self, id: &str) -> Result<bool, DevopsError> {
+    pub async fn claim_requirement_for_dispatch(&self, tenant_id: &str, id: &str) -> Result<bool, DevopsError> {
         let res = sqlx::query(
             "UPDATE one_requirements SET status = 'developing', updated_at = ? \
-             WHERE id = ? AND status IN ('backlog', 'planning')",
+             WHERE id = ? AND tenant_id = ? AND status IN ('backlog', 'planning')",
         )
         .bind(now_ms())
         .bind(id)
+        .bind(tenant_id)
         .execute(&self.pool)
         .await?;
         Ok(res.rows_affected() == 1)
     }
 
     /// Delete a requirement and its whole subtree (plus their comments).
-    pub async fn delete_requirement(&self, id: &str) -> Result<(), DevopsError> {
-        self.require_requirement(id).await?;
+    pub async fn delete_requirement(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
+        self.require_requirement(tenant_id, id).await?;
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "WITH RECURSIVE subtree(id) AS (\
@@ -307,25 +318,31 @@ impl DevopsService {
         Ok(())
     }
 
-    pub async fn list_comments(&self, requirement_id: &str) -> Result<Vec<RequirementCommentDto>, DevopsError> {
-        self.require_requirement(requirement_id).await?;
+    pub async fn list_comments(
+        &self,
+        tenant_id: &str,
+        requirement_id: &str,
+    ) -> Result<Vec<RequirementCommentDto>, DevopsError> {
+        self.require_requirement(tenant_id, requirement_id).await?;
         Ok(sqlx::query_as::<_, RequirementCommentDto>(
             "SELECT id, requirement_id, author_type, author_id, author_name, body, metadata, created_at \
-             FROM one_requirement_comments WHERE requirement_id = ? ORDER BY created_at ASC",
+             FROM one_requirement_comments WHERE requirement_id = ? AND tenant_id = ? ORDER BY created_at ASC",
         )
         .bind(requirement_id)
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await?)
     }
 
     pub async fn create_comment(
         &self,
+        tenant_id: &str,
         requirement_id: &str,
         author_id: &str,
         author_name: &str,
         body: &str,
     ) -> Result<RequirementCommentDto, DevopsError> {
-        self.require_requirement(requirement_id).await?;
+        self.require_requirement(tenant_id, requirement_id).await?;
         let body = body.trim();
         if body.is_empty() {
             return Err(DevopsError::BadRequest("comment body is required".into()));
@@ -334,14 +351,15 @@ impl DevopsService {
         let now = now_ms();
         sqlx::query(
             "INSERT INTO one_requirement_comments \
-                (id, requirement_id, author_type, author_id, author_name, body, metadata, created_at) \
-             VALUES (?, ?, 'user', ?, ?, ?, NULL, ?)",
+                (id, requirement_id, author_type, author_id, author_name, body, metadata, tenant_id, created_at) \
+             VALUES (?, ?, 'user', ?, ?, ?, NULL, ?, ?)",
         )
         .bind(&id)
         .bind(requirement_id)
         .bind(author_id)
         .bind(author_name)
         .bind(body)
+        .bind(tenant_id)
         .bind(now)
         .execute(&self.pool)
         .await?;
@@ -359,14 +377,18 @@ impl DevopsService {
 
     /// Public requirement fetch for orchestration (dispatch). Errors NotFound
     /// when the id is unknown.
-    pub async fn get_requirement_row(&self, id: &str) -> Result<RequirementRow, DevopsError> {
-        self.fetch_requirement(id).await
+    pub async fn get_requirement_row(&self, tenant_id: &str, id: &str) -> Result<RequirementRow, DevopsError> {
+        self.fetch_requirement(tenant_id, id).await
     }
 
     /// Insert an agent/autopilot-authored comment carrying optional metadata
     /// JSON. Used by dispatch to record the run linkage on the requirement.
+    // See create_test_case's comment for why this carries the allow — same
+    // 012 tenant-scope fix, same "defer the struct refactor" call.
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_agent_comment(
         &self,
+        tenant_id: &str,
         requirement_id: &str,
         author_type: &str,
         author_id: Option<&str>,
@@ -374,13 +396,13 @@ impl DevopsService {
         body: &str,
         metadata: Option<String>,
     ) -> Result<RequirementCommentDto, DevopsError> {
-        self.require_requirement(requirement_id).await?;
+        self.require_requirement(tenant_id, requirement_id).await?;
         let id = new_id("reqc");
         let now = now_ms();
         sqlx::query(
             "INSERT INTO one_requirement_comments \
-                (id, requirement_id, author_type, author_id, author_name, body, metadata, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (id, requirement_id, author_type, author_id, author_name, body, metadata, tenant_id, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(requirement_id)
@@ -389,6 +411,7 @@ impl DevopsService {
         .bind(author_name)
         .bind(body)
         .bind(metadata.as_deref())
+        .bind(tenant_id)
         .bind(now)
         .execute(&self.pool)
         .await?;
@@ -404,20 +427,21 @@ impl DevopsService {
         })
     }
 
-    async fn fetch_requirement(&self, id: &str) -> Result<RequirementRow, DevopsError> {
+    async fn fetch_requirement(&self, tenant_id: &str, id: &str) -> Result<RequirementRow, DevopsError> {
         sqlx::query_as::<_, RequirementRow>(
             "SELECT id, parent_id, type, subject, description, status, priority, assigned_to, \
                     milestone_id, autopilot, creator_id, creator_name, created_at, updated_at \
-             FROM one_requirements WHERE id = ?",
+             FROM one_requirements WHERE id = ? AND tenant_id = ?",
         )
         .bind(id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| DevopsError::NotFound(format!("requirement {id}")))
     }
 
-    async fn require_requirement(&self, id: &str) -> Result<RequirementRow, DevopsError> {
-        self.fetch_requirement(id).await
+    async fn require_requirement(&self, tenant_id: &str, id: &str) -> Result<RequirementRow, DevopsError> {
+        self.fetch_requirement(tenant_id, id).await
     }
 
     /// Best-effort audit trail for policy-changing actions (registry writes,
@@ -1100,18 +1124,20 @@ impl DevopsService {
 
     // -- milestones -------------------------------------------------------
 
-    pub async fn list_milestones(&self) -> Result<Vec<MilestoneDto>, DevopsError> {
+    pub async fn list_milestones(&self, tenant_id: &str) -> Result<Vec<MilestoneDto>, DevopsError> {
         Ok(sqlx::query_as::<_, MilestoneDto>(
             "SELECT id, title, description, status, due_at, creator_id, creator_name, created_at, updated_at \
-             FROM one_milestones ORDER BY \
+             FROM one_milestones WHERE tenant_id = ? ORDER BY \
                 CASE status WHEN 'active' THEN 0 WHEN 'completed' THEN 1 ELSE 2 END, updated_at DESC",
         )
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await?)
     }
 
     pub async fn create_milestone(
         &self,
+        tenant_id: &str,
         creator_id: &str,
         creator_name: Option<&str>,
         title: &str,
@@ -1126,8 +1152,8 @@ impl DevopsService {
         let now = now_ms();
         sqlx::query(
             "INSERT INTO one_milestones \
-                (id, title, description, status, due_at, creator_id, creator_name, created_at, updated_at) \
-             VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)",
+                (id, title, description, status, due_at, creator_id, creator_name, tenant_id, created_at, updated_at) \
+             VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(title)
@@ -1135,15 +1161,17 @@ impl DevopsService {
         .bind(due_at)
         .bind(creator_id)
         .bind(creator_name)
+        .bind(tenant_id)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
         .await?;
-        self.fetch_milestone(&id).await
+        self.fetch_milestone(tenant_id, &id).await
     }
 
     pub async fn update_milestone(
         &self,
+        tenant_id: &str,
         id: &str,
         title: Option<&str>,
         description: Option<Option<&str>>,
@@ -1156,14 +1184,14 @@ impl DevopsService {
         let now = now_ms();
         // CASE WHEN ? guards mirror update_requirement: absent field = keep,
         // present = overwrite (Option<Option<_>> distinguishes null-clear).
-        sqlx::query(
+        let res = sqlx::query(
             "UPDATE one_milestones SET \
                 title = CASE WHEN ? THEN ? ELSE title END, \
                 description = CASE WHEN ? THEN ? ELSE description END, \
                 status = CASE WHEN ? THEN ? ELSE status END, \
                 due_at = CASE WHEN ? THEN ? ELSE due_at END, \
                 updated_at = ? \
-             WHERE id = ?",
+             WHERE id = ? AND tenant_id = ?",
         )
         .bind(title.is_some())
         .bind(title)
@@ -1175,15 +1203,20 @@ impl DevopsService {
         .bind(due_at.flatten())
         .bind(now)
         .bind(id)
+        .bind(tenant_id)
         .execute(&self.pool)
         .await?;
-        self.fetch_milestone(id).await
+        if res.rows_affected() == 0 {
+            return Err(DevopsError::NotFound(format!("milestone {id}")));
+        }
+        self.fetch_milestone(tenant_id, id).await
     }
 
-    pub async fn delete_milestone(&self, id: &str) -> Result<(), DevopsError> {
+    pub async fn delete_milestone(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
         let mut tx = self.pool.begin().await?;
-        let deleted = sqlx::query("DELETE FROM one_milestones WHERE id = ?")
+        let deleted = sqlx::query("DELETE FROM one_milestones WHERE id = ? AND tenant_id = ?")
             .bind(id)
+            .bind(tenant_id)
             .execute(&mut *tx)
             .await?;
         if deleted.rows_affected() == 0 {
@@ -1198,12 +1231,13 @@ impl DevopsService {
         Ok(())
     }
 
-    async fn fetch_milestone(&self, id: &str) -> Result<MilestoneDto, DevopsError> {
+    async fn fetch_milestone(&self, tenant_id: &str, id: &str) -> Result<MilestoneDto, DevopsError> {
         sqlx::query_as::<_, MilestoneDto>(
             "SELECT id, title, description, status, due_at, creator_id, creator_name, created_at, updated_at \
-             FROM one_milestones WHERE id = ?",
+             FROM one_milestones WHERE id = ? AND tenant_id = ?",
         )
         .bind(id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| DevopsError::NotFound(format!("milestone {id}")))
@@ -1496,20 +1530,22 @@ impl DevopsService {
 
     // -- test plans (A4) --------------------------------------------------
 
-    pub async fn list_test_plans(&self) -> Result<Vec<TestPlanDto>, DevopsError> {
+    pub async fn list_test_plans(&self, tenant_id: &str) -> Result<Vec<TestPlanDto>, DevopsError> {
         Ok(sqlx::query_as::<_, TestPlanDto>(
             "SELECT id, title, description, status, requirement_id, creator_id, creator_name, \
                     created_at, updated_at \
-             FROM one_test_plans ORDER BY \
+             FROM one_test_plans WHERE tenant_id = ? ORDER BY \
                 CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 WHEN 'completed' THEN 2 ELSE 3 END, \
                 updated_at DESC",
         )
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await?)
     }
 
     pub async fn create_test_plan(
         &self,
+        tenant_id: &str,
         creator_id: &str,
         creator_name: Option<&str>,
         title: &str,
@@ -1524,8 +1560,8 @@ impl DevopsService {
         let now = now_ms();
         sqlx::query(
             "INSERT INTO one_test_plans \
-                (id, title, description, status, requirement_id, creator_id, creator_name, created_at, updated_at) \
-             VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?)",
+                (id, title, description, status, requirement_id, creator_id, creator_name, tenant_id, created_at, updated_at) \
+             VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(title)
@@ -1533,15 +1569,17 @@ impl DevopsService {
         .bind(requirement_id)
         .bind(creator_id)
         .bind(creator_name)
+        .bind(tenant_id)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
         .await?;
-        self.fetch_test_plan(&id).await
+        self.fetch_test_plan(tenant_id, &id).await
     }
 
     pub async fn update_test_plan(
         &self,
+        tenant_id: &str,
         id: &str,
         title: Option<&str>,
         description: Option<Option<&str>>,
@@ -1552,14 +1590,14 @@ impl DevopsService {
             validate_one_of(status, TEST_PLAN_STATUSES, "test plan status")?;
         }
         let now = now_ms();
-        sqlx::query(
+        let res = sqlx::query(
             "UPDATE one_test_plans SET \
                 title = CASE WHEN ? THEN ? ELSE title END, \
                 description = CASE WHEN ? THEN ? ELSE description END, \
                 status = CASE WHEN ? THEN ? ELSE status END, \
                 requirement_id = CASE WHEN ? THEN ? ELSE requirement_id END, \
                 updated_at = ? \
-             WHERE id = ?",
+             WHERE id = ? AND tenant_id = ?",
         )
         .bind(title.is_some())
         .bind(title)
@@ -1571,15 +1609,20 @@ impl DevopsService {
         .bind(requirement_id.flatten())
         .bind(now)
         .bind(id)
+        .bind(tenant_id)
         .execute(&self.pool)
         .await?;
-        self.fetch_test_plan(id).await
+        if res.rows_affected() == 0 {
+            return Err(DevopsError::NotFound(format!("test plan {id}")));
+        }
+        self.fetch_test_plan(tenant_id, id).await
     }
 
-    pub async fn delete_test_plan(&self, id: &str) -> Result<(), DevopsError> {
+    pub async fn delete_test_plan(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
         let mut tx = self.pool.begin().await?;
-        let deleted = sqlx::query("DELETE FROM one_test_plans WHERE id = ?")
+        let deleted = sqlx::query("DELETE FROM one_test_plans WHERE id = ? AND tenant_id = ?")
             .bind(id)
+            .bind(tenant_id)
             .execute(&mut *tx)
             .await?;
         if deleted.rows_affected() == 0 {
@@ -1593,13 +1636,14 @@ impl DevopsService {
         Ok(())
     }
 
-    async fn fetch_test_plan(&self, id: &str) -> Result<TestPlanDto, DevopsError> {
+    async fn fetch_test_plan(&self, tenant_id: &str, id: &str) -> Result<TestPlanDto, DevopsError> {
         sqlx::query_as::<_, TestPlanDto>(
             "SELECT id, title, description, status, requirement_id, creator_id, creator_name, \
                     created_at, updated_at \
-             FROM one_test_plans WHERE id = ?",
+             FROM one_test_plans WHERE id = ? AND tenant_id = ?",
         )
         .bind(id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| DevopsError::NotFound(format!("test plan {id}")))
@@ -1607,10 +1651,11 @@ impl DevopsService {
 
     // -- test cases ---------------------------------------------------------
 
-    pub async fn list_test_cases(&self, plan_id: &str) -> Result<Vec<TestCaseDto>, DevopsError> {
-        // Verify plan exists first.
-        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ?")
+    pub async fn list_test_cases(&self, tenant_id: &str, plan_id: &str) -> Result<Vec<TestCaseDto>, DevopsError> {
+        // Verify the plan exists AND belongs to the caller's tenant first.
+        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ? AND tenant_id = ?")
             .bind(plan_id)
+            .bind(tenant_id)
             .fetch_one(&self.pool)
             .await?;
         if !exists {
@@ -1619,15 +1664,23 @@ impl DevopsService {
         Ok(sqlx::query_as::<_, TestCaseDto>(
             "SELECT id, plan_id, title, description, steps, expected, status, creator_id, creator_name, \
                     created_at, updated_at \
-             FROM one_test_cases WHERE plan_id = ? ORDER BY created_at ASC",
+             FROM one_test_cases WHERE plan_id = ? AND tenant_id = ? ORDER BY created_at ASC",
         )
         .bind(plan_id)
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await?)
     }
 
+    // The 012 tenant-scope fix (see migration header) added `tenant_id` to
+    // every one of this family's methods, pushing this one past clippy's
+    // default arg-count threshold. Not restructured into an input struct
+    // like `CreateRequirementInput` because that would also touch its one
+    // route-handler call site for no behavior change — deferred, not skipped.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_test_case(
         &self,
+        tenant_id: &str,
         plan_id: &str,
         creator_id: &str,
         creator_name: Option<&str>,
@@ -1640,8 +1693,9 @@ impl DevopsService {
         if title.is_empty() {
             return Err(DevopsError::BadRequest("title is required".into()));
         }
-        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ?")
+        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_test_plans WHERE id = ? AND tenant_id = ?")
             .bind(plan_id)
+            .bind(tenant_id)
             .fetch_one(&self.pool)
             .await?;
         if !exists {
@@ -1651,8 +1705,8 @@ impl DevopsService {
         let now = now_ms();
         sqlx::query(
             "INSERT INTO one_test_cases \
-                (id, plan_id, title, description, steps, expected, status, creator_id, creator_name, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
+                (id, plan_id, title, description, steps, expected, status, creator_id, creator_name, tenant_id, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(plan_id)
@@ -1662,15 +1716,19 @@ impl DevopsService {
         .bind(expected)
         .bind(creator_id)
         .bind(creator_name)
+        .bind(tenant_id)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
         .await?;
-        self.fetch_test_case(&id).await
+        self.fetch_test_case(tenant_id, &id).await
     }
 
+    // See create_test_case above for why this carries the same allow.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_test_case(
         &self,
+        tenant_id: &str,
         id: &str,
         title: Option<&str>,
         status: Option<&str>,
@@ -1682,7 +1740,7 @@ impl DevopsService {
             validate_one_of(status, TEST_CASE_STATUSES, "test case status")?;
         }
         let now = now_ms();
-        sqlx::query(
+        let res = sqlx::query(
             "UPDATE one_test_cases SET \
                 title = CASE WHEN ? THEN ? ELSE title END, \
                 status = CASE WHEN ? THEN ? ELSE status END, \
@@ -1690,7 +1748,7 @@ impl DevopsService {
                 steps = CASE WHEN ? THEN ? ELSE steps END, \
                 expected = CASE WHEN ? THEN ? ELSE expected END, \
                 updated_at = ? \
-             WHERE id = ?",
+             WHERE id = ? AND tenant_id = ?",
         )
         .bind(title.is_some())
         .bind(title)
@@ -1704,14 +1762,19 @@ impl DevopsService {
         .bind(expected.flatten())
         .bind(now)
         .bind(id)
+        .bind(tenant_id)
         .execute(&self.pool)
         .await?;
-        self.fetch_test_case(id).await
+        if res.rows_affected() == 0 {
+            return Err(DevopsError::NotFound(format!("test case {id}")));
+        }
+        self.fetch_test_case(tenant_id, id).await
     }
 
-    pub async fn delete_test_case(&self, id: &str) -> Result<(), DevopsError> {
-        let deleted = sqlx::query("DELETE FROM one_test_cases WHERE id = ?")
+    pub async fn delete_test_case(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
+        let deleted = sqlx::query("DELETE FROM one_test_cases WHERE id = ? AND tenant_id = ?")
             .bind(id)
+            .bind(tenant_id)
             .execute(&self.pool)
             .await?;
         if deleted.rows_affected() == 0 {
@@ -1720,13 +1783,14 @@ impl DevopsService {
         Ok(())
     }
 
-    async fn fetch_test_case(&self, id: &str) -> Result<TestCaseDto, DevopsError> {
+    async fn fetch_test_case(&self, tenant_id: &str, id: &str) -> Result<TestCaseDto, DevopsError> {
         sqlx::query_as::<_, TestCaseDto>(
             "SELECT id, plan_id, title, description, steps, expected, status, creator_id, creator_name, \
                     created_at, updated_at \
-             FROM one_test_cases WHERE id = ?",
+             FROM one_test_cases WHERE id = ? AND tenant_id = ?",
         )
         .bind(id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| DevopsError::NotFound(format!("test case {id}")))
@@ -1734,19 +1798,21 @@ impl DevopsService {
 
     // -- pipelines (A4) ---------------------------------------------------
 
-    pub async fn list_pipelines(&self) -> Result<Vec<PipelineDto>, DevopsError> {
+    pub async fn list_pipelines(&self, tenant_id: &str) -> Result<Vec<PipelineDto>, DevopsError> {
         Ok(sqlx::query_as::<_, PipelineDto>(
             "SELECT id, name, description, status, trigger, creator_id, creator_name, \
                     created_at, updated_at \
-             FROM one_pipelines ORDER BY \
+             FROM one_pipelines WHERE tenant_id = ? ORDER BY \
                 CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC",
         )
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await?)
     }
 
     pub async fn create_pipeline(
         &self,
+        tenant_id: &str,
         creator_id: &str,
         creator_name: Option<&str>,
         name: &str,
@@ -1763,8 +1829,8 @@ impl DevopsService {
         let now = now_ms();
         sqlx::query(
             "INSERT INTO one_pipelines \
-                (id, name, description, status, trigger, creator_id, creator_name, created_at, updated_at) \
-             VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)",
+                (id, name, description, status, trigger, creator_id, creator_name, tenant_id, created_at, updated_at) \
+             VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(name)
@@ -1772,15 +1838,17 @@ impl DevopsService {
         .bind(trigger)
         .bind(creator_id)
         .bind(creator_name)
+        .bind(tenant_id)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
         .await?;
-        self.fetch_pipeline(&id).await
+        self.fetch_pipeline(tenant_id, &id).await
     }
 
     pub async fn update_pipeline(
         &self,
+        tenant_id: &str,
         id: &str,
         name: Option<&str>,
         description: Option<Option<&str>>,
@@ -1794,14 +1862,14 @@ impl DevopsService {
             validate_one_of(trigger, PIPELINE_TRIGGERS, "pipeline trigger")?;
         }
         let now = now_ms();
-        sqlx::query(
+        let res = sqlx::query(
             "UPDATE one_pipelines SET \
                 name = CASE WHEN ? THEN ? ELSE name END, \
                 description = CASE WHEN ? THEN ? ELSE description END, \
                 status = CASE WHEN ? THEN ? ELSE status END, \
                 trigger = CASE WHEN ? THEN ? ELSE trigger END, \
                 updated_at = ? \
-             WHERE id = ?",
+             WHERE id = ? AND tenant_id = ?",
         )
         .bind(name.is_some())
         .bind(name)
@@ -1813,15 +1881,20 @@ impl DevopsService {
         .bind(trigger)
         .bind(now)
         .bind(id)
+        .bind(tenant_id)
         .execute(&self.pool)
         .await?;
-        self.fetch_pipeline(id).await
+        if res.rows_affected() == 0 {
+            return Err(DevopsError::NotFound(format!("pipeline {id}")));
+        }
+        self.fetch_pipeline(tenant_id, id).await
     }
 
-    pub async fn delete_pipeline(&self, id: &str) -> Result<(), DevopsError> {
+    pub async fn delete_pipeline(&self, tenant_id: &str, id: &str) -> Result<(), DevopsError> {
         let mut tx = self.pool.begin().await?;
-        let deleted = sqlx::query("DELETE FROM one_pipelines WHERE id = ?")
+        let deleted = sqlx::query("DELETE FROM one_pipelines WHERE id = ? AND tenant_id = ?")
             .bind(id)
+            .bind(tenant_id)
             .execute(&mut *tx)
             .await?;
         if deleted.rows_affected() == 0 {
@@ -1835,13 +1908,14 @@ impl DevopsService {
         Ok(())
     }
 
-    async fn fetch_pipeline(&self, id: &str) -> Result<PipelineDto, DevopsError> {
+    async fn fetch_pipeline(&self, tenant_id: &str, id: &str) -> Result<PipelineDto, DevopsError> {
         sqlx::query_as::<_, PipelineDto>(
             "SELECT id, name, description, status, trigger, creator_id, creator_name, \
                     created_at, updated_at \
-             FROM one_pipelines WHERE id = ?",
+             FROM one_pipelines WHERE id = ? AND tenant_id = ?",
         )
         .bind(id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| DevopsError::NotFound(format!("pipeline {id}")))
@@ -1849,9 +1923,14 @@ impl DevopsService {
 
     // -- pipeline runs ------------------------------------------------------
 
-    pub async fn list_pipeline_runs(&self, pipeline_id: &str) -> Result<Vec<PipelineRunDto>, DevopsError> {
-        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ?")
+    pub async fn list_pipeline_runs(
+        &self,
+        tenant_id: &str,
+        pipeline_id: &str,
+    ) -> Result<Vec<PipelineRunDto>, DevopsError> {
+        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ? AND tenant_id = ?")
             .bind(pipeline_id)
+            .bind(tenant_id)
             .fetch_one(&self.pool)
             .await?;
         if !exists {
@@ -1860,20 +1939,23 @@ impl DevopsService {
         Ok(sqlx::query_as::<_, PipelineRunDto>(
             "SELECT id, pipeline_id, status, triggered_by, started_at, finished_at, log, \
                     created_at, updated_at \
-             FROM one_pipeline_runs WHERE pipeline_id = ? ORDER BY created_at DESC LIMIT 100",
+             FROM one_pipeline_runs WHERE pipeline_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT 100",
         )
         .bind(pipeline_id)
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await?)
     }
 
     pub async fn create_pipeline_run(
         &self,
+        tenant_id: &str,
         pipeline_id: &str,
         triggered_by: Option<&str>,
     ) -> Result<PipelineRunDto, DevopsError> {
-        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ?")
+        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM one_pipelines WHERE id = ? AND tenant_id = ?")
             .bind(pipeline_id)
+            .bind(tenant_id)
             .fetch_one(&self.pool)
             .await?;
         if !exists {
@@ -1883,21 +1965,23 @@ impl DevopsService {
         let now = now_ms();
         sqlx::query(
             "INSERT INTO one_pipeline_runs \
-                (id, pipeline_id, status, triggered_by, started_at, finished_at, log, created_at, updated_at) \
-             VALUES (?, ?, 'pending', ?, NULL, NULL, NULL, ?, ?)",
+                (id, pipeline_id, status, triggered_by, started_at, finished_at, log, tenant_id, created_at, updated_at) \
+             VALUES (?, ?, 'pending', ?, NULL, NULL, NULL, ?, ?, ?)",
         )
         .bind(&id)
         .bind(pipeline_id)
         .bind(triggered_by)
+        .bind(tenant_id)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
         .await?;
-        self.fetch_pipeline_run(&id).await
+        self.fetch_pipeline_run(tenant_id, &id).await
     }
 
     pub async fn update_pipeline_run(
         &self,
+        tenant_id: &str,
         id: &str,
         status: Option<&str>,
         started_at: Option<Option<i64>>,
@@ -1908,14 +1992,14 @@ impl DevopsService {
             validate_one_of(status, PIPELINE_RUN_STATUSES, "pipeline run status")?;
         }
         let now = now_ms();
-        sqlx::query(
+        let res = sqlx::query(
             "UPDATE one_pipeline_runs SET \
                 status = CASE WHEN ? THEN ? ELSE status END, \
                 started_at = CASE WHEN ? THEN ? ELSE started_at END, \
                 finished_at = CASE WHEN ? THEN ? ELSE finished_at END, \
                 log = CASE WHEN ? THEN ? ELSE log END, \
                 updated_at = ? \
-             WHERE id = ?",
+             WHERE id = ? AND tenant_id = ?",
         )
         .bind(status.is_some())
         .bind(status)
@@ -1927,18 +2011,23 @@ impl DevopsService {
         .bind(log.flatten())
         .bind(now)
         .bind(id)
+        .bind(tenant_id)
         .execute(&self.pool)
         .await?;
-        self.fetch_pipeline_run(id).await
+        if res.rows_affected() == 0 {
+            return Err(DevopsError::NotFound(format!("pipeline run {id}")));
+        }
+        self.fetch_pipeline_run(tenant_id, id).await
     }
 
-    async fn fetch_pipeline_run(&self, id: &str) -> Result<PipelineRunDto, DevopsError> {
+    async fn fetch_pipeline_run(&self, tenant_id: &str, id: &str) -> Result<PipelineRunDto, DevopsError> {
         sqlx::query_as::<_, PipelineRunDto>(
             "SELECT id, pipeline_id, status, triggered_by, started_at, finished_at, log, \
                     created_at, updated_at \
-             FROM one_pipeline_runs WHERE id = ?",
+             FROM one_pipeline_runs WHERE id = ? AND tenant_id = ?",
         )
         .bind(id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| DevopsError::NotFound(format!("pipeline run {id}")))
@@ -2053,6 +2142,7 @@ mod tests {
         let svc = service().await;
         let req = svc
             .create_requirement(
+                "t1",
                 "u1",
                 Some("Alice"),
                 CreateRequirementInput {
@@ -2064,16 +2154,20 @@ mod tests {
             .unwrap();
 
         // First claim on a fresh (backlog) requirement wins and advances status.
-        assert!(svc.claim_requirement_for_dispatch(&req.id).await.unwrap());
-        assert_eq!(svc.get_requirement_row(&req.id).await.unwrap().status, "developing");
+        assert!(svc.claim_requirement_for_dispatch("t1", &req.id).await.unwrap());
+        assert_eq!(
+            svc.get_requirement_row("t1", &req.id).await.unwrap().status,
+            "developing"
+        );
 
         // Second claim loses — the requirement is no longer in a pre-dev status,
         // so a concurrent dispatch/autopilot can't fire a duplicate run.
-        assert!(!svc.claim_requirement_for_dispatch(&req.id).await.unwrap());
+        assert!(!svc.claim_requirement_for_dispatch("t1", &req.id).await.unwrap());
 
         // A requirement already past pre-dev is likewise not claimable here.
         let planning = svc
             .create_requirement(
+                "t1",
                 "u1",
                 Some("Alice"),
                 CreateRequirementInput {
@@ -2084,6 +2178,7 @@ mod tests {
             .await
             .unwrap();
         svc.update_requirement(
+            "t1",
             &planning.id,
             UpdateRequirementInput {
                 status: Some("planning".into()),
@@ -2092,8 +2187,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(svc.claim_requirement_for_dispatch(&planning.id).await.unwrap());
-        assert!(!svc.claim_requirement_for_dispatch(&planning.id).await.unwrap());
+        assert!(svc.claim_requirement_for_dispatch("t1", &planning.id).await.unwrap());
+        assert!(!svc.claim_requirement_for_dispatch("t1", &planning.id).await.unwrap());
     }
 
     #[tokio::test]
@@ -2101,6 +2196,7 @@ mod tests {
         let svc = service().await;
         let epic = svc
             .create_requirement(
+                "t1",
                 "u1",
                 Some("Alice"),
                 CreateRequirementInput {
@@ -2114,6 +2210,7 @@ mod tests {
             .unwrap();
         let story = svc
             .create_requirement(
+                "t1",
                 "u1",
                 Some("Alice"),
                 CreateRequirementInput {
@@ -2126,13 +2223,14 @@ mod tests {
             .await
             .unwrap();
 
-        let tree = svc.requirements_tree().await.unwrap();
+        let tree = svc.requirements_tree("t1").await.unwrap();
         assert_eq!(tree.len(), 1);
         assert_eq!(tree[0].id, epic.id);
         assert_eq!(tree[0].children.len(), 1);
         assert_eq!(tree[0].children[0].id, story.id);
 
         svc.update_requirement(
+            "t1",
             &story.id,
             UpdateRequirementInput {
                 status: Some("developing".into()),
@@ -2142,13 +2240,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let tree = svc.requirements_tree().await.unwrap();
+        let tree = svc.requirements_tree("t1").await.unwrap();
         assert_eq!(tree[0].children[0].status, "developing");
         assert_eq!(tree[0].children[0].assigned_to.as_deref(), Some("agent-1"));
 
         // Deleting the epic removes the subtree.
-        svc.delete_requirement(&epic.id).await.unwrap();
-        assert!(svc.requirements_tree().await.unwrap().is_empty());
+        svc.delete_requirement("t1", &epic.id).await.unwrap();
+        assert!(svc.requirements_tree("t1").await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -2156,6 +2254,7 @@ mod tests {
         let svc = service().await;
         let req = svc
             .create_requirement(
+                "t1",
                 "u1",
                 Some("Alice"),
                 CreateRequirementInput {
@@ -2170,6 +2269,7 @@ mod tests {
         // Default is off.
         let plain = svc
             .create_requirement(
+                "t1",
                 "u1",
                 None,
                 CreateRequirementInput {
@@ -2183,6 +2283,7 @@ mod tests {
 
         // Toggling other fields leaves autopilot untouched; explicit toggle flips it.
         svc.update_requirement(
+            "t1",
             &req.id,
             UpdateRequirementInput {
                 priority: Some("high".into()),
@@ -2192,6 +2293,7 @@ mod tests {
         .await
         .unwrap();
         svc.update_requirement(
+            "t1",
             &req.id,
             UpdateRequirementInput {
                 autopilot: Some(false),
@@ -2200,7 +2302,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let tree = svc.requirements_tree().await.unwrap();
+        let tree = svc.requirements_tree("t1").await.unwrap();
         let refreshed = tree.iter().find(|r| r.id == req.id).unwrap();
         assert!(!refreshed.autopilot);
         assert_eq!(refreshed.priority, "high");
@@ -2211,6 +2313,7 @@ mod tests {
         let svc = service().await;
         let err = svc
             .create_requirement(
+                "t1",
                 "u1",
                 None,
                 CreateRequirementInput {
@@ -2224,6 +2327,7 @@ mod tests {
 
         let req = svc
             .create_requirement(
+                "t1",
                 "u1",
                 None,
                 CreateRequirementInput {
@@ -2235,6 +2339,7 @@ mod tests {
             .unwrap();
         let err = svc
             .update_requirement(
+                "t1",
                 &req.id,
                 UpdateRequirementInput {
                     status: Some("nonsense".into()),
@@ -2246,6 +2351,7 @@ mod tests {
         assert!(matches!(err, DevopsError::BadRequest(_)));
         let err = svc
             .update_requirement(
+                "t1",
                 &req.id,
                 UpdateRequirementInput {
                     parent_id: Some(Some(req.id.clone())),
@@ -2262,6 +2368,7 @@ mod tests {
         let svc = service().await;
         let req = svc
             .create_requirement(
+                "t1",
                 "u1",
                 Some("Alice"),
                 CreateRequirementInput {
@@ -2271,15 +2378,20 @@ mod tests {
             )
             .await
             .unwrap();
-        svc.create_comment(&req.id, "u1", "Alice", "first!").await.unwrap();
-        let comments = svc.list_comments(&req.id).await.unwrap();
+        svc.create_comment("t1", &req.id, "u1", "Alice", "first!")
+            .await
+            .unwrap();
+        let comments = svc.list_comments("t1", &req.id).await.unwrap();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].body, "first!");
         assert_eq!(comments[0].author_type, "user");
 
-        let err = svc.create_comment(&req.id, "u1", "Alice", "  ").await.unwrap_err();
+        let err = svc
+            .create_comment("t1", &req.id, "u1", "Alice", "  ")
+            .await
+            .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));
-        let err = svc.list_comments("missing").await.unwrap_err();
+        let err = svc.list_comments("t1", "missing").await.unwrap_err();
         assert!(matches!(err, DevopsError::NotFound(_)));
     }
 
@@ -2642,6 +2754,7 @@ mod tests {
         let svc = service().await;
         let m = svc
             .create_milestone(
+                "t1",
                 "u1",
                 Some("Alice"),
                 "v1.0 发布",
@@ -2653,7 +2766,7 @@ mod tests {
         assert_eq!(m.status, "active");
 
         let m = svc
-            .update_milestone(&m.id, Some("v1.0 GA"), Some(None), Some("completed"), None)
+            .update_milestone("t1", &m.id, Some("v1.0 GA"), Some(None), Some("completed"), None)
             .await
             .unwrap();
         assert_eq!(m.title, "v1.0 GA");
@@ -2662,7 +2775,7 @@ mod tests {
         assert_eq!(m.due_at, Some(1_800_000_000_000));
 
         let err = svc
-            .update_milestone(&m.id, None, None, Some("bogus"), None)
+            .update_milestone("t1", &m.id, None, None, Some("bogus"), None)
             .await
             .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));
@@ -2670,6 +2783,7 @@ mod tests {
         // A requirement pointing at the milestone gets its link cleared on delete.
         let req = svc
             .create_requirement(
+                "t1",
                 "u1",
                 Some("Alice"),
                 CreateRequirementInput {
@@ -2682,12 +2796,12 @@ mod tests {
             .unwrap();
         assert_eq!(req.milestone_id.as_deref(), Some(m.id.as_str()));
 
-        svc.delete_milestone(&m.id).await.unwrap();
-        assert!(svc.list_milestones().await.unwrap().is_empty());
-        let tree = svc.requirements_tree().await.unwrap();
+        svc.delete_milestone("t1", &m.id).await.unwrap();
+        assert!(svc.list_milestones("t1").await.unwrap().is_empty());
+        let tree = svc.requirements_tree("t1").await.unwrap();
         assert_eq!(tree[0].milestone_id, None);
 
-        let err = svc.delete_milestone("missing").await.unwrap_err();
+        let err = svc.delete_milestone("t1", "missing").await.unwrap_err();
         assert!(matches!(err, DevopsError::NotFound(_)));
     }
 
@@ -2697,53 +2811,60 @@ mod tests {
 
         // Create plan
         let plan = svc
-            .create_test_plan("u1", Some("Alice"), "登录冒烟测试", Some("覆盖 SSO 和密码登录"), None)
+            .create_test_plan(
+                "t1",
+                "u1",
+                Some("Alice"),
+                "登录冒烟测试",
+                Some("覆盖 SSO 和密码登录"),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(plan.status, "draft");
-        assert_eq!(svc.list_test_plans().await.unwrap().len(), 1);
+        assert_eq!(svc.list_test_plans("t1").await.unwrap().len(), 1);
 
         // Update plan
         let plan = svc
-            .update_test_plan(&plan.id, Some("登录回归测试"), None, Some("active"), None)
+            .update_test_plan("t1", &plan.id, Some("登录回归测试"), None, Some("active"), None)
             .await
             .unwrap();
         assert_eq!(plan.status, "active");
 
         // Create cases
         let c1 = svc
-            .create_test_case(&plan.id, "u1", Some("Alice"), "密码登录成功", None, None, None)
+            .create_test_case("t1", &plan.id, "u1", Some("Alice"), "密码登录成功", None, None, None)
             .await
             .unwrap();
         assert_eq!(c1.status, "pending");
         let c2 = svc
-            .create_test_case(&plan.id, "u1", Some("Alice"), "错误密码被拒", None, None, None)
+            .create_test_case("t1", &plan.id, "u1", Some("Alice"), "错误密码被拒", None, None, None)
             .await
             .unwrap();
 
-        let cases = svc.list_test_cases(&plan.id).await.unwrap();
+        let cases = svc.list_test_cases("t1", &plan.id).await.unwrap();
         assert_eq!(cases.len(), 2);
 
         // Update case status
         let c1 = svc
-            .update_test_case(&c1.id, None, Some("passed"), None, None, None)
+            .update_test_case("t1", &c1.id, None, Some("passed"), None, None, None)
             .await
             .unwrap();
         assert_eq!(c1.status, "passed");
 
         let err = svc
-            .update_test_case(&c2.id, None, Some("bogus"), None, None, None)
+            .update_test_case("t1", &c2.id, None, Some("bogus"), None, None, None)
             .await
             .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));
 
         // Delete case
-        svc.delete_test_case(&c2.id).await.unwrap();
-        assert_eq!(svc.list_test_cases(&plan.id).await.unwrap().len(), 1);
+        svc.delete_test_case("t1", &c2.id).await.unwrap();
+        assert_eq!(svc.list_test_cases("t1", &plan.id).await.unwrap().len(), 1);
 
         // Delete plan cascades to remaining cases
-        svc.delete_test_plan(&plan.id).await.unwrap();
-        assert!(svc.list_test_plans().await.unwrap().is_empty());
+        svc.delete_test_plan("t1", &plan.id).await.unwrap();
+        assert!(svc.list_test_plans("t1").await.unwrap().is_empty());
     }
 
     /// Deleting a knowledge-base document must also erase its text from the
@@ -2798,6 +2919,7 @@ mod tests {
         // Create pipeline
         let pipe = svc
             .create_pipeline(
+                "t1",
                 "u1",
                 Some("Alice"),
                 "CI 主流水线",
@@ -2808,27 +2930,34 @@ mod tests {
             .unwrap();
         assert_eq!(pipe.status, "active");
         assert_eq!(pipe.trigger, "push");
-        assert_eq!(svc.list_pipelines().await.unwrap().len(), 1);
+        assert_eq!(svc.list_pipelines("t1").await.unwrap().len(), 1);
 
         // Update pipeline
         let pipe = svc
-            .update_pipeline(&pipe.id, None, None, Some("disabled"), None)
+            .update_pipeline("t1", &pipe.id, None, None, Some("disabled"), None)
             .await
             .unwrap();
         assert_eq!(pipe.status, "disabled");
 
         let err = svc
-            .update_pipeline(&pipe.id, None, None, Some("bad"), None)
+            .update_pipeline("t1", &pipe.id, None, None, Some("bad"), None)
             .await
             .unwrap_err();
         assert!(matches!(err, DevopsError::BadRequest(_)));
 
         // Create run
-        let run = svc.create_pipeline_run(&pipe.id, Some("u1")).await.unwrap();
+        let run = svc.create_pipeline_run("t1", &pipe.id, Some("u1")).await.unwrap();
         assert_eq!(run.status, "pending");
 
         let run = svc
-            .update_pipeline_run(&run.id, Some("running"), Some(Some(1_800_000_000_000)), None, None)
+            .update_pipeline_run(
+                "t1",
+                &run.id,
+                Some("running"),
+                Some(Some(1_800_000_000_000)),
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(run.status, "running");
@@ -2836,6 +2965,7 @@ mod tests {
 
         let run = svc
             .update_pipeline_run(
+                "t1",
                 &run.id,
                 Some("success"),
                 None,
@@ -2847,11 +2977,175 @@ mod tests {
         assert_eq!(run.status, "success");
         assert!(run.log.as_deref() == Some("Build OK"));
 
-        let runs = svc.list_pipeline_runs(&pipe.id).await.unwrap();
+        let runs = svc.list_pipeline_runs("t1", &pipe.id).await.unwrap();
         assert_eq!(runs.len(), 1);
 
         // Delete pipeline cascades to runs
-        svc.delete_pipeline(&pipe.id).await.unwrap();
-        assert!(svc.list_pipelines().await.unwrap().is_empty());
+        svc.delete_pipeline("t1", &pipe.id).await.unwrap();
+        assert!(svc.list_pipelines("t1").await.unwrap().is_empty());
+    }
+
+    /// The security fix this locks down: requirements / milestones / test
+    /// plans / test cases / pipelines used to have no tenant column at all,
+    /// so any org_admin on any tenant of a shared server could read and
+    /// write every other tenant's collaboration data. For each of the five
+    /// resource families, seed a row under tenant "t1" and prove tenant "t2"
+    /// (a) never sees it in a list and (b) gets NotFound trying to
+    /// update/delete it by id — not a silent no-op that would still leak via
+    /// a changed response shape, and not the wrong-tenant row unexpectedly
+    /// succeeding.
+    #[tokio::test]
+    async fn collaboration_resources_are_isolated_per_tenant() {
+        let svc = service().await;
+
+        // -- requirements --
+        let req = svc
+            .create_requirement(
+                "t1",
+                "u1",
+                Some("Alice"),
+                CreateRequirementInput {
+                    subject: "t1 only".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(svc.requirements_tree("t2").await.unwrap().is_empty());
+        assert!(matches!(
+            svc.get_requirement_row("t2", &req.id).await.unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        assert!(matches!(
+            svc.update_requirement(
+                "t2",
+                &req.id,
+                UpdateRequirementInput {
+                    subject: Some("hijacked".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        assert_eq!(svc.get_requirement_row("t1", &req.id).await.unwrap().subject, "t1 only");
+        assert!(matches!(
+            svc.delete_requirement("t2", &req.id).await.unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        // A t2 caller cannot even discover the t1 requirement exists by
+        // trying to comment on it or use it as a parent/breakdown target.
+        assert!(matches!(
+            svc.create_comment("t2", &req.id, "u2", "Eve", "hi").await.unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        // The requirement is still perfectly usable from its own tenant.
+        assert!(svc.get_requirement_row("t1", &req.id).await.is_ok());
+
+        // -- milestones --
+        let m = svc
+            .create_milestone("t1", "u1", Some("Alice"), "t1 milestone", None, None)
+            .await
+            .unwrap();
+        assert!(svc.list_milestones("t2").await.unwrap().is_empty());
+        assert!(matches!(
+            svc.update_milestone("t2", &m.id, Some("hijacked"), None, None, None)
+                .await
+                .unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        // The failed cross-tenant update must not have silently written
+        // through anyway — an UPDATE missing its own tenant filter can still
+        // succeed even when a *later* refetch is correctly scoped, silently
+        // corrupting the other tenant's row while still reporting NotFound.
+        assert_eq!(svc.fetch_milestone("t1", &m.id).await.unwrap().title, "t1 milestone");
+        assert!(matches!(
+            svc.delete_milestone("t2", &m.id).await.unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+
+        // -- test plans + cases --
+        let plan = svc
+            .create_test_plan("t1", "u1", Some("Alice"), "t1 plan", None, None)
+            .await
+            .unwrap();
+        let case = svc
+            .create_test_case("t1", &plan.id, "u1", Some("Alice"), "t1 case", None, None, None)
+            .await
+            .unwrap();
+        assert!(svc.list_test_plans("t2").await.unwrap().is_empty());
+        assert!(matches!(
+            svc.list_test_cases("t2", &plan.id).await.unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        assert!(matches!(
+            svc.create_test_case("t2", &plan.id, "u2", None, "sneaky", None, None, None)
+                .await
+                .unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        assert!(matches!(
+            svc.update_test_plan("t2", &plan.id, Some("hijacked"), None, None, None)
+                .await
+                .unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        assert_eq!(svc.fetch_test_plan("t1", &plan.id).await.unwrap().title, "t1 plan");
+        assert!(matches!(
+            svc.update_test_case("t2", &case.id, Some("hijacked"), None, None, None, None)
+                .await
+                .unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        assert_eq!(svc.fetch_test_case("t1", &case.id).await.unwrap().title, "t1 case");
+        assert!(matches!(
+            svc.delete_test_case("t2", &case.id).await.unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        assert!(matches!(
+            svc.delete_test_plan("t2", &plan.id).await.unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+
+        // -- pipelines + runs --
+        let pipe = svc
+            .create_pipeline("t1", "u1", Some("Alice"), "t1 pipeline", None, None)
+            .await
+            .unwrap();
+        let run = svc.create_pipeline_run("t1", &pipe.id, Some("u1")).await.unwrap();
+        assert!(svc.list_pipelines("t2").await.unwrap().is_empty());
+        assert!(matches!(
+            svc.list_pipeline_runs("t2", &pipe.id).await.unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        assert!(matches!(
+            svc.create_pipeline_run("t2", &pipe.id, Some("u2")).await.unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        assert!(matches!(
+            svc.update_pipeline_run("t2", &run.id, Some("success"), None, None, None)
+                .await
+                .unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        assert_eq!(svc.fetch_pipeline_run("t1", &run.id).await.unwrap().status, "pending");
+        assert!(matches!(
+            svc.update_pipeline("t2", &pipe.id, Some("hijacked"), None, None, None)
+                .await
+                .unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+        assert_eq!(svc.fetch_pipeline("t1", &pipe.id).await.unwrap().name, "t1 pipeline");
+        assert!(matches!(
+            svc.delete_pipeline("t2", &pipe.id).await.unwrap_err(),
+            DevopsError::NotFound(_)
+        ));
+
+        // Everything is still there and untouched from t1's own perspective.
+        assert_eq!(svc.requirements_tree("t1").await.unwrap().len(), 1);
+        assert_eq!(svc.list_milestones("t1").await.unwrap().len(), 1);
+        assert_eq!(svc.list_test_plans("t1").await.unwrap().len(), 1);
+        assert_eq!(svc.list_pipelines("t1").await.unwrap().len(), 1);
     }
 }

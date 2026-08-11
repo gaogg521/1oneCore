@@ -1055,8 +1055,9 @@ fn default_agent_audit_limit() -> i64 {
 }
 
 /// Agent-run audit (P1-1): which tools the agents invoked — files touched,
-/// commands run — server-wide. Admin-only + AuditLog-tier-gated, matching the
-/// governance audit log. Reconstructed from persisted tool-call messages.
+/// commands run — scoped to the caller's own tenant. Admin-only +
+/// AuditLog-tier-gated, matching the governance audit log. Reconstructed from
+/// persisted tool-call messages.
 async fn admin_list_agent_audit(
     State(state): State<OneOrgRouterState>,
     RequireOrgAdmin(actor): RequireOrgAdmin,
@@ -1074,6 +1075,7 @@ async fn admin_list_agent_audit(
     let entries = state
         .service
         .list_agent_audit(
+            &actor.tenant_id,
             query.user_id.as_deref(),
             query.tool.as_deref(),
             query.since,
