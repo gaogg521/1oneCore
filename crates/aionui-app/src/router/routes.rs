@@ -333,7 +333,11 @@ impl aionui_auth::IpAllowlistGate for PlatformIpAllowlistGate {
                 .await
                 .map_err(|e| e.to_string()),
             None => {
-                let cfg = self.0.get_ip_allowlist(&actor.tenant_id).await.map_err(|e| e.to_string())?;
+                let cfg = self
+                    .0
+                    .get_ip_allowlist(&actor.tenant_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 Ok(!cfg.enabled)
             }
         }

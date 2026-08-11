@@ -2345,6 +2345,25 @@ impl OrgService {
         .await?;
         Ok(id)
     }
+
+    /// Remove a runtime node from the roster. Scoped to `tenant_id` so an
+    /// admin can only delete their own project group's nodes. Nothing
+    /// re-creates the row automatically — the machine's own heartbeat loop
+    /// (every 5 min while it stays in the enterprise) is what would bring a
+    /// still-live node back, which is the intended way to distinguish "gone
+    /// for good" from "temporarily offline": delete it, and if it heartbeats
+    /// again it simply reappears.
+    pub async fn delete_runtime_node(&self, tenant_id: &str, node_id: &str) -> Result<(), OrgError> {
+        let deleted = sqlx::query("DELETE FROM one_runtime_nodes WHERE id = ? AND tenant_id = ?")
+            .bind(node_id)
+            .bind(tenant_id)
+            .execute(&self.pool)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(OrgError::RuntimeNodeNotFound);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -3876,6 +3895,49 @@ mod tests {
         assert_eq!(service.active_tenant_id(&solo).await.unwrap(), DEFAULT_TENANT_ID);
         assert_eq!(service.tenant_of(&solo).await.unwrap(), DEFAULT_TENANT_ID);
         assert!(service.list_memberships(&solo).await.unwrap().is_empty());
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn delete_runtime_node_removes_it_from_the_roster() {
+        let (db, service, user_repo) = setup().await;
+        let alice = create_user(&user_repo, "alice").await;
+        let empty = serde_json::json!([]);
+        let node_id = service
+            .heartbeat_runtime_node("t1", &alice, "m1", "My Machine", &empty, &empty, &empty)
+            .await
+            .unwrap();
+        assert_eq!(service.list_runtime_nodes("t1").await.unwrap().len(), 1);
+
+        service.delete_runtime_node("t1", &node_id).await.unwrap();
+
+        assert!(service.list_runtime_nodes("t1").await.unwrap().is_empty());
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn delete_runtime_node_rejects_a_node_from_another_tenant() {
+        let (db, service, user_repo) = setup().await;
+        let alice = create_user(&user_repo, "alice").await;
+        let empty = serde_json::json!([]);
+        let node_id = service
+            .heartbeat_runtime_node("t1", &alice, "m1", "My Machine", &empty, &empty, &empty)
+            .await
+            .unwrap();
+
+        // An admin of a DIFFERENT project group must not be able to delete
+        // t1's node just by guessing/copying its id.
+        let result = service.delete_runtime_node("t2", &node_id).await;
+        assert!(matches!(result, Err(OrgError::RuntimeNodeNotFound)));
+        assert_eq!(service.list_runtime_nodes("t1").await.unwrap().len(), 1);
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn delete_runtime_node_unknown_id_returns_not_found() {
+        let (db, service, _user_repo) = setup().await;
+        let result = service.delete_runtime_node("t1", "does-not-exist").await;
+        assert!(matches!(result, Err(OrgError::RuntimeNodeNotFound)));
         db.close().await;
     }
 }

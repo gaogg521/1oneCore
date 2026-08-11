@@ -101,6 +101,7 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
         .route("/api/one/admin/audit", get(admin_list_audit))
         .route("/api/one/admin/agent-audit", get(admin_list_agent_audit))
         .route("/api/one/admin/runtime/nodes", get(admin_list_runtime_nodes))
+        .route("/api/one/admin/runtime/nodes/{id}", delete(admin_delete_runtime_node))
         .route("/api/one/admin/runtime/heartbeat", post(admin_runtime_heartbeat))
         // Direction B: company-scoped project-group management. Gated
         // system_admin OR company-admin of the path `enterprise_id`.
@@ -1091,6 +1092,19 @@ async fn admin_list_runtime_nodes(
 ) -> Result<Json<ApiResponse<Vec<RuntimeNodeDto>>>, OrgError> {
     let nodes = state.service.list_runtime_nodes(&actor.tenant_id).await?;
     Ok(Json(ApiResponse::ok(nodes)))
+}
+
+// A retired/decommissioned machine has no way to stop heartbeating itself
+// (the process is just gone), so the roster otherwise accumulates dead rows
+// forever. Deletion is the only way to clear one out; if the machine is
+// actually still alive its own heartbeat loop will simply re-add it.
+async fn admin_delete_runtime_node(
+    State(state): State<OneOrgRouterState>,
+    RequireOrgAdmin(actor): RequireOrgAdmin,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, OrgError> {
+    state.service.delete_runtime_node(&actor.tenant_id, &id).await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 #[derive(Deserialize)]
