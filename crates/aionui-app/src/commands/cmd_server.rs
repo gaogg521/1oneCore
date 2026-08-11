@@ -301,7 +301,14 @@ pub(crate) async fn run_server(
     let worker_task_manager = services.worker_task_manager.clone();
     let client_pref_service = router_runtime.client_pref_service.clone();
 
-    axum::serve(listener, router)
+    // ConnectInfo<SocketAddr> lets the auth middleware learn the direct TCP
+    // peer for IP-allowlist enforcement. It is meaningful for a standalone
+    // server binding directly to a remote interface; for the desktop's
+    // co-located backend behind the WebUI reverse proxy, every connection is
+    // spliced over loopback and this always resolves to 127.0.0.1 — the
+    // middleware falls back to the proxy's own forwarded-IP header in that
+    // case (see `aionui_auth::middleware::is_webui_proxied`).
+    axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async move {
             match shutdown_signal(parent_exit).await {
                 Err(error) => {

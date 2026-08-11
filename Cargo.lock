@@ -507,6 +507,7 @@ dependencies = [
  "aionui-api-types",
  "aionui-common",
  "aionui-db",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "bcrypt",

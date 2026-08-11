@@ -51,8 +51,8 @@ pub use csrf::csrf_middleware;
 
 // Auth middleware
 pub use middleware::{
-    AuthState, CurrentUser, WEBUI_PROXY_HEADER, WEBUI_PROXY_VALUE, auth_middleware, is_webui_proxied,
-    local_auth_middleware,
+    AuthState, CLIENT_IP_HEADER, CurrentUser, IpAllowlistGate, NoopIpAllowlistGate, WEBUI_PROXY_HEADER,
+    WEBUI_PROXY_VALUE, auth_middleware, is_webui_proxied, local_auth_middleware,
 };
 
 // QR token store

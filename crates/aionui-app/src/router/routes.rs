@@ -305,6 +305,41 @@ impl one_sso::CompanyAdminCheck for CompanyAdminCheckAdapter {
     }
 }
 
+/// Adapts one-platform's per-project-group IP allowlist to the auth
+/// middleware's `IpAllowlistGate` trait — same-layer bridge, same
+/// arrangement as every other adapter in this file.
+///
+/// A caller with nothing to check (no resolvable project group — personal
+/// edition, or an enterprise account with no membership — or a group whose
+/// allowlist is disabled, the reserved default) is always allowed regardless
+/// of whether `ip` resolved. Only once a group's allowlist is actually
+/// enabled does an unresolvable `ip` become a denial: see the trait's own
+/// doc comment for why getting this ordering backwards would 403 every test
+/// (and every personal-edition install) that never wired a real
+/// `ConnectInfo`.
+struct PlatformIpAllowlistGate(std::sync::Arc<one_platform::PlatformService>);
+
+#[async_trait::async_trait]
+impl aionui_auth::IpAllowlistGate for PlatformIpAllowlistGate {
+    async fn is_allowed(&self, user_id: &str, ip: Option<std::net::IpAddr>) -> Result<bool, String> {
+        let actor = self.0.resolve_actor(user_id).await.map_err(|e| e.to_string())?;
+        let Some(actor) = actor else {
+            return Ok(true);
+        };
+        match ip {
+            Some(ip) => self
+                .0
+                .is_ip_allowed(&actor.tenant_id, &ip.to_string())
+                .await
+                .map_err(|e| e.to_string()),
+            None => {
+                let cfg = self.0.get_ip_allowlist(&actor.tenant_id).await.map_err(|e| e.to_string())?;
+                Ok(!cfg.enabled)
+            }
+        }
+    }
+}
+
 /// Adapts one-billing's `BillingService::record_turn` to the conversation
 /// crate's `UsageRecorder` trait (P0-3). Fire-and-forget: spawns the async
 /// insert so metering never blocks or fails the send path.
@@ -602,10 +637,23 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         local: services.local,
     };
 
+    // one-platform service (IP allowlist among other deployment-infra config)
+    // — built here, ahead of its own route mount further down, purely so the
+    // auth middleware can wire the allowlist check into every route group
+    // through a single shared `AuthState`. Cheap to construct this early:
+    // only needs the pool + encryption key, both already on `services`.
+    let one_platform_service = std::sync::Arc::new(one_platform::PlatformService::new(
+        services.database.pool().clone(),
+        crate::config::derive_encryption_key(&services.data_secret_raw),
+    ));
+
     let auth_mw_state = AuthState {
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
         local: services.local,
+        ip_allowlist: Some(std::sync::Arc::new(PlatformIpAllowlistGate(
+            one_platform_service.clone(),
+        ))),
     };
 
     // System routes protected by auth middleware
@@ -835,11 +883,9 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // (P1-3 container runtime + P2-2 realtime collaboration). Reserved adapters:
     // the Noop defaults report "not configured" until a real runtime/provider
     // is wired here via `with_container_runtime` / `with_collaboration_provider`.
-    let one_platform_service = std::sync::Arc::new(one_platform::PlatformService::new(
-        services.database.pool().clone(),
-        crate::config::derive_encryption_key(&services.data_secret_raw),
-    ));
-    let one_platform_state = one_platform::OnePlatformRouterState::new(one_platform_service);
+    // Service itself was built above, alongside `auth_mw_state`, so its IP
+    // allowlist could be wired into the auth middleware.
+    let one_platform_state = one_platform::OnePlatformRouterState::new(one_platform_service.clone());
     let one_platform_authenticated = one_platform::one_platform_routes(one_platform_state)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
