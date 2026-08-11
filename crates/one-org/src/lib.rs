@@ -14,6 +14,7 @@ pub mod bridge;
 pub mod credential_revoker;
 pub mod directory_bridge;
 pub mod email;
+pub mod enterprise_hooks;
 pub mod error;
 pub mod integration;
 pub mod migrate;
@@ -27,6 +28,7 @@ pub use bridge::CompanyAdminResolver;
 pub use credential_revoker::{CredentialRevoker, NoopCredentialRevoker};
 pub use directory_bridge::{DirectoryDepartmentRef, DirectoryTreeSource, NoopDirectoryTreeSource};
 pub use email::{EmailSender, SendEmailResult, StubEmailSender};
+pub use enterprise_hooks::CompanySeatSync;
 pub use error::OrgError;
 pub use integration::{
     IntegrationCredentials, IntegrationProvider, IntegrationTestResult, KNOWN_PROVIDERS, StubIntegrationProvider,

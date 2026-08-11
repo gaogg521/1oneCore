@@ -251,6 +251,22 @@ impl one_org::CompanyAdminResolver for CompanyAdminResolverAdapter {
     }
 }
 
+/// Adapts one-enterprise's `EnterpriseService::ensure_member` to the
+/// `one_org::CompanySeatSync` trait, so joining a project group that belongs
+/// to a company also registers the joiner as a company member (seat-capped,
+/// same rule as SSO auto-provisioning) — see `one_org::enterprise_hooks`
+/// module docs for why this exists.
+struct CompanySeatSyncAdapter(std::sync::Arc<one_enterprise::EnterpriseService>);
+
+#[async_trait::async_trait]
+impl one_org::CompanySeatSync for CompanySeatSyncAdapter {
+    async fn ensure_company_member(&self, user_id: &str, enterprise_id: &str, display_name: Option<&str>) {
+        if let Err(error) = self.0.ensure_member(user_id, enterprise_id, display_name).await {
+            tracing::warn!(%error, user_id, enterprise_id, "company seat sync failed; project-group join continues");
+        }
+    }
+}
+
 /// Adapts one-enterprise's `EnterpriseService::is_company_admin` to the
 /// `one_sso::CompanyAdminCheck` trait, so a company admin may manage the
 /// company-level SSO config (企业认证). Errors deny (fail closed).
@@ -705,6 +721,12 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
             one_enterprise_service.clone(),
         )))
         .with_directory_source(std::sync::Arc::new(DirectoryTreeSourceAdapter(
+            one_enterprise_service.clone(),
+        )))
+        // Direction B: a project-group join whose tenant belongs to a company
+        // also registers the joiner as a company member (see
+        // `CompanySeatSyncAdapter` / `one_org::enterprise_hooks` docs).
+        .with_company_seat_sync(std::sync::Arc::new(CompanySeatSyncAdapter(
             one_enterprise_service.clone(),
         )));
     let one_org_authenticated =

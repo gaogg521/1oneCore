@@ -91,31 +91,9 @@ impl EnterpriseService {
             return Ok(());
         };
 
-        // P0-3 / T6-4 seat cap: a member arriving at a full plan does not get
-        // silently dropped (see `resolve_seat_status`'s doc). They get a row —
-        // just not an ACTIVE one — so governance resolution in one-billing
-        // finds them and can deny, instead of mistaking a company member for a
-        // personal/no-company user and applying zero governance.
-        let seat_status = self.resolve_seat_status(user_id, &enterprise_id).await?;
-        if seat_status == SEAT_STATUS_PENDING {
-            tracing::warn!(
-                user_id,
-                provider,
-                enterprise_id,
-                "seat cap reached; member synced without an active seat (pending)"
-            );
-        }
-
-        self.upsert_member(UpsertMemberInput {
-            user_id,
-            enterprise_id: &enterprise_id,
-            display_name,
-            department,
-            job_title,
-            seat_status,
-            now,
-        })
-        .await?;
+        let seat_status = self
+            .resolve_seat_status_and_upsert(user_id, &enterprise_id, display_name, department, job_title, now)
+            .await?;
         tracing::info!(
             user_id,
             provider,
@@ -124,6 +102,70 @@ impl EnterpriseService {
             "enterprise membership synced from SSO"
         );
         Ok(())
+    }
+
+    /// Ensure `user_id` has a membership row in `enterprise_id`, for a
+    /// project-group join whose tenant belongs to that company (Direction B —
+    /// see the `CompanySeatSync` hook in one-org, wired in aionui-app). Unlike
+    /// `sync_member`, `enterprise_id` is given directly rather than resolved
+    /// from an SSO provider/external id, since there is no IdP profile on this
+    /// path; department / job title are likewise unknown here and left unset.
+    ///
+    /// Same active/pending seat-cap semantics as SSO sync, and idempotent for
+    /// the same reason: an existing ACTIVE row is never re-evaluated.
+    pub async fn ensure_member(
+        &self,
+        user_id: &str,
+        enterprise_id: &str,
+        display_name: Option<&str>,
+    ) -> Result<(), EnterpriseError> {
+        let now = now_ms() as i64;
+        let seat_status = self
+            .resolve_seat_status_and_upsert(user_id, enterprise_id, display_name, None, None, now)
+            .await?;
+        tracing::info!(
+            user_id,
+            enterprise_id,
+            seat_status,
+            "enterprise membership synced from project-group join"
+        );
+        Ok(())
+    }
+
+    /// Shared core of `sync_member` / `ensure_member`: resolve the seat status
+    /// a new/refreshed row should carry (P0-3 / T6-4 — a member arriving at a
+    /// full plan does not get silently dropped, see `resolve_seat_status`'s
+    /// doc; they get a row, just not an ACTIVE one, so one-billing's
+    /// governance resolution finds them and can deny instead of mistaking a
+    /// company member for a personal/no-company user), then upsert it.
+    async fn resolve_seat_status_and_upsert(
+        &self,
+        user_id: &str,
+        enterprise_id: &str,
+        display_name: Option<&str>,
+        department: Option<&str>,
+        job_title: Option<&str>,
+        now: i64,
+    ) -> Result<&'static str, EnterpriseError> {
+        let seat_status = self.resolve_seat_status(user_id, enterprise_id).await?;
+        if seat_status == SEAT_STATUS_PENDING {
+            tracing::warn!(
+                user_id,
+                enterprise_id,
+                "seat cap reached; member synced without an active seat (pending)"
+            );
+        }
+        self.upsert_member(UpsertMemberInput {
+            user_id,
+            enterprise_id,
+            display_name,
+            department,
+            job_title,
+            seat_status,
+            now,
+        })
+        .await?;
+        Ok(seat_status)
     }
 
     /// What `seat_status` this member's row should carry.
@@ -812,6 +854,50 @@ mod tests {
             SEAT_STATUS_ACTIVE,
             "an already-active member must never be re-evaluated against a later, lower cap"
         );
+    }
+
+    /// `ensure_member` is the project-group-join counterpart of `sync_member`
+    /// (see its doc comment / the `CompanySeatSync` hook in one-org): a
+    /// company-owned tenant's invite code registers the joiner as a company
+    /// member the same way an SSO login does, respecting the same seat cap.
+    #[tokio::test]
+    async fn ensure_member_respects_the_seat_cap_like_sso_sync() {
+        let svc = service().await;
+        sqlx::raw_sql(
+            "CREATE TABLE one_enterprise_license (enterprise_id TEXT PRIMARY KEY, tier TEXT NOT NULL DEFAULT 'free', seat_limit INTEGER, expires_at INTEGER, updated_at INTEGER NOT NULL);",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO one_enterprise_license (enterprise_id, tier, seat_limit, updated_at) VALUES ('ent_test1', 'free', 1, 0)",
+        )
+        .execute(&svc.pool)
+        .await
+        .unwrap();
+
+        svc.ensure_member("u1", "ent_test1", Some("张三")).await.unwrap();
+        assert_eq!(seat_status_of(&svc, "u1").await, SEAT_STATUS_ACTIVE);
+
+        // Cap of 1 is already full — the second joiner gets a row (so
+        // one-billing's governance can find and deny them) but pending, not
+        // silently dropped.
+        svc.ensure_member("u2", "ent_test1", Some("李四")).await.unwrap();
+        assert_eq!(seat_status_of(&svc, "u2").await, SEAT_STATUS_PENDING);
+
+        // Idempotent: calling it again for an already-ACTIVE member changes
+        // nothing (never re-evaluated, mirroring `sync_member`).
+        svc.ensure_member("u1", "ent_test1", Some("张三")).await.unwrap();
+        assert_eq!(seat_status_of(&svc, "u1").await, SEAT_STATUS_ACTIVE);
+
+        let row: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT enterprise_id, display_name FROM one_enterprise_members WHERE user_id = 'u1'")
+                .fetch_optional(&svc.pool)
+                .await
+                .unwrap();
+        let (eid, name) = row.expect("membership row must exist");
+        assert_eq!(eid, "ent_test1");
+        assert_eq!(name.as_deref(), Some("张三"));
     }
 
     async fn seat_status_of(svc: &EnterpriseService, user_id: &str) -> String {

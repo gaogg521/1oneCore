@@ -236,7 +236,19 @@ async fn org_join(
     actor: OrgActor,
     Json(body): Json<InviteCodeBody>,
 ) -> Result<Json<ApiResponse<TenantDto>>, OrgError> {
-    let (tenant_id, tenant_name) = state.service.join_with_invite(&actor.user_id, &body.code).await?;
+    let (tenant_id, tenant_name, enterprise_id) = state.service.join_with_invite(&actor.user_id, &body.code).await?;
+    // The group just joined may belong to a company (Direction B) — if so,
+    // register the joiner as a company member too (seat-capped, same rule as
+    // SSO auto-provisioning), or the company's "成员"/席位 never reflect
+    // anyone who arrived via a project-group invite code instead of SSO. See
+    // `enterprise_hooks` module docs. Best-effort: the join already
+    // succeeded and must not be undone by this failing. No display name is
+    // looked up here — the company members list already falls back to the
+    // `users` table's username for a row with none set, same as any other
+    // member without one.
+    if let (Some(sync), Some(eid)) = (state.company_seat_sync.as_ref(), enterprise_id.as_deref()) {
+        sync.ensure_company_member(&actor.user_id, eid, None).await;
+    }
     Ok(Json(ApiResponse::ok(TenantDto { tenant_id, tenant_name })))
 }
 

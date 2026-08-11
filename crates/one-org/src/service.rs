@@ -422,7 +422,11 @@ impl OrgService {
 
     // --- join / create / exit ---
 
-    pub async fn join_with_invite(&self, user_id: &str, code_raw: &str) -> Result<(String, String), OrgError> {
+    pub async fn join_with_invite(
+        &self,
+        user_id: &str,
+        code_raw: &str,
+    ) -> Result<(String, String, Option<String>), OrgError> {
         let code = normalize_invite_code(code_raw);
         let invite = self
             .find_active_invite_by_code(&code)
@@ -509,7 +513,7 @@ impl OrgService {
             .get_tenant(&invite.tenant_id)
             .await?
             .ok_or(OrgError::TenantNotFound)?;
-        Ok((tenant.id, tenant.name))
+        Ok((tenant.id, tenant.name, tenant.enterprise_id))
     }
 
     /// Set the email domains that may auto-join `tenant_id` without an invite
@@ -3039,9 +3043,14 @@ mod tests {
 
         let member = create_user(&user_repo, "member1").await;
         let member = member.as_str();
-        let (joined_tenant, joined_name) = service.join_with_invite(member, &display).await.unwrap();
+        let (joined_tenant, joined_name, joined_enterprise_id) =
+            service.join_with_invite(member, &display).await.unwrap();
         assert_eq!(joined_tenant, tenant_id);
         assert_eq!(joined_name, "Acme Inc");
+        assert_eq!(
+            joined_enterprise_id, None,
+            "a standalone tenant (create_tenant, no company) must not report an enterprise_id"
+        );
         assert_eq!(service.effective_role(member).await.unwrap(), ROLE_MEMBER);
         assert_eq!(service.member_count(&tenant_id).await.unwrap(), 2);
 
@@ -3068,6 +3077,36 @@ mod tests {
         assert_eq!(service.member_count(&tenant_id).await.unwrap(), 1);
         let err = service.leave(member, None, "s3cret").await.unwrap_err();
         assert_eq!(err.code(), "NOT_IN_ENTERPRISE");
+
+        db.close().await;
+    }
+
+    /// A project group created *for* a company (`create_tenant_for_enterprise`,
+    /// the "企业管理后台 → 项目组 → 新建项目组" admin flow) must report that
+    /// company's id on join, so the `CompanySeatSync` hook in aionui-app knows
+    /// to register the joiner as a company member too. Without this, someone
+    /// invited into a company-owned project group would never show up in the
+    /// company's "成员" list or count against its seat limit — see
+    /// `enterprise_hooks` module docs in this crate for the full story.
+    #[tokio::test]
+    async fn join_with_invite_reports_the_owning_company_for_a_company_tenant() {
+        let (db, service, user_repo) = setup().await;
+
+        let (tenant_id, _tenant_name, invite_code) = service
+            .create_tenant_for_enterprise("ent_test1", "Acme R&D", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+
+        let member = create_user(&user_repo, "member1").await;
+        let (joined_tenant, _joined_name, joined_enterprise_id) =
+            service.join_with_invite(&member, &invite_code).await.unwrap();
+
+        assert_eq!(joined_tenant, tenant_id);
+        assert_eq!(
+            joined_enterprise_id.as_deref(),
+            Some("ent_test1"),
+            "a company-owned tenant must report its owning enterprise_id on join"
+        );
 
         db.close().await;
     }

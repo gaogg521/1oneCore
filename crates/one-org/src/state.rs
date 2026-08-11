@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::bridge::CompanyAdminResolver;
 use crate::directory_bridge::DirectoryTreeSource;
+use crate::enterprise_hooks::CompanySeatSync;
 use crate::service::OrgService;
 
 #[derive(Clone)]
@@ -23,6 +24,13 @@ pub struct OneOrgRouterState {
     /// with `EnterpriseService::with_session_revoker`, which needs an
     /// already-built `OrgService` the other way around.
     pub directory_source: Option<Arc<dyn DirectoryTreeSource>>,
+    /// Optional bridge to the company tier: a project-group join whose tenant
+    /// belongs to a company also registers the joiner as a company member
+    /// (see `enterprise_hooks` module docs for why). `None` in personal
+    /// edition / tests — a join then only affects `one_user_org`, exactly as
+    /// before this hook existed. Same construction-order reason as
+    /// `directory_source` above.
+    pub company_seat_sync: Option<Arc<dyn CompanySeatSync>>,
 }
 
 impl OneOrgRouterState {
@@ -31,6 +39,7 @@ impl OneOrgRouterState {
             service,
             company_resolver: None,
             directory_source: None,
+            company_seat_sync: None,
         }
     }
 
@@ -41,6 +50,11 @@ impl OneOrgRouterState {
 
     pub fn with_directory_source(mut self, source: Arc<dyn DirectoryTreeSource>) -> Self {
         self.directory_source = Some(source);
+        self
+    }
+
+    pub fn with_company_seat_sync(mut self, sync: Arc<dyn CompanySeatSync>) -> Self {
+        self.company_seat_sync = Some(sync);
         self
     }
 }
