@@ -451,8 +451,9 @@ pub fn build_conversation_state(
         service: conversation_service,
         task_manager: services.worker_task_manager.clone(),
         active_leases: services.active_lease_registry.clone(),
-        // Both wired to one-billing in build_router (needs the billing service).
-        usage_recorder: None,
+        // Wired to one-billing in build_router (needs the billing service).
+        // Usage metering is wired directly onto `service` there instead — see
+        // the comment at that call site for why.
         send_gate: None,
         // Wired in build_router alongside the billing gate (T4).
         content_inspector: None,

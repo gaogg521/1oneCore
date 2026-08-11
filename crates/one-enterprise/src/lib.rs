@@ -12,6 +12,7 @@
 //! only the route merge in aionui-app and public aionui-auth / aionui-db APIs.
 
 pub mod directory;
+pub mod disband_cascade;
 pub mod error;
 pub mod migrate;
 pub mod models;
@@ -21,9 +22,10 @@ pub mod service;
 pub mod session_revoker;
 pub mod state;
 
+pub use disband_cascade::{CompanyDisbandCascade, NoopCompanyDisbandCascade};
 pub use error::EnterpriseError;
 pub use migrate::run_one_enterprise_migrations;
-pub use models::{CompanyMemberDto, CompanyOverviewDto, EnterpriseIdentityDto};
+pub use models::{CompanyMemberDto, CompanyOverviewDto, DisbandCompanyResult, EnterpriseIdentityDto};
 pub use routes::one_enterprise_routes;
 pub use service::EnterpriseService;
 pub use session_revoker::{NoopSessionRevoker, SessionRevoker};

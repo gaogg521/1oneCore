@@ -115,10 +115,23 @@ pub enum TipType {
 }
 
 /// Data for the `Finish` event.
+///
+/// `model`/`input_tokens`/`output_tokens` are `None` for backends that don't
+/// report usage at turn end (currently: ACP-bridged CLIs). aionrs turns
+/// always carry them — see `BackendOutputSink::emit_stream_end`, which is
+/// the only producer that populates these fields today. This is what makes
+/// per-turn cost metering possible: it is the first point in the whole
+/// pipeline where the actual model and token counts are both known.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FinishEventData {
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<i64>,
 }
 
 /// Kind of CodeBuddy ACP dialect signal absorbed by the tolerant transport
@@ -260,6 +273,7 @@ mod tests {
     fn finish_event_roundtrip() {
         let event = AgentStreamEvent::Finish(FinishEventData {
             session_id: Some("sess-abc".into()),
+            ..Default::default()
         });
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "finish");

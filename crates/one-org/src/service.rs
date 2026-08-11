@@ -1087,6 +1087,121 @@ impl OrgService {
         Ok(out)
     }
 
+    /// Deletes every project group owned by `enterprise_id` — memberships,
+    /// invites, runtime nodes, audit logs, departments, and integrations
+    /// under each — and rotates the JWT secret for every affected member
+    /// (ends their sessions immediately, same effect `remove_member` has on
+    /// one person). Archives a JSON snapshot first, same safety net
+    /// `reset_local_enterprise` uses just above, since this is irreversible.
+    ///
+    /// Called by one-enterprise's `disband_company` through the
+    /// `CompanyDisbandCascade` trait it wires up in `aionui-app` (same
+    /// layer, no direct dependency — the same arrangement as
+    /// `CredentialRevoker`). Authorization is enforced by that caller; this
+    /// trusts the `enterprise_id` it is given.
+    pub async fn disband_tenants_for_enterprise(&self, enterprise_id: &str) -> Result<Vec<String>, OrgError> {
+        let tenants = sqlx::query_as::<_, TenantRow>("SELECT * FROM one_tenants WHERE enterprise_id = ?")
+            .bind(enterprise_id)
+            .fetch_all(&self.pool)
+            .await?;
+        if tenants.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        #[derive(Serialize)]
+        struct ArchivedTenant {
+            id: String,
+            name: String,
+            created_at: i64,
+            updated_at: i64,
+            members: Vec<AdminUserDto>,
+        }
+        #[derive(Serialize)]
+        struct ArchiveSnapshot {
+            archived_at: i64,
+            enterprise_id: String,
+            tenants: Vec<ArchivedTenant>,
+        }
+
+        let mut affected_user_ids = std::collections::HashSet::new();
+        let mut archived = Vec::with_capacity(tenants.len());
+        for tenant in &tenants {
+            let members = self.list_users(&tenant.id).await?;
+            affected_user_ids.extend(members.iter().map(|m| m.user_id.clone()));
+            archived.push(ArchivedTenant {
+                id: tenant.id.clone(),
+                name: tenant.name.clone(),
+                created_at: tenant.created_at,
+                updated_at: tenant.updated_at,
+                members,
+            });
+        }
+
+        let now = now_ms() as i64;
+        let snapshot = ArchiveSnapshot {
+            archived_at: now,
+            enterprise_id: enterprise_id.to_string(),
+            tenants: archived,
+        };
+        let archive_dir = self.data_dir.join("enterprise-archives");
+        std::fs::create_dir_all(&archive_dir)
+            .map_err(|e| OrgError::Internal(format!("failed to create enterprise archive directory: {e}")))?;
+        let archive_path = archive_dir.join(format!("enterprise-disband-{enterprise_id}-{now}.json"));
+        let json = serde_json::to_string_pretty(&snapshot)
+            .map_err(|e| OrgError::Internal(format!("failed to serialize enterprise archive: {e}")))?;
+        std::fs::write(&archive_path, json)
+            .map_err(|e| OrgError::Internal(format!("failed to write enterprise archive: {e}")))?;
+
+        let tenant_ids: Vec<String> = tenants.iter().map(|t| t.id.clone()).collect();
+        let mut tx = self.pool.begin().await?;
+        for tenant_id in &tenant_ids {
+            sqlx::query("DELETE FROM one_tenant_invites WHERE tenant_id = ?")
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM one_user_org WHERE tenant_id = ?")
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM one_active_tenant WHERE tenant_id = ?")
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM one_runtime_nodes WHERE tenant_id = ?")
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM one_audit_logs WHERE tenant_id = ?")
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM one_departments WHERE tenant_id = ?")
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM one_integrations WHERE tenant_id = ?")
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM one_tenants WHERE id = ?")
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+
+        for user_id in &affected_user_ids {
+            self.invalidate_user_tokens(user_id).await?;
+        }
+
+        tracing::warn!(
+            enterprise_id,
+            tenant_count = tenant_ids.len(),
+            "project groups disbanded (企业注销级联)"
+        );
+        Ok(tenant_ids)
+    }
+
     /// Archive and wipe all local tenant/membership data, so a stale/orphaned
     /// tenant left behind on this machine (from a prior test or a reinstall
     /// that never went through a clean `leave`) no longer blocks
@@ -2257,6 +2372,90 @@ mod tests {
     /// guarantees this).
     async fn create_user(user_repo: &Arc<dyn IUserRepository>, username: &str) -> String {
         user_repo.create_user(username, "x").await.unwrap().id
+    }
+
+    /// ⚠️ The point of company disband cascading into one-org: every project
+    /// group the company owned, and everything scoped under each one, must
+    /// actually be gone — not just unreachable through `enterprise_id`.
+    #[tokio::test]
+    async fn disbanding_an_enterprise_deletes_its_project_groups_and_everything_scoped_to_them() {
+        let (_db, service, user_repo) = setup().await;
+        let alice = create_user(&user_repo, "alice").await;
+        let (tenant_id, _name, _code) = service
+            .create_tenant_for_enterprise("ent1", "Group A", SYSTEM_DEFAULT_USER_ID, Some(&alice))
+            .await
+            .unwrap();
+        // A second, unrelated company's project group must survive untouched.
+        let (other_tenant, _, _) = service
+            .create_tenant_for_enterprise("ent2", "Group Z", SYSTEM_DEFAULT_USER_ID, None)
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "INSERT INTO one_runtime_nodes (id, tenant_id, user_id, machine_id, display_name, last_seen_at, updated_at) \
+             VALUES ('node1', ?, ?, 'm1', 'My Machine', 0, 0)",
+        )
+        .bind(&tenant_id)
+        .bind(&alice)
+        .execute(service.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO one_departments (id, tenant_id, name, created_at, updated_at) VALUES ('dep1', ?, 'Eng', 0, 0)",
+        )
+        .bind(&tenant_id)
+        .execute(service.pool())
+        .await
+        .unwrap();
+
+        let deleted = service.disband_tenants_for_enterprise("ent1").await.unwrap();
+        assert_eq!(deleted, vec![tenant_id.clone()]);
+
+        // Everything scoped to the disbanded tenant is gone.
+        let tenant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_tenants WHERE id = ?")
+            .bind(&tenant_id)
+            .fetch_one(service.pool())
+            .await
+            .unwrap();
+        assert_eq!(tenant_count, 0);
+        let member_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?")
+            .bind(&tenant_id)
+            .fetch_one(service.pool())
+            .await
+            .unwrap();
+        assert_eq!(member_count, 0);
+        let invite_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_tenant_invites WHERE tenant_id = ?")
+            .bind(&tenant_id)
+            .fetch_one(service.pool())
+            .await
+            .unwrap();
+        assert_eq!(invite_count, 0);
+        let node_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_runtime_nodes WHERE tenant_id = ?")
+            .bind(&tenant_id)
+            .fetch_one(service.pool())
+            .await
+            .unwrap();
+        assert_eq!(node_count, 0);
+        let dept_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_departments WHERE tenant_id = ?")
+            .bind(&tenant_id)
+            .fetch_one(service.pool())
+            .await
+            .unwrap();
+        assert_eq!(dept_count, 0);
+
+        // The other company's project group is completely untouched.
+        let other_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_tenants WHERE id = ?")
+            .bind(&other_tenant)
+            .fetch_one(service.pool())
+            .await
+            .unwrap();
+        assert_eq!(other_count, 1, "an unrelated company's project group must survive");
+
+        // A second call (nothing left to disband) is a no-op, not an error.
+        assert_eq!(
+            service.disband_tenants_for_enterprise("ent1").await.unwrap(),
+            Vec::<String>::new()
+        );
     }
 
     #[tokio::test]

@@ -788,6 +788,7 @@ mod tests {
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData {
             session_id: Some("s1".into()),
+            ..Default::default()
         }))
         .unwrap();
 

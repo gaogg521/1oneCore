@@ -8,11 +8,16 @@ use crate::protocol::events::{
 
 pub struct BackendOutputSink {
     event_tx: broadcast::Sender<AgentStreamEvent>,
+    /// The model this turn is running against, carried on the `Finish` event
+    /// so a listener several layers up (billing) can meter the turn without
+    /// this sink knowing anything about users or conversations — it only
+    /// knows what aionrs told it at construction time.
+    model: String,
 }
 
 impl BackendOutputSink {
-    pub fn new(event_tx: broadcast::Sender<AgentStreamEvent>) -> Self {
-        Self { event_tx }
+    pub fn new(event_tx: broadcast::Sender<AgentStreamEvent>, model: String) -> Self {
+        Self { event_tx, model }
     }
 
     fn internal_call_id(tool_use_id: &str) -> Option<String> {
@@ -128,14 +133,17 @@ impl OutputSink for BackendOutputSink {
         &self,
         _msg_id: &str,
         _turns: usize,
-        _input_tokens: u64,
-        _output_tokens: u64,
+        input_tokens: u64,
+        output_tokens: u64,
         _cache_creation_tokens: u64,
         _cache_read_tokens: u64,
     ) {
-        let _ = self
-            .event_tx
-            .send(AgentStreamEvent::Finish(FinishEventData { session_id: None }));
+        let _ = self.event_tx.send(AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            model: Some(self.model.clone()),
+            input_tokens: Some(input_tokens as i64),
+            output_tokens: Some(output_tokens as i64),
+        }));
     }
 
     fn emit_error(&self, msg: &str) {
@@ -160,7 +168,7 @@ mod tests {
 
     fn make_sink() -> (BackendOutputSink, broadcast::Receiver<AgentStreamEvent>) {
         let (tx, rx) = broadcast::channel(16);
-        (BackendOutputSink::new(tx), rx)
+        (BackendOutputSink::new(tx, "claude-opus-4-8".to_string()), rx)
     }
 
     #[test]
@@ -290,6 +298,26 @@ mod tests {
         }
     }
 
+    /// This is the only place the model + real token counts aionrs reports
+    /// ever reach the `Finish` event — a listener several layers up (billing)
+    /// depends on this to meter what a turn actually cost. Before this test
+    /// existed, the sink discarded these values entirely (`_input_tokens`,
+    /// `_output_tokens`), so every metered turn recorded zero cost.
+    #[test]
+    fn emit_stream_end_carries_the_model_and_real_token_counts() {
+        let (sink, mut rx) = make_sink();
+        sink.emit_stream_end("msg-1", 3, 1234, 567, 100, 200);
+        let event = rx.try_recv().unwrap();
+        match event {
+            AgentStreamEvent::Finish(data) => {
+                assert_eq!(data.model.as_deref(), Some("claude-opus-4-8"));
+                assert_eq!(data.input_tokens, Some(1234));
+                assert_eq!(data.output_tokens, Some(567));
+            }
+            other => panic!("Expected Finish, got {:?}", other),
+        }
+    }
+
     #[test]
     fn emit_error_sends_error_event() {
         let (sink, mut rx) = make_sink();
@@ -370,7 +398,7 @@ mod tests {
     #[test]
     fn no_panic_when_no_receivers() {
         let (tx, _) = broadcast::channel(16);
-        let sink = BackendOutputSink::new(tx);
+        let sink = BackendOutputSink::new(tx, "claude-opus-4-8".to_string());
         sink.emit_text_delta("hello", "msg-1");
         sink.emit_thinking("thought", "msg-1");
         sink.emit_tool_call("call_read_1", "Read", "{}");

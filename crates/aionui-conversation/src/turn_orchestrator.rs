@@ -332,6 +332,25 @@ impl ConversationTurnOrchestrator {
             let outcome = relay.consume_with_send_error(rx, send_error_rx).await;
             aggregate_summary.merge(&outcome.attempt);
 
+            // P0-3 usage metering: one call per attempt that actually ran a
+            // turn — a "send" that continues (system-response auto-replies)
+            // makes several real LLM calls, each with its own cost, so this
+            // fires inside the loop rather than once after it. Cost is
+            // recorded even when the terminal was an error: aionrs reports
+            // real token counts whenever it reports any, regardless of
+            // whether the turn went on to fail — those tokens were still
+            // billed by the provider.
+            let recorder = self.service.usage_recorder.read().ok().and_then(|g| g.clone());
+            if let Some(recorder) = recorder {
+                recorder.record_turn(
+                    input.user_id.clone(),
+                    input.conv_id.clone(),
+                    outcome.model.clone(),
+                    outcome.input_tokens,
+                    outcome.output_tokens,
+                );
+            }
+
             if let Some(session_key) = agent.get_session_key() {
                 persist_session_key(
                     self.service.conversation_repo(),
@@ -766,6 +785,9 @@ mod tests {
                 needs_auth,
                 ..Default::default()
             },
+            model: None,
+            input_tokens: None,
+            output_tokens: None,
         }
     }
 
@@ -777,6 +799,9 @@ mod tests {
                 retryable: None,
             },
             attempt: TurnAttemptSummary::default(),
+            model: None,
+            input_tokens: None,
+            output_tokens: None,
         }
     }
 

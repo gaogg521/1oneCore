@@ -3,10 +3,11 @@
 use aionui_common::now_ms;
 use sqlx::SqlitePool;
 
+use crate::disband_cascade::{CompanyDisbandCascade, NoopCompanyDisbandCascade};
 use crate::error::EnterpriseError;
 use crate::models::{
-    CompanyMemberDto, CompanyOverviewDto, EnterpriseIdentityDto, ROLE_COMPANY_ADMIN, ROLE_COMPANY_MEMBER,
-    SEAT_STATUS_ACTIVE, SEAT_STATUS_PENDING, is_company_admin_role,
+    CompanyMemberDto, CompanyOverviewDto, DisbandCompanyResult, EnterpriseIdentityDto, ROLE_COMPANY_ADMIN,
+    ROLE_COMPANY_MEMBER, SEAT_STATUS_ACTIVE, SEAT_STATUS_PENDING, is_company_admin_role,
 };
 use crate::session_revoker::{NoopSessionRevoker, SessionRevoker};
 
@@ -19,6 +20,7 @@ const ROLE_SYSTEM_ADMIN: &str = "system_admin";
 pub struct EnterpriseService {
     pool: SqlitePool,
     session_revoker: std::sync::Arc<dyn SessionRevoker>,
+    disband_cascade: std::sync::Arc<dyn CompanyDisbandCascade>,
 }
 
 /// Named-fields input for `upsert_member` — see that function's doc comment.
@@ -37,6 +39,7 @@ impl EnterpriseService {
         Self {
             pool,
             session_revoker: std::sync::Arc::new(NoopSessionRevoker),
+            disband_cascade: std::sync::Arc::new(NoopCompanyDisbandCascade),
         }
     }
 
@@ -45,6 +48,14 @@ impl EnterpriseService {
     /// see [`crate::session_revoker`].
     pub fn with_session_revoker(mut self, revoker: std::sync::Arc<dyn SessionRevoker>) -> Self {
         self.session_revoker = revoker;
+        self
+    }
+
+    /// Wire the cross-crate cleanup that makes disbanding a company actually
+    /// delete what it owns elsewhere. Required on whichever instance serves
+    /// the disband route — see [`crate::disband_cascade`].
+    pub fn with_disband_cascade(mut self, cascade: std::sync::Arc<dyn CompanyDisbandCascade>) -> Self {
+        self.disband_cascade = cascade;
         self
     }
 
@@ -648,6 +659,62 @@ impl EnterpriseService {
         Ok(())
     }
 
+    /// Permanently deletes the company: every project group it owns
+    /// (one-org, via [`crate::disband_cascade`]), every enterprise-scoped
+    /// billing/usage record (one-billing, same trait), every company
+    /// membership, and the company record itself. Irreversible — there is
+    /// no "undo" short of the JSON snapshot `disband_tenants_for_enterprise`
+    /// archives on the one-org side.
+    ///
+    /// Every member's session is revoked, mirroring `remove_member` — a
+    /// disbanded company must not leave anyone still logged into it.
+    pub async fn disband_company(
+        &self,
+        actor_user_id: &str,
+        enterprise_id: &str,
+    ) -> Result<DisbandCompanyResult, EnterpriseError> {
+        if !self.is_company_admin_of(actor_user_id, enterprise_id).await? {
+            return Err(EnterpriseError::Forbidden(
+                "only a company admin can disband the company".into(),
+            ));
+        }
+        let member_ids: Vec<String> =
+            sqlx::query_scalar("SELECT user_id FROM one_enterprise_members WHERE enterprise_id = ?")
+                .bind(enterprise_id)
+                .fetch_all(&self.pool)
+                .await?;
+
+        // one-org (project groups) + one-billing (usage/license history)
+        // cleanup first: if either fails partway, the company record — and
+        // this member's own admin access to retry — stays in place.
+        let deleted_project_groups = self.disband_cascade.disband(enterprise_id).await;
+
+        sqlx::query("DELETE FROM one_enterprise_members WHERE enterprise_id = ?")
+            .bind(enterprise_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM one_enterprises WHERE id = ?")
+            .bind(enterprise_id)
+            .execute(&self.pool)
+            .await?;
+
+        for member_id in &member_ids {
+            self.session_revoker.revoke_sessions(member_id).await;
+        }
+
+        tracing::warn!(
+            enterprise_id,
+            actor_user_id,
+            member_count = member_ids.len(),
+            project_group_count = deleted_project_groups.len(),
+            "company disbanded (企业注销)"
+        );
+        Ok(DisbandCompanyResult {
+            deleted_project_group_ids: deleted_project_groups,
+            removed_member_count: member_ids.len() as i64,
+        })
+    }
+
     /// The caller's own enterprise-org identity, or `None` if they have no
     /// enterprise membership (local/LDAP account, or hasn't logged in via an
     /// SSO company since this feature landed).
@@ -1154,5 +1221,103 @@ mod tests {
         // Removing yourself is refused too.
         assert!(svc.remove_member(&ent, "u1", "u1").await.is_err());
         assert!(revoker.0.lock().unwrap().is_empty());
+    }
+
+    /// Records the enterprise ids it was asked to disband, so a test can tell
+    /// "the cascade ran" apart from "the cascade ran for the right company".
+    #[derive(Default)]
+    struct RecordingDisbandCascade(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl CompanyDisbandCascade for RecordingDisbandCascade {
+        async fn disband(&self, enterprise_id: &str) -> Vec<String> {
+            self.0.lock().unwrap().push(enterprise_id.to_string());
+            vec!["tenant-a".to_string(), "tenant-b".to_string()]
+        }
+    }
+
+    /// ⚠️ The point of the whole disband flow: the company, its cross-crate
+    /// cascade (one-org's project groups, one-billing's history — via the
+    /// trait), and every member's session must all go together. Leaving any
+    /// one of them behind would be "注销" in name only.
+    #[tokio::test]
+    async fn disbanding_a_company_cascades_and_revokes_every_member() {
+        let revoker = std::sync::Arc::new(RecordingRevoker::default());
+        let cascade = std::sync::Arc::new(RecordingDisbandCascade::default());
+        let db = aionui_db::init_database_memory().await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE one_user_org (user_id TEXT, tenant_id TEXT, role TEXT NOT NULL DEFAULT 'member', \
+             created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id))",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        sqlx::query("CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT)")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let svc = EnterpriseService::new(db.pool().clone())
+            .with_session_revoker(revoker.clone())
+            .with_disband_cascade(cascade.clone());
+
+        let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
+        let ent = overview.company_id;
+        svc.sync_member("u2", "feishu", "", Some("Bob"), None, None)
+            .await
+            .unwrap();
+        assert_eq!(svc.list_members(&ent).await.unwrap().len(), 2);
+
+        let result = svc.disband_company("system_default_user", &ent).await.unwrap();
+        assert_eq!(result.removed_member_count, 2);
+        assert_eq!(result.deleted_project_group_ids, vec!["tenant-a", "tenant-b"]);
+
+        // The cascade ran for THIS company, not some default/empty id.
+        assert_eq!(cascade.0.lock().unwrap().as_slice(), [ent.clone()]);
+        // Both the admin and the SSO-synced member lost their sessions.
+        let mut revoked = revoker.0.lock().unwrap().clone();
+        revoked.sort();
+        assert_eq!(revoked, ["system_default_user".to_string(), "u2".to_string()]);
+
+        // The company itself is gone, not just emptied.
+        assert!(svc.company_overview("system_default_user").await.unwrap().is_none());
+        let ent_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises WHERE id = ?")
+            .bind(&ent)
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap();
+        assert_eq!(ent_count, 0, "the enterprise row must not survive its own disband");
+        let member_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprise_members WHERE enterprise_id = ?")
+                .bind(&ent)
+                .fetch_one(&svc.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            member_count, 0,
+            "no membership row may survive the company it belonged to"
+        );
+    }
+
+    /// A non-admin asking to disband the company must not get to run the
+    /// cascade at all — the destructive part has to be behind the same guard
+    /// as everything else here, not just gated by luck at the route layer.
+    #[tokio::test]
+    async fn disband_company_rejected_for_non_admin() {
+        let cascade = std::sync::Arc::new(RecordingDisbandCascade::default());
+        let svc = service_with_governance().await.with_disband_cascade(cascade.clone());
+        let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
+        let ent = overview.company_id;
+        svc.sync_member("bob", "feishu", "", Some("Bob"), None, None)
+            .await
+            .unwrap();
+
+        let err = svc.disband_company("bob", &ent).await.unwrap_err();
+        assert_eq!(err.code(), "FORBIDDEN");
+        assert!(
+            cascade.0.lock().unwrap().is_empty(),
+            "cascade must not run on a rejected disband"
+        );
+        assert!(svc.company_overview("system_default_user").await.unwrap().is_some());
     }
 }

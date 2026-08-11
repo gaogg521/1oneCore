@@ -124,6 +124,32 @@ impl one_enterprise::SessionRevoker for OrgSessionRevoker {
     }
 }
 
+/// Lets disbanding a company delete what it owns in one-org (every project
+/// group) and one-billing (every usage/license record) without
+/// one-enterprise depending on either (same layer). Best-effort per side, by
+/// the trait's own contract — a company the operator asked to disband must
+/// actually go away even if one side's cleanup hits an error.
+struct CompanyDisbandCascadeImpl {
+    org: std::sync::Arc<one_org::OrgService>,
+    billing: std::sync::Arc<one_billing::BillingService>,
+}
+
+#[async_trait::async_trait]
+impl one_enterprise::CompanyDisbandCascade for CompanyDisbandCascadeImpl {
+    async fn disband(&self, enterprise_id: &str) -> Vec<String> {
+        if let Err(error) = self.billing.delete_enterprise_billing_data(enterprise_id).await {
+            tracing::error!(%error, enterprise_id, "failed to delete enterprise billing data on disband");
+        }
+        match self.org.disband_tenants_for_enterprise(enterprise_id).await {
+            Ok(deleted) => deleted,
+            Err(error) => {
+                tracing::error!(%error, enterprise_id, "failed to disband project groups on company disband");
+                Vec::new()
+            }
+        }
+    }
+}
+
 /// Lets one-org read the company directory mirror to map a subtree into a
 /// project group's department tree (T6 stage 3), without depending on
 /// one-enterprise (same layer). No company, or no directory sync ever run →
@@ -282,14 +308,32 @@ impl one_sso::CompanyAdminCheck for CompanyAdminCheckAdapter {
 /// Adapts one-billing's `BillingService::record_turn` to the conversation
 /// crate's `UsageRecorder` trait (P0-3). Fire-and-forget: spawns the async
 /// insert so metering never blocks or fails the send path.
+///
+/// `model`/tokens flow through from `ConversationTurnOrchestrator`, which
+/// only calls this once a turn has actually completed — real cost is known
+/// only then, never at accept time (see the trait's own doc comment for why
+/// that used to make every chat turn cost $0 regardless of the real bill).
 struct BillingUsageRecorder(std::sync::Arc<one_billing::BillingService>);
 
 impl aionui_conversation::UsageRecorder for BillingUsageRecorder {
-    fn record_turn(&self, user_id: String, conversation_id: String) {
+    fn record_turn(
+        &self,
+        user_id: String,
+        conversation_id: String,
+        model: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+    ) {
         let service = self.0.clone();
         tokio::spawn(async move {
             if let Err(e) = service
-                .record_turn(&user_id, Some(&conversation_id), None, None, None)
+                .record_turn(
+                    &user_id,
+                    Some(&conversation_id),
+                    model.as_deref(),
+                    input_tokens,
+                    output_tokens,
+                )
                 .await
             {
                 tracing::debug!(error = %e, "usage record_turn failed (non-fatal)");
@@ -576,13 +620,23 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         std::sync::Arc::new(one_billing::ManualBillingProvider),
     ));
 
-    // Conversation routes protected by auth middleware. Metering each accepted
-    // send as one usage turn (P0-3).
+    // P0-3 usage metering: wired onto the shared `ConversationService`
+    // (interior-mutability setter, like `with_project_service` below) rather
+    // than the per-router-mount `ConversationRouterState` builder chain —
+    // `ConversationTurnOrchestrator` fires this from inside the service
+    // itself once a turn actually completes, so every clone of the service
+    // (HTTP routes, cron, team) needs to see the same wiring, not just
+    // whichever local variable this chain happens to run through.
+    states
+        .conversation
+        .service
+        .with_usage_recorder(std::sync::Arc::new(BillingUsageRecorder(one_billing_service.clone())));
+
+    // Conversation routes protected by auth middleware.
     let conversation_authenticated = conversation_routes(
         states
             .conversation
             .clone()
-            .with_usage_recorder(std::sync::Arc::new(BillingUsageRecorder(one_billing_service.clone())))
             .with_send_gate(std::sync::Arc::new(BillingSendGate(one_billing_service.clone())))
             .with_content_inspector(std::sync::Arc::new(LocalContentInspector(
                 services.content_inspection.clone(),
@@ -706,7 +760,11 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // it can borrow one-org's credential revocation (built just above).
     let one_enterprise_service = std::sync::Arc::new(
         one_enterprise::EnterpriseService::new(services.database.pool().clone())
-            .with_session_revoker(std::sync::Arc::new(OrgSessionRevoker(one_org_service.clone()))),
+            .with_session_revoker(std::sync::Arc::new(OrgSessionRevoker(one_org_service.clone())))
+            .with_disband_cascade(std::sync::Arc::new(CompanyDisbandCascadeImpl {
+                org: one_org_service.clone(),
+                billing: one_billing_service.clone(),
+            })),
     );
     // Tenant resolver shared by one-employee + one-devops for team-shared
     // employees (A1 L3).

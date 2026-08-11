@@ -13,14 +13,17 @@ use aionui_auth::CurrentUser;
 
 use crate::directory::{DepartedMemberDto, DirectoryPersonDto, DirectorySyncStateDto};
 use crate::error::EnterpriseError;
-use crate::models::{CompanyMemberDto, CompanyOverviewDto, EnterpriseIdentityDto};
+use crate::models::{CompanyMemberDto, CompanyOverviewDto, DisbandCompanyResult, EnterpriseIdentityDto};
 use crate::rbac::RequireCompanyAdmin;
 use crate::state::OneEnterpriseRouterState;
 
 pub fn one_enterprise_routes(state: OneEnterpriseRouterState) -> Router {
     Router::new()
         .route("/api/one/enterprise/me", get(enterprise_me))
-        .route("/api/one/enterprise/company", get(company_overview))
+        .route(
+            "/api/one/enterprise/company",
+            get(company_overview).delete(company_disband),
+        )
         .route("/api/one/enterprise/company/setup", post(company_setup))
         .route("/api/one/enterprise/company/members", get(company_members))
         .route(
@@ -127,6 +130,20 @@ async fn company_members(
 #[serde(rename_all = "camelCase")]
 struct SetMemberRoleBody {
     role: String,
+}
+
+/// Permanently deletes the company: every project group it owns, every
+/// enterprise-scoped billing/usage record, every membership, and the
+/// company record itself. Irreversible.
+async fn company_disband(
+    State(state): State<OneEnterpriseRouterState>,
+    admin: RequireCompanyAdmin,
+) -> Result<Json<ApiResponse<DisbandCompanyResult>>, EnterpriseError> {
+    let result = state
+        .service
+        .disband_company(&admin.user_id, &admin.enterprise_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(result)))
 }
 
 /// Remove a member from the company, releasing their seat (P0-2).

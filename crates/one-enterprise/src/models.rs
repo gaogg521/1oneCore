@@ -72,6 +72,15 @@ pub const SEAT_STATUS_PENDING: &str = "pending";
 /// The deployment's company as seen by a caller (Direction B, tier above
 /// project groups). `viewer_role` is the caller's own membership role, or
 /// `None` when they aren't a member.
+/// Result of permanently disbanding a company — what got cleaned up, for the
+/// console to report back ("N project groups removed, M members signed out").
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisbandCompanyResult {
+    pub deleted_project_group_ids: Vec<String>,
+    pub removed_member_count: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompanyOverviewDto {

@@ -906,6 +906,44 @@ impl BillingService {
         Ok(())
     }
 
+    /// Deletes every billing/usage record attributed to `enterprise_id`:
+    /// license/tier/spend-cap/allowlist, metered usage events, department
+    /// budgets, the media ledger and its retention setting, and license
+    /// activation history. Called by one-enterprise's `disband_company`
+    /// through the `CompanyDisbandCascade` trait it wires up in
+    /// `aionui-app` (same layer, no direct dependency). Authorization is
+    /// enforced by that caller; this trusts the `enterprise_id` it is given.
+    pub async fn delete_enterprise_billing_data(&self, enterprise_id: &str) -> Result<(), BillingError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM one_enterprise_license WHERE enterprise_id = ?")
+            .bind(enterprise_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM one_usage_events WHERE enterprise_id = ?")
+            .bind(enterprise_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM one_department_budgets WHERE enterprise_id = ?")
+            .bind(enterprise_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM one_media_assets WHERE enterprise_id = ?")
+            .bind(enterprise_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM one_media_ledger_settings WHERE enterprise_id = ?")
+            .bind(enterprise_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM one_license_activation WHERE enterprise_id = ?")
+            .bind(enterprise_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        tracing::warn!(enterprise_id, "enterprise billing history deleted (企业注销级联)");
+        Ok(())
+    }
+
     /// Aggregate usage for a company since `since_ms`, grouped by user, model,
     /// and day, plus grand totals.
     pub async fn usage_summary(&self, enterprise_id: &str, since_ms: i64) -> Result<UsageSummaryDto, BillingError> {
@@ -1066,6 +1104,90 @@ mod tests {
                 .execute(&svc.pool)
                 .await
                 .unwrap();
+        }
+    }
+
+    /// ⚠️ The point of company disband cascading into one-billing: every
+    /// billing/usage record attributed to the disbanded company must be
+    /// gone from every table it can appear in — an unrelated company's
+    /// history in the same tables must survive untouched.
+    #[tokio::test]
+    async fn deleting_enterprise_billing_data_clears_every_table_for_that_company_only() {
+        let svc = service().await;
+        for ent in ["ent1", "ent2"] {
+            sqlx::query(
+                "INSERT INTO one_enterprise_license (enterprise_id, tier, updated_at) VALUES (?, 'enterprise', 0)",
+            )
+            .bind(ent)
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO one_usage_events (id, user_id, enterprise_id, model, created_at) \
+                 VALUES (?, 'u1', ?, 'claude-opus', 0)",
+            )
+            .bind(format!("evt-{ent}"))
+            .bind(ent)
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO one_department_budgets (department_id, enterprise_id, cost_cap_micros, updated_at) \
+                 VALUES (?, ?, 1000, 0)",
+            )
+            .bind(format!("dep-{ent}"))
+            .bind(ent)
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO one_media_assets (id, user_id, enterprise_id, kind, file_path, created_at) \
+                 VALUES (?, 'u1', ?, 'image', '/tmp/x.png', 0)",
+            )
+            .bind(format!("asset-{ent}"))
+            .bind(ent)
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO one_media_ledger_settings (enterprise_id, retain_prompts, updated_at) VALUES (?, 1, 0)",
+            )
+            .bind(ent)
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO one_license_activation \
+                    (license_id, enterprise_id, customer, tier, issued_at, activated_at, activated_by) \
+                 VALUES (?, ?, 'Acme', 'enterprise', 0, 0, 'admin1')",
+            )
+            .bind(format!("lic-{ent}"))
+            .bind(ent)
+            .execute(&svc.pool)
+            .await
+            .unwrap();
+        }
+
+        svc.delete_enterprise_billing_data("ent1").await.unwrap();
+
+        for (table, column) in [
+            ("one_enterprise_license", "enterprise_id"),
+            ("one_usage_events", "enterprise_id"),
+            ("one_department_budgets", "enterprise_id"),
+            ("one_media_assets", "enterprise_id"),
+            ("one_media_ledger_settings", "enterprise_id"),
+            ("one_license_activation", "enterprise_id"),
+        ] {
+            let gone: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE {column} = 'ent1'"))
+                .fetch_one(&svc.pool)
+                .await
+                .unwrap();
+            assert_eq!(gone, 0, "{table} must have no ent1 rows left");
+            let survives: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE {column} = 'ent2'"))
+                .fetch_one(&svc.pool)
+                .await
+                .unwrap();
+            assert_eq!(survives, 1, "{table} must not have touched ent2's row");
         }
     }
 

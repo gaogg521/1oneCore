@@ -6,8 +6,22 @@ use aionui_ai_agent::{ActiveLeaseRegistry, IWorkerTaskManager};
 /// Records one metered turn for the billing/usage plane (P0-3). Fire-and-forget:
 /// implementations MUST NOT block or fail the send path — they spawn their own
 /// async work. Wired to one-billing in aionui-app; `None` in personal builds.
+///
+/// Called once per completed agent attempt, from `ConversationTurnOrchestrator`
+/// — not at accept time. A turn is a real LLM call with a real cost only once
+/// it has actually run; `model`/tokens are `None` when the backend never
+/// reported usage (currently: ACP-bridged CLIs), in which case a real
+/// implementation should record the turn without a cost estimate rather than
+/// guessing `$0`.
 pub trait UsageRecorder: Send + Sync {
-    fn record_turn(&self, user_id: String, conversation_id: String);
+    fn record_turn(
+        &self,
+        user_id: String,
+        conversation_id: String,
+        model: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+    );
 }
 
 /// Why the product refused an action, in a shape the HTTP layer can hand to a
@@ -76,8 +90,6 @@ pub struct ConversationRouterState {
     pub service: ConversationService,
     pub task_manager: Arc<dyn IWorkerTaskManager>,
     pub active_leases: Arc<ActiveLeaseRegistry>,
-    /// Optional usage meter; when set, each accepted send records a turn.
-    pub usage_recorder: Option<Arc<dyn UsageRecorder>>,
     /// Optional pre-send policy gate (P1-2); when set, a send may be blocked.
     pub send_gate: Option<Arc<dyn SendGate>>,
     /// Optional content inspector (T4); when set, a send may be blocked and
@@ -86,12 +98,6 @@ pub struct ConversationRouterState {
 }
 
 impl ConversationRouterState {
-    /// Attach a usage recorder (one-billing). Chainable at wire-up time.
-    pub fn with_usage_recorder(mut self, recorder: Arc<dyn UsageRecorder>) -> Self {
-        self.usage_recorder = Some(recorder);
-        self
-    }
-
     /// Attach a pre-send policy gate (one-billing). Chainable at wire-up time.
     pub fn with_send_gate(mut self, gate: Arc<dyn SendGate>) -> Self {
         self.send_gate = Some(gate);

@@ -330,6 +330,16 @@ pub struct ConversationService {
     runtime_helper_bin: Option<String>,
     runtime_base_url: Option<String>,
     runtime_token_service: Option<Arc<RuntimeTokenService>>,
+    /// Optional usage meter (P0-3/billing). When set, `ConversationTurnOrchestrator`
+    /// records one metered turn per completed agent attempt — see
+    /// [`crate::state::UsageRecorder`]'s doc comment for why this fires at
+    /// turn completion rather than at accept time. `RwLock`-wrapped like
+    /// `mcp_server_repo`/`project_service` above: `ConversationService` is
+    /// cloned into every router mount and background scheduler that sends a
+    /// turn (HTTP routes, cron, team), so wiring this once in `aionui-app`
+    /// via `with_usage_recorder` must reach every existing clone, not just
+    /// whichever local variable the call happens to chain off of.
+    pub(crate) usage_recorder: Arc<RwLock<Option<Arc<dyn crate::state::UsageRecorder>>>>,
 
     // Repos for conversation, acp_session and agent_metadata access.
     conversation_repo: Arc<dyn IConversationRepository>,
@@ -404,6 +414,7 @@ impl ConversationService {
             runtime_helper_bin: None,
             runtime_base_url: None,
             runtime_token_service: None,
+            usage_recorder: Arc::new(RwLock::new(None)),
 
             conversation_repo,
             agent_metadata_repo,
@@ -425,6 +436,14 @@ impl ConversationService {
     pub fn with_runtime_token_service(mut self, runtime_token_service: Arc<RuntimeTokenService>) -> Self {
         self.runtime_token_service = Some(runtime_token_service);
         self
+    }
+
+    /// Attach a usage recorder (one-billing). Reaches every existing clone of
+    /// this service — see the field's own doc comment for why.
+    pub fn with_usage_recorder(&self, recorder: Arc<dyn crate::state::UsageRecorder>) {
+        if let Ok(mut guard) = self.usage_recorder.write() {
+            *guard = Some(recorder);
+        }
     }
 
     pub fn create_team_temp_workspace(&self, team_id: &str) -> Result<String, ConversationError> {

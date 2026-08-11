@@ -62,6 +62,14 @@ pub struct RelayOutcome {
     pub system_responses: Vec<String>,
     pub terminal: RelayTerminal,
     pub attempt: TurnAttemptSummary,
+    /// The model this attempt ran against, when the backend reported one on
+    /// its terminal event (currently: aionrs only — see
+    /// `FinishEventData`/`BackendOutputSink::emit_stream_end`). `None` means
+    /// no usage is known for this attempt, not that it was free — a caller
+    /// billing off this field must treat `None` as "can't meter", not "$0".
+    pub model: Option<String>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -387,6 +395,15 @@ impl StreamRelay {
                                 "Error"
                             };
                             let terminal = Self::terminal_from_event(&event);
+                            // Only `Finish` ever carries usage (see
+                            // `FinishEventData`'s doc comment) — an `Error`
+                            // terminal has nothing to extract.
+                            let (usage_model, usage_input_tokens, usage_output_tokens) =
+                                if let AgentStreamEvent::Finish(data) = &event {
+                                    (data.model.clone(), data.input_tokens, data.output_tokens)
+                                } else {
+                                    (None, None, None)
+                                };
                             info!(
                                 target: "aionui_feedback_diagnostics",
                                 diagnostic_event = "feedback.runtime.turn_terminal",
@@ -428,6 +445,9 @@ impl StreamRelay {
                                     system_responses: Vec::new(),
                                     terminal,
                                     attempt,
+                                    model: usage_model,
+                                    input_tokens: usage_input_tokens,
+                                    output_tokens: usage_output_tokens,
                                 };
                             }
 
@@ -455,8 +475,14 @@ impl StreamRelay {
                                     system_responses: Vec::new(),
                                     terminal,
                                     attempt: attempt.clone(),
+                                    model: usage_model,
+                                    input_tokens: usage_input_tokens,
+                                    output_tokens: usage_output_tokens,
                                 }
                             } else {
+                                // `finalize` extracts model/tokens from `event`
+                                // itself — see its own doc comment — so it does
+                                // not need `usage_model` et al. threaded in here.
                                 self.finalize(&full_text_buffer, &text_segments, &event, terminal).await
                             };
                             outcome.attempt = attempt.clone();
@@ -557,6 +583,9 @@ impl StreamRelay {
                             system_responses: Vec::new(),
                             terminal: RelayTerminal::ChannelClosed,
                             attempt: attempt.clone(),
+                            model: None,
+                            input_tokens: None,
+                            output_tokens: None,
                         }
                     } else {
                         self.finalize(
@@ -685,10 +714,18 @@ impl StreamRelay {
         event: &AgentStreamEvent,
         terminal: RelayTerminal,
     ) -> RelayOutcome {
+        let (model, input_tokens, output_tokens) = if let AgentStreamEvent::Finish(data) = event {
+            (data.model.clone(), data.input_tokens, data.output_tokens)
+        } else {
+            (None, None, None)
+        };
         let mut outcome = RelayOutcome {
             system_responses: Vec::new(),
             terminal,
             attempt: TurnAttemptSummary::default(),
+            model,
+            input_tokens,
+            output_tokens,
         };
         let status = match event {
             AgentStreamEvent::Error(_) => "error",
@@ -961,6 +998,71 @@ mod tests {
 
         let content: serde_json::Value = serde_json::from_str(&msg.content).unwrap();
         assert_eq!(content["content"], "Hello World");
+    }
+
+    /// ⚠️ The point of the whole billing fix: the model + real token counts
+    /// aionrs puts on a `Finish` event must survive all the way into
+    /// `RelayOutcome`, unmodified — this is the only path `ConversationTurnOrchestrator`
+    /// has to learn what a turn actually cost. Before this test existed, the
+    /// relay dropped this data on the floor: `finalize()`'s `RelayOutcome`
+    /// literal never read it from the event at all.
+    #[tokio::test]
+    async fn finish_event_usage_data_reaches_the_relay_outcome() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+
+        let relay = StreamRelay::new(
+            "conv-1".into(),
+            "asst-1".into(),
+            "turn-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+        );
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::Text(TextEventData { content: "Hi".into() }))
+            .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            model: Some("claude-opus-4-8".into()),
+            input_tokens: Some(1234),
+            output_tokens: Some(567),
+        }))
+        .unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.model.as_deref(), Some("claude-opus-4-8"));
+        assert_eq!(outcome.input_tokens, Some(1234));
+        assert_eq!(outcome.output_tokens, Some(567));
+    }
+
+    /// A `Finish` with no usage (ACP-bridged backends, which never populate
+    /// these fields) must leave the outcome's fields `None` — not a guessed
+    /// `0`, which a billing caller could mistake for "this turn was free".
+    #[tokio::test]
+    async fn finish_event_without_usage_data_leaves_outcome_fields_none() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+
+        let relay = StreamRelay::new(
+            "conv-1".into(),
+            "asst-1".into(),
+            "turn-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+        );
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.model, None);
+        assert_eq!(outcome.input_tokens, None);
+        assert_eq!(outcome.output_tokens, None);
     }
 
     #[tokio::test]
