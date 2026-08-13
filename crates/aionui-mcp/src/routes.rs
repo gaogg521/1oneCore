@@ -125,6 +125,7 @@ struct TeamMcpSyncResponse {
 /// the member's local MCP config (offline-first) and reconcile removals.
 async fn team_sync(
     State(state): State<McpRouterState>,
+    Extension(user): Extension<CurrentUser>,
     body: Result<Json<TeamMcpSyncRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<TeamMcpSyncResponse>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
@@ -142,7 +143,7 @@ async fn team_sync(
         .collect();
     let report = state
         .config_service
-        .sync_team_servers(&payloads, req.authoritative)
+        .sync_team_servers(&user.id, &payloads, req.authoritative)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(TeamMcpSyncResponse {

@@ -84,6 +84,7 @@ const CLAUDE_BRIDGE_MODEL_ALIAS_OVERRIDE_ENV_KEYS: [&str; 4] = [
 /// integration in that case — see `acp_launch_policy::append_claude_provider_env`).
 async fn resolve_claude_bridge_env(
     deps: &AgentFactoryDeps,
+    user_id: &str,
     meta: &aionui_api_types::AgentMetadata,
 ) -> Option<HashMap<String, String>> {
     if meta.backend.as_deref() != Some("claude") {
@@ -99,7 +100,7 @@ async fn resolve_claude_bridge_env(
     }
     let (provider_id, model) = (config.provider_id.as_deref()?, config.model.as_deref()?);
 
-    let row = match deps.provider_repo.find_by_id(provider_id).await {
+    let row = match deps.provider_repo.find_by_id(user_id, provider_id).await {
         Ok(Some(row)) => row,
         Ok(None) => {
             warn!(
@@ -161,6 +162,7 @@ async fn resolve_claude_bridge_env(
 /// context length on file — this is a value-add, not a required field.
 async fn resolve_codex_bridge_context_window(
     deps: &AgentFactoryDeps,
+    user_id: &str,
     codex_bridge_config: Option<&aionui_db::CodexBridgeConfig>,
 ) -> Option<i64> {
     let config = codex_bridge_config?;
@@ -168,7 +170,7 @@ async fn resolve_codex_bridge_context_window(
         return None;
     }
     let provider_id = config.provider_id.as_deref()?;
-    match deps.provider_repo.find_by_id(provider_id).await {
+    match deps.provider_repo.find_by_id(user_id, provider_id).await {
         Ok(Some(row)) => row.context_limit,
         Ok(None) => None,
         Err(error) => {
@@ -227,8 +229,9 @@ pub(super) async fn build(
         }),
         None => None,
     };
-    let claude_bridge_env = resolve_claude_bridge_env(&deps, &meta).await;
-    let codex_bridge_context_window = resolve_codex_bridge_context_window(&deps, codex_bridge_config.as_ref()).await;
+    let claude_bridge_env = resolve_claude_bridge_env(&deps, &ctx.user_id, &meta).await;
+    let codex_bridge_context_window =
+        resolve_codex_bridge_context_window(&deps, &ctx.user_id, codex_bridge_config.as_ref()).await;
     apply_acp_launch_policy(
         &mut command_spec,
         AcpLaunchPolicyInput {
@@ -389,7 +392,8 @@ async fn resolve_agent_command_spec(
         && let Some(backend) = meta.backend.as_deref()
         && let Some(tool) = ManagedAcpToolId::from_backend(backend)
     {
-        return resolve_builtin_managed_acp_command_spec(meta, workspace, conversation_id, broadcaster, tool).await;
+        return resolve_builtin_managed_acp_command_spec(meta, user_id, workspace, conversation_id, broadcaster, tool)
+            .await;
     }
 
     let command = meta
@@ -441,6 +445,7 @@ async fn resolve_agent_command_spec(
 
 async fn resolve_builtin_managed_acp_command_spec(
     meta: &aionui_api_types::AgentMetadata,
+    user_id: &str,
     workspace: &str,
     conversation_id: &str,
     broadcaster: Arc<dyn aionui_realtime::EventBroadcaster>,
@@ -455,12 +460,14 @@ async fn resolve_builtin_managed_acp_command_spec(
         )));
     }
 
-    let node_reporter = conversation_runtime_reporter(broadcaster.clone(), conversation_id.to_owned());
+    let node_reporter =
+        conversation_runtime_reporter(broadcaster.clone(), user_id.to_owned(), conversation_id.to_owned());
     let node_runtime = ensure_node_runtime_with_reporter(Some(node_reporter.as_ref()))
         .await
         .map_err(|error| AgentError::bad_request(format!("Agent '{}' CLI unavailable: {error}", meta.name)))?;
 
-    let tool_reporter = conversation_acp_tool_runtime_reporter(broadcaster, conversation_id.to_owned(), tool);
+    let tool_reporter =
+        conversation_acp_tool_runtime_reporter(broadcaster, user_id.to_owned(), conversation_id.to_owned(), tool);
     let managed_tool = ensure_managed_acp_tool_with_reporter(tool, Some(tool_reporter.as_ref()))
         .await
         .map_err(|error| AgentError::bad_request(format!("Agent '{}' CLI unavailable: {error}", meta.name)))?;

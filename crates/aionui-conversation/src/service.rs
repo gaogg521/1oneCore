@@ -478,7 +478,7 @@ impl ConversationService {
     /// A project ref that cannot be resolved is an error rather than a silently
     /// dropped attachment: the user picked a file and would otherwise watch the
     /// agent answer as if it were never attached.
-    async fn resolve_chat_files(&self, files: &[ChatFileRef]) -> Result<Vec<String>, ConversationError> {
+    async fn resolve_chat_files(&self, user_id: &str, files: &[ChatFileRef]) -> Result<Vec<String>, ConversationError> {
         let mut out = Vec::with_capacity(files.len());
         for file in files {
             if let Some(path) = file.direct_path() {
@@ -497,11 +497,14 @@ impl ConversationService {
                 });
             };
             let resolved = project_service
-                .resolve_reference(ReferenceInput {
-                    pe_id: pe_id.to_owned(),
-                    relative_path: relative_path.to_owned(),
-                    op: FileOp::Read,
-                })
+                .resolve_reference(
+                    user_id,
+                    ReferenceInput {
+                        pe_id: pe_id.to_owned(),
+                        relative_path: relative_path.to_owned(),
+                        op: FileOp::Read,
+                    },
+                )
                 .await
                 .map_err(|err| ConversationError::BadRequest {
                     reason: format!("Cannot resolve attached project file '{relative_path}': {err}"),
@@ -2916,7 +2919,7 @@ impl ConversationService {
         // Resolve wire refs to absolute paths up front: a bad project ref must
         // fail the send, not surface later as an attachment the agent silently
         // never received.
-        let resolved_files = self.resolve_chat_files(&req.files).await?;
+        let resolved_files = self.resolve_chat_files(user_id, &req.files).await?;
         let req = SendMessageRequest {
             files: resolved_files.into_iter().map(ChatFileRef::Path).collect(),
             ..req

@@ -826,11 +826,12 @@ pub(crate) fn build_aionrs_config(
 pub async fn resolve_provider_config_for_bridge(
     provider_repo: &dyn aionui_db::IProviderRepository,
     encryption_key: &[u8],
+    user_id: &str,
     provider_id: &str,
     model_id: &str,
 ) -> Result<aion_config::config::Config, AgentError> {
     let row = provider_repo
-        .find_by_id(provider_id)
+        .find_by_id(user_id, provider_id)
         .await
         .map_err(|e| AgentError::internal(format!("Failed to load provider config: {e}")))?
         .ok_or_else(|| AgentError::provider_not_found(provider_id.to_owned()))?;

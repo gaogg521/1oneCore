@@ -9,6 +9,11 @@ use crate::encoder::{ResponsesEncoder, SseEvent};
 use crate::error::BridgeError;
 use crate::protocol::{ResponsesRequest, build_llm_request};
 
+/// The local operator's user id — see the call site in
+/// [`handle_responses_request`] for why the bridge resolves providers as this
+/// user rather than a request-scoped one.
+const SYSTEM_DEFAULT_USER_ID: &str = "system_default_user";
+
 pub struct CodexBridgeService {
     provider_repo: Arc<dyn IProviderRepository>,
     config_repo: Arc<dyn ICodexBridgeConfigRepository>,
@@ -87,6 +92,11 @@ impl CodexBridgeService {
         let provider_config = aionui_ai_agent::resolve_provider_config_for_bridge(
             self.provider_repo.as_ref(),
             &self.encryption_key,
+            // The caller is an external CLI holding this bridge's bearer token,
+            // not a session — there is no request user to scope by. The bridge
+            // config it authenticated against is the local operator's, so the
+            // provider it names is looked up as that operator.
+            SYSTEM_DEFAULT_USER_ID,
             provider_id,
             model,
         )

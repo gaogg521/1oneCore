@@ -371,6 +371,7 @@ impl EmployeeService {
     ///    skipped when no provider repo is wired.
     async fn validate_model_binding(
         &self,
+        owner_user_id: &str,
         agent_type: &str,
         model: Option<&ProviderWithModel>,
         require_model: bool,
@@ -399,7 +400,7 @@ impl EmployeeService {
             return Ok(());
         };
         let provider = provider_repo
-            .find_by_id(&model.provider_id)
+            .find_by_id(owner_user_id, &model.provider_id)
             .await
             .map_err(|e| EmployeeError::Internal(format!("load provider: {e}")))?
             .ok_or_else(|| EmployeeError::BadRequest(format!("provider '{}' no longer exists", model.provider_id)))?;
@@ -514,7 +515,7 @@ impl EmployeeService {
             .to_string();
 
         let agent_type = input.agent_type.trim();
-        self.validate_model_binding(agent_type, input.model.as_ref(), true)
+        self.validate_model_binding(owner_user_id, agent_type, input.model.as_ref(), true)
             .await?;
         let model = serialize_model(input.model.as_ref())?;
 
@@ -590,7 +591,7 @@ impl EmployeeService {
             .as_deref()
             .and_then(|raw| serde_json::from_str::<ProviderWithModel>(raw).ok());
         let touches_binding = input.agent_type.is_some() || input.model.is_some();
-        self.validate_model_binding(&agent_type, effective_model.as_ref(), touches_binding)
+        self.validate_model_binding(owner_user_id, &agent_type, effective_model.as_ref(), touches_binding)
             .await?;
 
         sqlx::query(
@@ -780,7 +781,7 @@ impl EmployeeService {
             .map_err(|e| EmployeeError::Internal(format!("create conversation: {e}")))?;
         let conversation_id = response.id.clone();
 
-        self.ensure_workspace(&conversation_id, &response.extra).await?;
+        self.ensure_workspace(owner_user_id, &conversation_id, &response.extra).await?;
 
         let run_id = short_id("run");
         sqlx::query(
@@ -962,7 +963,12 @@ impl EmployeeService {
 
     /// Mirror of the cron executor's fallback: some conversation types come
     /// back without a provisioned workspace; the agent turn needs one.
-    async fn ensure_workspace(&self, conversation_id: &str, extra: &serde_json::Value) -> Result<(), EmployeeError> {
+    async fn ensure_workspace(
+        &self,
+        owner_user_id: &str,
+        conversation_id: &str,
+        extra: &serde_json::Value,
+    ) -> Result<(), EmployeeError> {
         let workspace = extra
             .get("workspace")
             .and_then(|v| v.as_str())
@@ -979,7 +985,7 @@ impl EmployeeService {
         std::fs::create_dir_all(&fallback)
             .map_err(|e| EmployeeError::Internal(format!("create workspace {}: {e}", fallback.display())))?;
 
-        let Some(row) = self.conversation_repo.get(conversation_id).await? else {
+        let Some(row) = self.conversation_repo.get(owner_user_id, conversation_id).await? else {
             return Ok(());
         };
         let mut extra_value: serde_json::Value =
@@ -996,7 +1002,7 @@ impl EmployeeService {
             updated_at: Some(now_ms()),
             ..Default::default()
         };
-        self.conversation_repo.update(conversation_id, &update).await?;
+        self.conversation_repo.update(owner_user_id, conversation_id, &update).await?;
         Ok(())
     }
 

@@ -63,7 +63,10 @@ pub async fn run_resetpass(cli: &Cli, args: &ResetpassArgs) -> Result<ExitCode, 
         .map_err(|_| database_error())?;
     database.close().await;
 
-    println!("Password reset for user: {}", user.username);
+    println!(
+        "Password reset for user: {}",
+        user.username.as_deref().unwrap_or("external_user")
+    );
     println!("New password: {new_password}");
     println!("Store it now — it is not shown again.");
 

@@ -454,6 +454,7 @@ impl McpConfigService {
     /// pass false so the local cache is never wiped.
     pub async fn sync_team_servers(
         &self,
+        user_id: &str,
         payloads: &[TeamMcpPayload],
         authoritative: bool,
     ) -> Result<TeamMcpSyncReport, McpError> {
@@ -484,32 +485,33 @@ impl McpConfigService {
 
             // Conflict guard: never clobber a member's personal server that
             // happens to share the name — only servers we own (team marker).
-            if let Some(existing) = self.repo.find_by_name_any(&payload.name).await?
+            if let Some(existing) = self.repo.find_by_name_any(user_id, &payload.name).await?
                 && team_registry_id_of(existing.original_json.as_deref()).is_none()
             {
                 report.conflicts.push(payload.name.clone());
                 continue;
             }
 
-            self.upsert_server(
-                &payload.name,
-                Some("Team-distributed MCP connector"),
-                &transport,
-                Some(&team_origin_json(&payload.registry_id)),
-                false,
-                payload.enabled,
-            )
+            self.upsert_server(UpsertMcpServer {
+                user_id,
+                name: &payload.name,
+                description: Some("Team-distributed MCP connector"),
+                transport: &transport,
+                original_json: Some(&team_origin_json(&payload.registry_id)),
+                builtin: false,
+                enabled: payload.enabled,
+            })
             .await?;
             wanted.insert(payload.registry_id.clone());
             report.written.push(payload.name.clone());
         }
 
         if authoritative {
-            for row in self.repo.list().await? {
+            for row in self.repo.list(user_id).await? {
                 if let Some(registry_id) = team_registry_id_of(row.original_json.as_deref())
                     && !wanted.contains(&registry_id)
                 {
-                    self.repo.delete(&row.id).await?;
+                    self.repo.delete(user_id, &row.id).await?;
                     report.removed.push(row.name);
                 }
             }
@@ -1584,6 +1586,7 @@ mod team_sync_tests {
         let svc = svc();
         let report = svc
             .sync_team_servers(
+                TEST_USER_ID,
                 &[
                     payload("omcp_a", "team-search", "sse", "https://mcp.corp/sse"),
                     payload("omcp_b", "team-tools", "stdio", "npx corp-tools --serve"),
@@ -1609,7 +1612,7 @@ mod team_sync_tests {
         let svc = svc();
         let mut p = payload("omcp_s", "team-auth", "sse", "https://mcp.corp/sse");
         p.secrets_json = Some(r#"{"Authorization":"Bearer team-token"}"#.to_owned());
-        svc.sync_team_servers(&[p], true).await.unwrap();
+        svc.sync_team_servers(TEST_USER_ID, &[p], true).await.unwrap();
 
         let server = svc
             .list_servers()
@@ -1647,7 +1650,7 @@ mod team_sync_tests {
         .unwrap();
 
         let report = svc
-            .sync_team_servers(&[payload("omcp_x", "my-mcp", "sse", "https://corp.example/sse")], true)
+            .sync_team_servers(TEST_USER_ID, &[payload("omcp_x", "my-mcp", "sse", "https://corp.example/sse")], true)
             .await
             .unwrap();
         assert_eq!(report.conflicts, vec!["my-mcp".to_owned()]);
@@ -1661,6 +1664,7 @@ mod team_sync_tests {
     async fn authoritative_resync_removes_admin_deleted_and_offline_keeps() {
         let svc = svc();
         svc.sync_team_servers(
+            TEST_USER_ID,
             &[
                 payload("omcp_a", "team-a", "sse", "https://a/sse"),
                 payload("omcp_b", "team-b", "sse", "https://b/sse"),
@@ -1671,13 +1675,13 @@ mod team_sync_tests {
         .unwrap();
 
         // Offline pass (not authoritative): nothing removed.
-        let offline = svc.sync_team_servers(&[], false).await.unwrap();
+        let offline = svc.sync_team_servers(TEST_USER_ID, &[], false).await.unwrap();
         assert!(offline.removed.is_empty());
         assert_eq!(svc.list_servers().await.unwrap().len(), 2);
 
         // Admin deleted team-b on the server: authoritative resync removes it.
         let resync = svc
-            .sync_team_servers(&[payload("omcp_a", "team-a", "sse", "https://a/sse")], true)
+            .sync_team_servers(TEST_USER_ID, &[payload("omcp_a", "team-a", "sse", "https://a/sse")], true)
             .await
             .unwrap();
         assert_eq!(resync.removed, vec!["team-b".to_owned()]);

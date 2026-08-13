@@ -133,10 +133,11 @@ async fn import(
 /// overwrites the existing row instead of skipping it.
 async fn import_personas(
     State(state): State<AssistantRouterState>,
+    Extension(current_user): Extension<CurrentUser>,
     body: Result<Json<ImportAssistantsRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<ImportAssistantsResult>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
-    let result = state.service.import_personas(req).await?;
+    let result = state.service.import_personas(&current_user.id, req).await?;
     Ok(Json(ApiResponse::ok(result)))
 }
 
@@ -176,6 +177,7 @@ async fn marketplace_list(
 /// twice just re-syncs the row, it never duplicates.
 async fn marketplace_install(
     State(state): State<AssistantRouterState>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<AssistantResponse>>, ApiError> {
     let entry = state
@@ -199,7 +201,7 @@ async fn marketplace_install(
     // item's own error instead.
     let outcome = state
         .service
-        .import_personas(ImportAssistantsRequest {
+        .import_personas(&current_user.id, ImportAssistantsRequest {
             assistants: vec![CreateAssistantRequest {
                 id: Some(entry.id.clone()),
                 name: installed_name,
@@ -231,10 +233,13 @@ async fn marketplace_install(
     if entry.has_avatar
         && let Some(bytes) = crate::marketplace::marketplace_avatar_bytes(&entry.id)
     {
-        state.service.set_avatar_from_bytes(&entry.id, &bytes, "webp").await?;
+        state
+            .service
+            .set_avatar_from_bytes(&current_user.id, &entry.id, &bytes, "webp")
+            .await?;
     }
 
-    let installed = state.service.get(&entry.id).await?;
+    let installed = state.service.get_for_user(&current_user.id, &entry.id).await?;
     Ok(Json(ApiResponse::ok(installed)))
 }
 

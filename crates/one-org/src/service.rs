@@ -1645,7 +1645,7 @@ impl OrgService {
             .await
             .ok()
             .flatten()
-            .map(|u| u.username)
+            .and_then(|u| u.username)
     }
 
     /// Whether the caller's company plan includes `feature`. company

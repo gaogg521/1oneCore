@@ -1831,6 +1831,7 @@ impl AssistantService {
     /// non-generated branch — see `classify_source`).
     pub async fn import_personas(
         &self,
+        user_id: &str,
         req: ImportAssistantsRequest,
     ) -> Result<ImportAssistantsResult, AssistantError> {
         let mut result = ImportAssistantsResult::default();
@@ -1904,7 +1905,10 @@ impl AssistantService {
                     },
                 },
             };
-            if let Err(e) = self.resolve_runtime_backend_for_agent_id(&resolved_agent_id).await {
+            if let Err(e) = self
+                .resolve_runtime_backend_for_agent_id(user_id, &resolved_agent_id)
+                .await
+            {
                 result.failed += 1;
                 result.errors.push(ImportError {
                     id,
@@ -1913,7 +1917,7 @@ impl AssistantService {
                 continue;
             }
 
-            let avatar = match self.normalize_user_avatar_input(&id, entry.avatar.as_deref()) {
+            let avatar = match self.normalize_user_avatar_input(user_id, &id, entry.avatar.as_deref()) {
                 Ok(value) => value,
                 Err(e) => {
                     result.failed += 1;
@@ -2028,7 +2032,7 @@ impl AssistantService {
             };
 
             if let Err(e) = self
-                .upsert_definition_from_legacy_user_row(&row, Some(&resolved_agent_id), "imported")
+                .upsert_definition_from_legacy_user_row_for_user(user_id, &row, Some(&resolved_agent_id), "imported")
                 .await
             {
                 result.failed += 1;
@@ -2305,15 +2309,21 @@ impl AssistantService {
     /// parse a user-supplied string (a local path, an `/api/assistants/{id}/avatar`
     /// reference, an emoji), not to accept bytes we already have in hand.
     /// The assistant must already exist (call after `import_personas`).
-    pub async fn set_avatar_from_bytes(&self, id: &str, bytes: &[u8], extension: &str) -> Result<(), AssistantError> {
+    pub async fn set_avatar_from_bytes(
+        &self,
+        user_id: &str,
+        id: &str,
+        bytes: &[u8],
+        extension: &str,
+    ) -> Result<(), AssistantError> {
         let definition = self
             .definition_repo
-            .get_by_assistant_id(id)
+            .get_by_assistant_id_for_user(user_id, id)
             .await
             .map_err(|e| AssistantError::Internal(format!("load assistant for avatar set: {e}")))?
             .ok_or_else(|| AssistantError::NotFound(format!("assistant '{id}' not found")))?;
 
-        let avatar_value = self.persist_user_avatar_bytes(id, bytes, Some(extension))?;
+        let avatar_value = self.persist_user_avatar_bytes(user_id, id, bytes, Some(extension))?;
         self.definition_repo
             .update_avatar_fields_preserving_deleted(&definition.id, "user_asset", Some(&avatar_value))
             .await

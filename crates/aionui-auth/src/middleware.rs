@@ -230,6 +230,7 @@ pub async fn auth_middleware(
                 id: user.id,
                 username: user.username.unwrap_or_else(|| "external_user".to_string()),
                 user_type: user.user_type,
+                status: user.status,
             });
             return Ok(next.run(request).await);
         }

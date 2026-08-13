@@ -340,6 +340,7 @@ struct SyncModelChannelsBody {
 /// session), and handed here to be written to this machine's provider table.
 async fn sync_model_channels(
     State(state): State<SystemRouterState>,
+    Extension(user): Extension<CurrentUser>,
     body: Result<Json<SyncModelChannelsBody>, JsonRejection>,
 ) -> Result<Json<ApiResponse<crate::managed_provider::ManagedChannelSyncReport>>, ApiError> {
     let Json(body) = body.map_err(ApiError::from)?;
@@ -349,7 +350,7 @@ async fn sync_model_channels(
         ));
     };
     let report = sync
-        .sync(&body.channels, body.authoritative)
+        .sync(&user.id, &body.channels, body.authoritative)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(report)))

@@ -321,7 +321,11 @@ impl SsoService {
                 .map_err(|e| SsoError::Internal(format!("find user: {e}")))?
                 .ok_or_else(|| SsoError::Internal("identity points to missing user".into()))?;
             self.touch_identity(provider, external_id, &profile).await;
-            return Ok((user.id, user.username, false));
+            return Ok((
+                user.id,
+                user.username.unwrap_or_else(|| "external_user".to_owned()),
+                false,
+            ));
         }
 
         // 2. No binding → provision a new user with a random password.
@@ -334,7 +338,11 @@ impl SsoService {
             .await
             .map_err(|e| SsoError::Internal(format!("create_user: {e}")))?;
         self.bind_identity(provider, external_id, &user.id, &profile).await?;
-        Ok((user.id, user.username, true))
+        Ok((
+            user.id,
+            user.username.unwrap_or_else(|| "external_user".to_owned()),
+            true,
+        ))
     }
 
     /// Sign a JWT + build the session cookie. Mirrors the upstream

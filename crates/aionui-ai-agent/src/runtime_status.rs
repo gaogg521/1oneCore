@@ -42,11 +42,13 @@ pub(crate) fn custom_agent_runtime_reporter(
 
 pub(crate) fn conversation_acp_tool_runtime_reporter(
     broadcaster: Arc<dyn EventBroadcaster>,
+    user_id: impl Into<String>,
     conversation_id: impl Into<String>,
     tool: ManagedAcpToolId,
 ) -> SharedManagedAcpToolProgressReporter {
     acp_tool_runtime_reporter(
         broadcaster,
+        Some(user_id.into()),
         RuntimeStatusScope {
             kind: RuntimeStatusScopeKind::Conversation,
             id: conversation_id.into(),
@@ -78,11 +80,13 @@ fn node_runtime_reporter(
 
 fn acp_tool_runtime_reporter(
     broadcaster: Arc<dyn EventBroadcaster>,
+    user_id: Option<String>,
     scope: RuntimeStatusScope,
     tool: ManagedAcpToolId,
 ) -> SharedManagedAcpToolProgressReporter {
     Arc::new(move |update: ManagedAcpToolProgress| {
         let payload = RuntimeStatusPayload {
+            user_id: user_id.clone(),
             resource: RuntimeResourceKind::AcpTool,
             resource_id: Some(tool.slug().to_owned()),
             scope: scope.clone(),

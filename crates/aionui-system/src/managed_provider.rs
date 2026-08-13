@@ -93,11 +93,12 @@ impl ManagedProviderSync {
     /// Personal rows are never touched under any circumstances.
     pub async fn sync(
         &self,
+        user_id: &str,
         channels: &[ManagedChannelPayload],
         authoritative: bool,
     ) -> Result<ManagedChannelSyncReport, SystemError> {
         let mut report = ManagedChannelSyncReport::default();
-        let existing = self.repo.list().await?;
+        let existing = self.repo.list(user_id).await?;
 
         for channel in channels {
             let id = provider_id_for(&channel.channel_id);
@@ -112,7 +113,7 @@ impl ManagedProviderSync {
                 continue;
             }
 
-            self.write_channel(channel, &id, &existing).await?;
+            self.write_channel(user_id, channel, &id, &existing).await?;
             report.written.push(channel.name.clone());
         }
 
@@ -123,7 +124,7 @@ impl ManagedProviderSync {
                 .filter(|p| p.managed_by.as_deref() == Some(MANAGED_BY_ENTERPRISE))
                 .filter(|p| !wanted.contains(&p.id))
             {
-                self.repo.delete(&row.id).await?;
+                self.repo.delete(user_id, &row.id).await?;
                 report.removed.push(row.name.clone());
             }
         }
@@ -133,6 +134,7 @@ impl ManagedProviderSync {
 
     async fn write_channel(
         &self,
+        user_id: &str,
         channel: &ManagedChannelPayload,
         id: &str,
         existing: &[Provider],
@@ -151,12 +153,13 @@ impl ManagedProviderSync {
         // stale local field (a model the admin removed, an old proxy address)
         // survive a sync that was supposed to correct it.
         if existing.iter().any(|p| p.id == id) {
-            self.repo.delete(id).await?;
+            self.repo.delete(user_id, id).await?;
         }
 
         self.repo
             .create(CreateProviderParams {
                 id: Some(id),
+                user_id,
                 platform: &channel.platform,
                 name: &channel.name,
                 base_url: &channel.base_url,
