@@ -514,10 +514,12 @@ async fn resolve_builtin_managed_acp_command_spec(
     if let Some(primary) = meta.agent_source_info.binary_name.as_deref()
         && resolve_command_path(primary).is_none()
     {
-        return Err(AgentError::bad_request(format!(
-            "Agent '{}' requires `{primary}` to be installed and available on PATH",
-            meta.name
-        )));
+        // Typed, not `bad_request`: this is the most common way a fresh install
+        // fails (claude/codex are NOT bundled — the user must have them on PATH),
+        // and a raw string reaches the user as untranslated English with no next
+        // step. `send_error` maps this to `UserAgentNotInstalled`, which already
+        // ships 13-language copy plus an "open agent settings" action.
+        return Err(AgentError::AgentCliNotInstalled(meta.name.clone(), primary.to_owned()));
     }
 
     let node_reporter =

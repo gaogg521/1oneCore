@@ -101,6 +101,23 @@ impl AgentSendError {
                     Some(AgentErrorResolutionTarget::ProviderSettings),
                 ),
             ),
+            // Reuses the same code `AcpError::SpawnFailed` maps to: from the
+            // user's side "the CLI isn't there" and "the CLI wouldn't start" want
+            // the same answer — go check the agent's installation. The difference
+            // is that this one is caught before spawning, so `detail` names the
+            // missing binary instead of an OS spawn error.
+            AgentError::AgentCliNotInstalled(..) => Self::new(
+                "The selected Agent executable could not be started",
+                AgentErrorCode::UserAgentNotInstalled,
+                AgentErrorOwnership::UserAgent,
+                Some(detail),
+                false,
+                false,
+                resolution(
+                    AgentErrorResolutionKind::CheckAgentInstallation,
+                    Some(AgentErrorResolutionTarget::AgentSettings),
+                ),
+            ),
             AgentError::Internal(_) => Self::new(
                 "AionUI failed while sending the message",
                 AgentErrorCode::AionuiInternalError,
@@ -1949,5 +1966,35 @@ mod tests {
             AgentErrorOwnership::Aionui,
             AgentErrorResolutionKind::WaitForCurrentResponse,
         );
+    }
+
+    /// claude/codex are NOT bundled — the user must have them on PATH — so
+    /// "CLI missing" is the most common way a fresh install fails. It must reach
+    /// the user as a translated message with an action, not as the raw English
+    /// string the factory used to return.
+    ///
+    /// If this ever regresses to `AionuiInternalError` or to no code at all, the
+    /// factory has gone back to `AgentError::bad_request(...)`: a plain string
+    /// carries no code, so the frontend has nothing to translate against.
+    #[test]
+    fn missing_agent_cli_is_classified_as_not_installed() {
+        let err = AgentSendError::from_agent_error(AgentError::AgentCliNotInstalled(
+            "Claude Code".to_owned(),
+            "claude".to_owned(),
+        ));
+
+        assert_eq!(err.code(), Some(AgentErrorCode::UserAgentNotInstalled));
+        assert_eq!(err.ownership(), Some(AgentErrorOwnership::UserAgent));
+        assert_eq!(
+            err.stream_error().resolution.map(|value| value.kind),
+            Some(AgentErrorResolutionKind::CheckAgentInstallation),
+            "the user needs to be pointed at the agent's installation, not left guessing"
+        );
+
+        // The detail must name BOTH the agent the user picked and the binary they
+        // have to install — the translated headline says neither.
+        let detail = err.stream_error().detail.clone().unwrap_or_default();
+        assert!(detail.contains("Claude Code"), "detail must name the agent: {detail}");
+        assert!(detail.contains("claude"), "detail must name the binary: {detail}");
     }
 }

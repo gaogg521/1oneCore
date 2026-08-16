@@ -31,6 +31,18 @@ pub enum AgentError {
     /// lookup failure. See `factory::aionrs::build`.
     #[error("Provider '{0}' not found")]
     ProviderNotFound(String),
+    /// The agent's own CLI is not installed on this machine (not on PATH).
+    ///
+    /// Typed rather than a `BadRequest` string so `send_error` can map it to the
+    /// existing `UserAgentNotInstalled` code, which already has 13-language copy
+    /// and an "open agent settings" resolution. A raw string would reach the user
+    /// as untranslated English with no next step — see the `ProviderNotFound`
+    /// entry above, added for the same reason.
+    ///
+    /// Carries (agent display name, binary name) so the message can name both
+    /// what the user picked and what they need to install.
+    #[error("Agent '{0}' requires `{1}` to be installed and available on PATH")]
+    AgentCliNotInstalled(String, String),
     #[error("Internal error: {0}")]
     Internal(String),
     #[error(transparent)]
@@ -95,7 +107,7 @@ impl AgentError {
             | Self::WorkspacePathRuntimeUnavailable(message)
             | Self::Internal(message) => message.clone(),
             Self::RateLimited => "Rate limited".to_owned(),
-            Self::ProviderNotFound(_) => self.to_string(),
+            Self::ProviderNotFound(_) | Self::AgentCliNotInstalled(..) => self.to_string(),
             Self::Acp(err) => err.to_string(),
         }
     }

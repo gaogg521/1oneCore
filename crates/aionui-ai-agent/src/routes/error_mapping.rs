@@ -25,6 +25,15 @@ pub(crate) fn agent_error_to_api_error(err: AgentError) -> ApiError {
             format!("Provider '{provider_id}' not found"),
             Some(serde_json::json!({ "provider_id": provider_id })),
         ),
+        // Same stable code the streaming path emits (`UserAgentNotInstalled`),
+        // so the frontend renders one message for this regardless of which
+        // transport surfaced it.
+        AgentError::AgentCliNotInstalled(agent_name, binary_name) => ApiError::coded(
+            StatusCode::BAD_REQUEST,
+            "USER_AGENT_NOT_INSTALLED",
+            format!("Agent '{agent_name}' requires `{binary_name}` to be installed and available on PATH"),
+            Some(serde_json::json!({ "agent_name": agent_name, "binary_name": binary_name })),
+        ),
         AgentError::Internal(message) => ApiError::Internal(message),
         AgentError::Acp(err) => acp_error_to_api_error(err),
     }
