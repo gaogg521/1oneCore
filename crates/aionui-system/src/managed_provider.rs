@@ -188,6 +188,7 @@ mod tests {
     use aionui_db::init_database_memory;
 
     const KEY: [u8; 32] = [3u8; 32];
+    const TEST_USER_ID: &str = "system_default_user";
 
     fn channel(id: &str, name: &str, token: &str) -> ManagedChannelPayload {
         ManagedChannelPayload {
@@ -211,12 +212,12 @@ mod tests {
     async fn a_channel_becomes_a_usable_provider_pointed_at_the_proxy() {
         let (sync, repo, _db) = sync_service().await;
         let report = sync
-            .sync(&[channel("ochan_1", "corp-gateway", "onech-tok")], true)
+            .sync(TEST_USER_ID, &[channel("ochan_1", "corp-gateway", "onech-tok")], true)
             .await
             .unwrap();
         assert_eq!(report.written, vec!["corp-gateway".to_owned()]);
 
-        let rows = repo.list().await.unwrap();
+        let rows = repo.list(TEST_USER_ID).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].base_url, "https://one.corp.example/api/one/model-proxy/ochan_1");
         assert_eq!(rows[0].managed_by.as_deref(), Some("enterprise"));
@@ -228,11 +229,11 @@ mod tests {
     #[tokio::test]
     async fn what_is_stored_locally_is_the_channel_token() {
         let (sync, repo, _db) = sync_service().await;
-        sync.sync(&[channel("ochan_1", "corp-gateway", "onech-tok")], true)
+        sync.sync(TEST_USER_ID, &[channel("ochan_1", "corp-gateway", "onech-tok")], true)
             .await
             .unwrap();
 
-        let rows = repo.list().await.unwrap();
+        let rows = repo.list(TEST_USER_ID).await.unwrap();
         let stored = aionui_common::decrypt_string(&rows[0].api_key_encrypted, &KEY).unwrap();
         assert_eq!(stored, "onech-tok");
     }
@@ -241,14 +242,14 @@ mod tests {
     #[tokio::test]
     async fn re_syncing_updates_the_same_row() {
         let (sync, repo, _db) = sync_service().await;
-        sync.sync(&[channel("ochan_1", "corp-gateway", "tok-1")], true)
+        sync.sync(TEST_USER_ID, &[channel("ochan_1", "corp-gateway", "tok-1")], true)
             .await
             .unwrap();
-        sync.sync(&[channel("ochan_1", "corp-gateway-renamed", "tok-2")], true)
+        sync.sync(TEST_USER_ID, &[channel("ochan_1", "corp-gateway-renamed", "tok-2")], true)
             .await
             .unwrap();
 
-        let rows = repo.list().await.unwrap();
+        let rows = repo.list(TEST_USER_ID).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "corp-gateway-renamed");
         assert_eq!(
@@ -261,13 +262,13 @@ mod tests {
     #[tokio::test]
     async fn an_authoritative_sync_removes_channels_that_went_away() {
         let (sync, repo, _db) = sync_service().await;
-        sync.sync(&[channel("ochan_1", "a", "t1"), channel("ochan_2", "b", "t2")], true)
+        sync.sync(TEST_USER_ID, &[channel("ochan_1", "a", "t1"), channel("ochan_2", "b", "t2")], true)
             .await
             .unwrap();
 
-        let report = sync.sync(&[channel("ochan_1", "a", "t1")], true).await.unwrap();
+        let report = sync.sync(TEST_USER_ID, &[channel("ochan_1", "a", "t1")], true).await.unwrap();
         assert_eq!(report.removed, vec!["b".to_owned()]);
-        assert_eq!(repo.list().await.unwrap().len(), 1);
+        assert_eq!(repo.list(TEST_USER_ID).await.unwrap().len(), 1);
     }
 
     /// Offline-first: a server the client could not reach must not wipe the
@@ -275,11 +276,11 @@ mod tests {
     #[tokio::test]
     async fn a_non_authoritative_sync_never_removes_anything() {
         let (sync, repo, _db) = sync_service().await;
-        sync.sync(&[channel("ochan_1", "a", "t1")], true).await.unwrap();
+        sync.sync(TEST_USER_ID, &[channel("ochan_1", "a", "t1")], true).await.unwrap();
 
-        let report = sync.sync(&[], false).await.unwrap();
+        let report = sync.sync(TEST_USER_ID, &[], false).await.unwrap();
         assert!(report.removed.is_empty());
-        assert_eq!(repo.list().await.unwrap().len(), 1);
+        assert_eq!(repo.list(TEST_USER_ID).await.unwrap().len(), 1);
     }
 
     /// The member's own providers are not ours to touch, under any sync.
@@ -288,6 +289,7 @@ mod tests {
         let (sync, repo, _db) = sync_service().await;
         repo.create(CreateProviderParams {
             id: Some("prov_chan_ochan_1"), // deliberately the id a channel would claim
+            user_id: TEST_USER_ID,
             platform: "openai",
             name: "my own key",
             base_url: "https://api.openai.com",
@@ -308,13 +310,13 @@ mod tests {
         .unwrap();
 
         let report = sync
-            .sync(&[channel("ochan_1", "corp-gateway", "tok")], true)
+            .sync(TEST_USER_ID, &[channel("ochan_1", "corp-gateway", "tok")], true)
             .await
             .unwrap();
         assert_eq!(report.conflicts, vec!["corp-gateway".to_owned()]);
         assert!(report.written.is_empty());
 
-        let rows = repo.list().await.unwrap();
+        let rows = repo.list(TEST_USER_ID).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "my own key", "a personal provider was clobbered");
         assert_eq!(rows[0].api_key_encrypted, "personal");
@@ -329,11 +331,12 @@ mod tests {
         use aionui_api_types::UpdateProviderRequest;
 
         let (sync, repo, _db) = sync_service().await;
-        sync.sync(&[channel("ochan_1", "corp", "tok")], true).await.unwrap();
+        sync.sync(TEST_USER_ID, &[channel("ochan_1", "corp", "tok")], true).await.unwrap();
         let service = ProviderService::new(repo.clone(), KEY);
 
         let edit = service
             .update(
+                TEST_USER_ID,
                 "prov_chan_ochan_1",
                 UpdateProviderRequest {
                     name: Some("mine now".to_owned()),
@@ -343,10 +346,10 @@ mod tests {
             .await;
         assert!(matches!(edit, Err(SystemError::BadRequest(_))), "edit was allowed");
 
-        let remove = service.delete("prov_chan_ochan_1").await;
+        let remove = service.delete(TEST_USER_ID, "prov_chan_ochan_1").await;
         assert!(matches!(remove, Err(SystemError::BadRequest(_))), "delete was allowed");
 
-        let rows = repo.list().await.unwrap();
+        let rows = repo.list(TEST_USER_ID).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "corp");
     }
@@ -360,6 +363,7 @@ mod tests {
         let (_sync, repo, _db) = sync_service().await;
         repo.create(CreateProviderParams {
             id: Some("prov_mine"),
+            user_id: TEST_USER_ID,
             platform: "openai",
             name: "mine",
             base_url: "https://api.openai.com",
@@ -382,6 +386,7 @@ mod tests {
         let service = ProviderService::new(repo.clone(), KEY);
         service
             .update(
+                TEST_USER_ID,
                 "prov_mine",
                 UpdateProviderRequest {
                     name: Some("renamed".to_owned()),
@@ -390,7 +395,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(repo.list().await.unwrap()[0].name, "renamed");
+        assert_eq!(repo.list(TEST_USER_ID).await.unwrap()[0].name, "renamed");
     }
 
     /// An empty authoritative sync is how "the company has no channels for you"
@@ -400,6 +405,7 @@ mod tests {
         let (sync, repo, _db) = sync_service().await;
         repo.create(CreateProviderParams {
             id: Some("prov_personal"),
+            user_id: TEST_USER_ID,
             platform: "openai",
             name: "mine",
             base_url: "https://api.openai.com",
@@ -418,11 +424,11 @@ mod tests {
         })
         .await
         .unwrap();
-        sync.sync(&[channel("ochan_1", "corp", "tok")], true).await.unwrap();
+        sync.sync(TEST_USER_ID, &[channel("ochan_1", "corp", "tok")], true).await.unwrap();
 
-        sync.sync(&[], true).await.unwrap();
+        sync.sync(TEST_USER_ID, &[], true).await.unwrap();
 
-        let rows = repo.list().await.unwrap();
+        let rows = repo.list(TEST_USER_ID).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "mine");
     }

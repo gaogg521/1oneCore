@@ -346,8 +346,13 @@ async fn t1_3c_conversation_override_agent_id_takes_priority_over_assistant_defa
     );
 
     let conversation_repo = SqliteConversationRepository::new(services.database.pool().clone());
+    let user_id = conversation_repo
+        .owner_user_id(data["id"].as_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
     let snapshot = conversation_repo
-        .get_assistant_snapshot(data["id"].as_str().unwrap())
+        .get_assistant_snapshot(&user_id, data["id"].as_str().unwrap())
         .await
         .unwrap()
         .unwrap();
@@ -1419,6 +1424,10 @@ async fn auto_workspaces_of_two_users_live_under_distinct_user_roots() {
 
     let seg_a = format!("conversations/users/{dir_a}/");
     let seg_b = format!("conversations/users/{dir_b}/");
+    // Compare on forward slashes: these are real filesystem paths, so on Windows
+    // they come back with `\` separators while the expected segments are written
+    // with `/`. Only the separator differs — normalize rather than branch.
+    let workspaces: Vec<String> = workspaces.iter().map(|w| w.replace('\\', "/")).collect();
     assert!(
         workspaces[0].contains(&seg_a),
         "A's workspace must live under its user root: {} (expected segment {seg_a})",

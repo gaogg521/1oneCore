@@ -1,4 +1,10 @@
--- Migration 030: add user scope for local, aggregate, and configuration data.
+-- Migration 042 (upstream 030): add user scope for local, aggregate, and
+-- configuration data.
+--
+-- ⚠️ Fork note: this rebuilds `users`, so it MUST carry `data_secret` (added by
+-- this fork in migration 025). Upstream's original has no such column and
+-- dropping it here would leave every stored provider/channel/MCP credential
+-- permanently undecryptable — the exact failure mode 025 exists to prevent.
 
 PRAGMA foreign_keys = OFF;
 
@@ -12,6 +18,7 @@ CREATE TABLE users_new (
     password_hash      TEXT,
     avatar_path        TEXT,
     jwt_secret         TEXT,
+    data_secret        TEXT,
     status             TEXT NOT NULL DEFAULT 'active'
                            CHECK(status IN ('active', 'disabled')),
     session_generation INTEGER NOT NULL DEFAULT 0,
@@ -39,6 +46,7 @@ INSERT INTO users_new (
     password_hash,
     avatar_path,
     jwt_secret,
+    data_secret,
     status,
     session_generation,
     created_at,
@@ -54,6 +62,7 @@ SELECT
     password_hash,
     avatar_path,
     jwt_secret,
+    data_secret,
     'active',
     0,
     created_at,
@@ -495,8 +504,12 @@ CREATE TABLE assistant_definitions_new (
     id                                   TEXT PRIMARY KEY NOT NULL,
     user_id                              TEXT REFERENCES users(id),
     assistant_id                         TEXT NOT NULL,
+    -- ⚠️ Fork note: `'imported'` is this fork's (migration 034) — expert
+    -- marketplace installs are tagged with it. Upstream's original CHECK has
+    -- only three values; rebuilding the table without `'imported'` makes every
+    -- marketplace install fail at the CHECK constraint.
     source                               TEXT NOT NULL
-                                             CHECK (source IN ('builtin', 'user', 'generated')),
+                                             CHECK (source IN ('builtin', 'user', 'generated', 'imported')),
     owner_type                           TEXT NOT NULL
                                              CHECK (owner_type IN ('system', 'user')),
     source_ref                           TEXT,

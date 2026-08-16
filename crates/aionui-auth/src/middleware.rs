@@ -415,7 +415,8 @@ mod tests {
         let state = AuthState {
             jwt_service,
             user_repo,
-            local: true,
+            identity_mode: AuthIdentityMode::Local,
+            runtime_token_verifier: None,
             ip_allowlist: None,
         };
         Router::new()
@@ -437,7 +438,7 @@ mod tests {
         let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
         let user = user_repo.create_user("zhaogao", "pw").await.unwrap();
         let jwt = Arc::new(JwtService::new("test-secret".to_string()));
-        let token = jwt.sign(&user.id, &user.username).unwrap();
+        let token = jwt.sign(&user.id, user.username.as_deref().unwrap_or("u")).unwrap();
 
         let app = local_auth_app(user_repo, jwt).await;
         let response = app
@@ -452,7 +453,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_string(response).await, format!("{}:{}", user.id, user.username));
+        assert_eq!(body_string(response).await, format!("{}:{}", user.id, user.username.as_deref().unwrap_or("u")));
     }
 
     /// The desktop operator (no token) still resolves to `system_default_user`
@@ -507,7 +508,7 @@ mod tests {
         let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
         let user = user_repo.create_user("zhaogao", "pw").await.unwrap();
         let jwt = Arc::new(JwtService::new("test-secret".to_string()));
-        let token = jwt.sign(&user.id, &user.username).unwrap();
+        let token = jwt.sign(&user.id, user.username.as_deref().unwrap_or("u")).unwrap();
 
         let app = local_auth_app(user_repo, jwt).await;
         let response = app
@@ -523,7 +524,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_string(response).await, format!("{}:{}", user.id, user.username));
+        assert_eq!(body_string(response).await, format!("{}:{}", user.id, user.username.as_deref().unwrap_or("u")));
     }
 
     /// A forged/expired token on a proxied request must 401 rather than fall
@@ -633,7 +634,8 @@ mod tests {
         let state = AuthState {
             jwt_service,
             user_repo,
-            local: false,
+            identity_mode: AuthIdentityMode::UserSession,
+            runtime_token_verifier: None,
             ip_allowlist,
         };
         Router::new()
@@ -654,7 +656,7 @@ mod tests {
         let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
         let user = user_repo.create_user("zhaogao", "pw").await.unwrap();
         let jwt = Arc::new(JwtService::new("test-secret".to_string()));
-        let token = jwt.sign(&user.id, &user.username).unwrap();
+        let token = jwt.sign(&user.id, user.username.as_deref().unwrap_or("u")).unwrap();
 
         let app = standalone_app(user_repo, jwt, Some(Arc::new(AllowGate)));
         let response = app
@@ -678,7 +680,7 @@ mod tests {
         let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
         let user = user_repo.create_user("zhaogao", "pw").await.unwrap();
         let jwt = Arc::new(JwtService::new("test-secret".to_string()));
-        let token = jwt.sign(&user.id, &user.username).unwrap();
+        let token = jwt.sign(&user.id, user.username.as_deref().unwrap_or("u")).unwrap();
 
         let app = standalone_app(user_repo, jwt, Some(Arc::new(DenyGate)));
         let response = app
@@ -708,7 +710,7 @@ mod tests {
         let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
         let user = user_repo.create_user("zhaogao", "pw").await.unwrap();
         let jwt = Arc::new(JwtService::new("test-secret".to_string()));
-        let token = jwt.sign(&user.id, &user.username).unwrap();
+        let token = jwt.sign(&user.id, user.username.as_deref().unwrap_or("u")).unwrap();
 
         let app = standalone_app(user_repo, jwt, Some(Arc::new(AllowGate)));
         let response = app
@@ -734,7 +736,7 @@ mod tests {
         let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
         let user = user_repo.create_user("zhaogao", "pw").await.unwrap();
         let jwt = Arc::new(JwtService::new("test-secret".to_string()));
-        let token = jwt.sign(&user.id, &user.username).unwrap();
+        let token = jwt.sign(&user.id, user.username.as_deref().unwrap_or("u")).unwrap();
 
         let app = standalone_app(user_repo, jwt, Some(Arc::new(EnforcingGate)));
         let response = app
@@ -760,7 +762,7 @@ mod tests {
         let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
         let user = user_repo.create_user("zhaogao", "pw").await.unwrap();
         let jwt = Arc::new(JwtService::new("test-secret".to_string()));
-        let token = jwt.sign(&user.id, &user.username).unwrap();
+        let token = jwt.sign(&user.id, user.username.as_deref().unwrap_or("u")).unwrap();
 
         let gate = RecordingGate::default();
         let app = standalone_app(user_repo, jwt, Some(Arc::new(gate.clone())));
@@ -795,7 +797,7 @@ mod tests {
         let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
         let user = user_repo.create_user("zhaogao", "pw").await.unwrap();
         let jwt = Arc::new(JwtService::new("test-secret".to_string()));
-        let token = jwt.sign(&user.id, &user.username).unwrap();
+        let token = jwt.sign(&user.id, user.username.as_deref().unwrap_or("u")).unwrap();
 
         let gate = RecordingGate::default();
         let app = standalone_app(user_repo, jwt, Some(Arc::new(gate.clone())));
@@ -828,7 +830,8 @@ mod tests {
         let state = AuthState {
             jwt_service: jwt,
             user_repo,
-            local: true,
+            identity_mode: AuthIdentityMode::Local,
+            runtime_token_verifier: None,
             ip_allowlist: Some(Arc::new(DenyGate)),
         };
         let app = Router::new()
@@ -851,12 +854,13 @@ mod tests {
         let user_repo: Arc<dyn IUserRepository> = Arc::new(aionui_db::SqliteUserRepository::new(db.pool().clone()));
         let user = user_repo.create_user("zhaogao", "pw").await.unwrap();
         let jwt = Arc::new(JwtService::new("test-secret".to_string()));
-        let token = jwt.sign(&user.id, &user.username).unwrap();
+        let token = jwt.sign(&user.id, user.username.as_deref().unwrap_or("u")).unwrap();
 
         let state = AuthState {
             jwt_service: jwt,
             user_repo,
-            local: true,
+            identity_mode: AuthIdentityMode::Local,
+            runtime_token_verifier: None,
             ip_allowlist: Some(Arc::new(DenyGate)),
         };
         let app = Router::new()

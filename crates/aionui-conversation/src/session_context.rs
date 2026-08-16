@@ -1246,9 +1246,12 @@ mod tests {
         let root = std::path::Path::new("/w");
         let user = "user_019f8de8-3537-7c73-8d92-3bfde17eb1ee";
         let new_path = expected_auto_workspace_path(root, user, "conv-1", &AgentType::Acp, None);
+        // `join` uses the platform separator, so normalize before matching a
+        // slash-written segment — otherwise this only ever passes on Unix.
         assert!(
             new_path
                 .to_string_lossy()
+                .replace('\\', "/")
                 .contains("/conversations/users/019f8de8-3537-7c73-8d92-3bfde17eb1ee/"),
             "new workspace must be under conversations/users/{{dir}}/: {}",
             new_path.display()

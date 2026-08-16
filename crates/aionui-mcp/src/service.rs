@@ -1437,7 +1437,7 @@ mod tests {
         // pasted `{"command": "node D:\\...\\x.js"}` JSON config produces.
         let svc = make_service();
         let created = svc
-            .add_server(CreateMcpServerRequest {
+            .add_server(TEST_USER_ID, CreateMcpServerRequest {
                 name: "one-web-tools".into(),
                 description: None,
                 transport: McpTransport::Stdio {
@@ -1566,6 +1566,8 @@ mod team_sync_tests {
     use super::tests::MockMcpServerRepo;
     use super::*;
 
+    const TEST_USER_ID: &str = "user-1";
+
     fn svc() -> McpConfigService {
         McpConfigService::new(Arc::new(MockMcpServerRepo::new()))
     }
@@ -1598,7 +1600,7 @@ mod team_sync_tests {
         assert_eq!(report.written, vec!["team-search".to_owned(), "team-tools".to_owned()]);
         assert!(report.conflicts.is_empty());
 
-        let listed = svc.list_servers().await.unwrap();
+        let listed = svc.list_servers(TEST_USER_ID).await.unwrap();
         let search = listed.iter().find(|s| s.name == "team-search").unwrap();
         assert!(search.enabled, "team connector materialized enabled");
         assert!(
@@ -1615,7 +1617,7 @@ mod team_sync_tests {
         svc.sync_team_servers(TEST_USER_ID, &[p], true).await.unwrap();
 
         let server = svc
-            .list_servers()
+            .list_servers(TEST_USER_ID)
             .await
             .unwrap()
             .into_iter()
@@ -1636,7 +1638,7 @@ mod team_sync_tests {
     async fn never_clobbers_personal_server_with_same_name() {
         let svc = svc();
         // Member's own personal server.
-        svc.add_server(CreateMcpServerRequest {
+        svc.add_server(TEST_USER_ID, CreateMcpServerRequest {
             name: "my-mcp".to_owned(),
             description: None,
             transport: aionui_api_types::McpTransport::Sse {
@@ -1655,7 +1657,7 @@ mod team_sync_tests {
             .unwrap();
         assert_eq!(report.conflicts, vec!["my-mcp".to_owned()]);
 
-        let listed = svc.list_servers().await.unwrap();
+        let listed = svc.list_servers(TEST_USER_ID).await.unwrap();
         let mine = listed.iter().find(|s| s.name == "my-mcp").unwrap();
         assert!(mine.original_json.is_none(), "personal server untouched by team sync");
     }
@@ -1677,7 +1679,7 @@ mod team_sync_tests {
         // Offline pass (not authoritative): nothing removed.
         let offline = svc.sync_team_servers(TEST_USER_ID, &[], false).await.unwrap();
         assert!(offline.removed.is_empty());
-        assert_eq!(svc.list_servers().await.unwrap().len(), 2);
+        assert_eq!(svc.list_servers(TEST_USER_ID).await.unwrap().len(), 2);
 
         // Admin deleted team-b on the server: authoritative resync removes it.
         let resync = svc
@@ -1685,7 +1687,7 @@ mod team_sync_tests {
             .await
             .unwrap();
         assert_eq!(resync.removed, vec!["team-b".to_owned()]);
-        let names: Vec<String> = svc.list_servers().await.unwrap().into_iter().map(|s| s.name).collect();
+        let names: Vec<String> = svc.list_servers(TEST_USER_ID).await.unwrap().into_iter().map(|s| s.name).collect();
         assert_eq!(names, vec!["team-a".to_owned()]);
     }
 }

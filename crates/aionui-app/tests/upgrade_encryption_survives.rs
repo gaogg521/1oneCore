@@ -2,16 +2,18 @@
 //! rotate the encryption key.
 //!
 //! Reproduces the field failure end-to-end inside one test, no old binary
-//! needed: build a database migrated only up to 028 (the last pre-user-scope
-//! version) with the CURRENT migration files, store a provider through the
-//! real secret-resolution + encryption path, then reopen it through the real
-//! `init_database` (which applies 029+, rebuilding `users`) and assert the
+//! needed: build a database migrated only up to 041 (the last pre-user-scope
+//! version in this fork — upstream numbered the same migration 028) with the
+//! CURRENT migration files, store a provider through the real
+//! secret-resolution + encryption path, then reopen it through the real
+//! `init_database` (which applies 042+, rebuilding `users`) and assert the
 //! stored API key still decrypts.
 //!
 //! Before the fix, connections opened prior to the DDL served a stale `users`
-//! layout after migration 030's table rebuild; startup then saw "no system
-//! user", silently derived a brand-new key, and every stored credential
-//! failed with "Decryption failed: invalid key or corrupted data".
+//! layout after the user-scope table rebuild (042 here, 030 upstream); startup
+//! then saw "no system user", silently derived a brand-new key, and every
+//! stored credential failed with "Decryption failed: invalid key or corrupted
+//! data".
 use aionui_app::{AppConfig, AppServices};
 use aionui_db::SqliteProviderRepository;
 use sqlx::migrate::Migrator;
@@ -19,14 +21,16 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
 use std::sync::Arc;
 
-const LAST_PRE_USER_SCOPE_MIGRATION: i64 = 28;
+/// Fork numbering: `042_user_scope.sql` is upstream's `030`, so the last
+/// version a real user's database could sit at before this upgrade is 041.
+const LAST_PRE_USER_SCOPE_MIGRATION: i64 = 41;
 
 #[tokio::test]
 async fn upgrade_from_pre_user_scope_keeps_encryption_key() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("upgrade.db");
 
-    // ── Phase 1: a genuine pre-user-scope (≤028) database ────────────────
+    // ── Phase 1: a genuine pre-user-scope (≤041) database ────────────────
     {
         let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
             .unwrap()
@@ -64,9 +68,9 @@ async fn upgrade_from_pre_user_scope_keeps_encryption_key() {
         .unwrap();
 
         // Store a provider exactly as the OLD install did: encrypt with the
-        // key derived from the persisted secret and write the 028-era row
+        // key derived from the persisted secret and write the 041-era row
         // shape directly (the current ProviderService writes user-scope
-        // columns that do not exist yet at 028).
+        // columns that do not exist yet at 041).
         let key = aionui_app::derive_encryption_key("legacy-secret-0123456789");
         let enc = aionui_common::encrypt_string("sk-upgrade-SECRET", &key).unwrap();
         sqlx::query(
@@ -79,7 +83,7 @@ async fn upgrade_from_pre_user_scope_keeps_encryption_key() {
         pool.close().await;
     }
 
-    // ── Phase 2: the upgrade — real init_database applies 029+ ───────────
+    // ── Phase 2: the upgrade — real init_database applies 042+ ───────────
     let db = aionui_db::init_database(&db_path).await.unwrap();
     let services = AppServices::from_config(db, &AppConfig::default())
         .await

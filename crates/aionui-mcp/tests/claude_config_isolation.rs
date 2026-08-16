@@ -98,7 +98,7 @@ async fn detect_existing_reads_the_operators_real_config_without_writing_to_it()
     let before = snapshot(&real);
 
     // This is the import source; it must see the user's own configuration.
-    let detected = adapter.detect_existing().await.expect("detect_existing");
+    let detected = adapter.detect_existing("system_default_user").await.expect("detect_existing");
 
     let after = snapshot(&real);
     assert_eq!(before, after, "detect_existing must be strictly read-only");

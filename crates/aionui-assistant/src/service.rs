@@ -5725,7 +5725,7 @@ mod tests {
             .unwrap();
 
         fx.service
-            .set_avatar_from_bytes("marketplace-installed", b"webp-bytes", "webp")
+            .set_avatar_from_bytes(DEFAULT_USER_ID, "marketplace-installed", b"webp-bytes", "webp")
             .await
             .unwrap();
 
@@ -5733,6 +5733,8 @@ mod tests {
             ._tmp
             .path()
             .join("assistant-avatars")
+            .join("users")
+            .join("system_default_user")
             .join("marketplace-installed.webp");
         assert_eq!(std::fs::read(&managed_avatar).unwrap(), b"webp-bytes");
 
@@ -5754,7 +5756,7 @@ mod tests {
         let fx = fixture().await;
         let err = fx
             .service
-            .set_avatar_from_bytes("does-not-exist", b"bytes", "webp")
+            .set_avatar_from_bytes(DEFAULT_USER_ID, "does-not-exist", b"bytes", "webp")
             .await
             .unwrap_err();
         assert!(matches!(err, AssistantError::NotFound(_)));
@@ -6672,7 +6674,7 @@ mod tests {
         let fx = fixture().await;
         let res = fx
             .service
-            .import_personas(ImportAssistantsRequest {
+            .import_personas(DEFAULT_USER_ID, ImportAssistantsRequest {
                 assistants: vec![CreateAssistantRequest {
                     id: Some("a-share-advisor".into()),
                     name: "A Share Advisor".into(),
@@ -6715,7 +6717,7 @@ mod tests {
         let fx = fixture().await;
         let first = fx
             .service
-            .import_personas(ImportAssistantsRequest {
+            .import_personas(DEFAULT_USER_ID, ImportAssistantsRequest {
                 assistants: vec![CreateAssistantRequest {
                     id: Some("a-share-advisor".into()),
                     name: "A Share Advisor".into(),
@@ -6729,7 +6731,7 @@ mod tests {
 
         let second = fx
             .service
-            .import_personas(ImportAssistantsRequest {
+            .import_personas(DEFAULT_USER_ID, ImportAssistantsRequest {
                 assistants: vec![CreateAssistantRequest {
                     id: Some("a-share-advisor".into()),
                     name: "A Share Advisor v2".into(),
@@ -6753,7 +6755,7 @@ mod tests {
         let fx = fixture_with_builtins(vec![mk_builtin("builtin-office", "Office")]).await;
         let res = fx
             .service
-            .import_personas(ImportAssistantsRequest {
+            .import_personas(DEFAULT_USER_ID, ImportAssistantsRequest {
                 assistants: vec![CreateAssistantRequest {
                     id: Some("builtin-office".into()),
                     name: "spoof".into(),
@@ -6771,7 +6773,7 @@ mod tests {
         let fx = fixture().await;
         let res = fx
             .service
-            .import_personas(ImportAssistantsRequest {
+            .import_personas(DEFAULT_USER_ID, ImportAssistantsRequest {
                 assistants: vec![CreateAssistantRequest {
                     id: None,
                     name: "A".into(),

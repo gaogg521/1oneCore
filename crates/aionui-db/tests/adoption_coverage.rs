@@ -35,6 +35,26 @@ const GLOBAL_TABLES: &[(&str, &str)] = &[
     // Canonical filesystem-path registry shared by all users by design
     // (project-bind: folders are reused globally by resource_canonical).
     ("folders", "global canonical path registry"),
+    // Read-only expert catalog shipped inside the binary and re-materialized
+    // on every boot (see aionui-assistant/src/marketplace.rs). It is a
+    // catalog, not user data: installing an entry copies it into the caller's
+    // own `assistant_definitions`, which IS adopted.
+    (
+        "assistant_marketplace_personas",
+        "build-time catalog, re-materialized at boot; installs copy into per-user assistant_definitions",
+    ),
+    // Single-row bridge settings for the CLI this machine spawns. The bridge
+    // is a property of the local install (which provider the co-located
+    // claude/codex process is pointed at), not of a Core account — the CLI
+    // subprocess has no session and resolves it as the machine operator.
+    (
+        "claude_bridge_config",
+        "single-row local install setting; the spawned CLI has no Core session to scope by",
+    ),
+    (
+        "codex_bridge_config",
+        "single-row local install setting; the spawned CLI has no Core session to scope by",
+    ),
 ];
 
 /// Tables whose `user_id` column is NOT a Core-user ownership column — it

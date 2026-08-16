@@ -119,6 +119,12 @@ async fn apply_synthesizes_rename_for_same_inode() {
     std::fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
 
     let delta = tree.apply(c.as_str(), Hint::All).await.unwrap().expect("changes");
+
+    // Rename synthesis needs a stable inode, and `local_provider::inode_of`
+    // only has one on unix — everywhere else it reports 0 and the pair stays
+    // uncoalesced. Assert the platform's real outcome rather than skipping, so
+    // the real-FS path is still exercised on Windows.
+    #[cfg(unix)]
     assert_eq!(
         delta.changes,
         vec![Change::Renamed {
@@ -126,6 +132,23 @@ async fn apply_synthesizes_rename_for_same_inode() {
             to: "new.txt".to_owned()
         }]
     );
+    #[cfg(not(unix))]
+    {
+        let mut changes = delta.changes;
+        changes.sort_by_key(|c| format!("{c:?}"));
+        assert_eq!(
+            changes,
+            vec![
+                Change::Added {
+                    name: "new.txt".to_owned(),
+                    kind: Kind::File
+                },
+                Change::Removed {
+                    name: "old.txt".to_owned()
+                },
+            ]
+        );
+    }
 }
 
 #[tokio::test]

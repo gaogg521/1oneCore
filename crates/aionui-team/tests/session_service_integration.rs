@@ -1465,6 +1465,7 @@ impl IProviderRepository for EmptyProviderRepo {
         // here asserts on the missing-provider error path.
         Ok(vec![aionui_db::models::Provider {
             id: "test-provider".into(),
+            user_id: "system_default_user".into(),
             platform: "anthropic".into(),
             name: "Test Provider".into(),
             base_url: "https://example.invalid".into(),

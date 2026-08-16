@@ -1157,6 +1157,10 @@ async fn sc8_every_negative_interval() {
 // creates a cron job whose conversation_id belongs to user A and must get a
 // 409 with the exact error code — not a generic conflict.
 
+// Gated the same way its `SqliteCronRepository` import is: that import is
+// already `#[cfg(not(windows))]` in this file, so without a matching gate here
+// the whole test target fails to compile on Windows.
+#[cfg(not(windows))]
 #[tokio::test]
 async fn cross_account_conversation_reference_returns_409_over_http() {
     let (mut app, services) = build_app().await;

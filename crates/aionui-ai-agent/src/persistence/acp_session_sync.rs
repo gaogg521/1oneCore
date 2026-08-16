@@ -605,7 +605,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(64);
 
         let cid = "conv-1".to_owned();
-        tokio::spawn(domain_event_consumer(cid, rx, repo.clone()));
+        tokio::spawn(domain_event_consumer("user-1".to_owned(), cid, rx, repo.clone()));
 
         tx.send(AcpSessionEvent::SessionAssigned {
             session_id: SessionId::new("sess-unprompted"),
@@ -614,7 +614,7 @@ mod tests {
         .unwrap();
 
         sleep(Duration::from_millis(100)).await;
-        let row = repo.get("conv-1").await.unwrap().unwrap();
+        let row = repo.get_for_user("user-1", "conv-1").await.unwrap().unwrap();
         assert_eq!(
             row.session_id, None,
             "an id that has not carried a turn must stay out of the DB"

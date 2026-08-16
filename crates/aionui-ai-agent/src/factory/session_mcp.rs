@@ -105,6 +105,7 @@ mod tests {
     fn row(id: &str, name: &str, enabled: bool, builtin: bool) -> McpServerRow {
         McpServerRow {
             id: id.to_owned(),
+            user_id: "u".to_owned(),
             name: name.to_owned(),
             description: None,
             enabled,

@@ -1242,6 +1242,7 @@ pub(crate) mod workspace_harness {
             // single fake provider is safe to add here.
             Ok(vec![aionui_db::models::Provider {
                 id: "test-provider".into(),
+                user_id: "system_default_user".into(),
                 platform: "anthropic".into(),
                 name: "Test Provider".into(),
                 base_url: "https://example.invalid".into(),

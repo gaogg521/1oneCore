@@ -109,7 +109,7 @@ async fn migration_030_migrates_cron_skills_to_default_user() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    run_migrations_through(&pool, 28).await;
+    run_migrations_through(&pool, 41).await;
 
     sqlx::query(
         "INSERT INTO skills (id, name, description, path, source, enabled, created_at, updated_at)
@@ -119,7 +119,7 @@ async fn migration_030_migrates_cron_skills_to_default_user() {
     .await
     .unwrap();
 
-    run_migration(&pool, 30).await;
+    run_migration(&pool, 42).await;
 
     let row = sqlx::query("SELECT user_id, source FROM skills WHERE id = 'legacy-cron-skill'")
         .fetch_one(&pool)
@@ -141,7 +141,7 @@ async fn migration_030_backfills_existing_independent_roots_to_default_user() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    run_migrations_through(&pool, 28).await;
+    run_migrations_through(&pool, 41).await;
     let now = 1_000_i64;
 
     sqlx::query(
@@ -221,7 +221,7 @@ async fn migration_030_backfills_existing_independent_roots_to_default_user() {
     .await
     .unwrap();
 
-    run_migration(&pool, 30).await;
+    run_migration(&pool, 42).await;
 
     for (table, id_column, id_value, scope_column) in [
         ("providers", "id", "provider_legacy", "user_id"),
@@ -253,7 +253,7 @@ async fn migration_030_classifies_global_and_user_catalog_rows() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    run_migrations_through(&pool, 28).await;
+    run_migrations_through(&pool, 41).await;
     let now = 2_000_i64;
 
     sqlx::query(
@@ -328,7 +328,7 @@ async fn migration_030_classifies_global_and_user_catalog_rows() {
     .await
     .unwrap();
 
-    run_migration(&pool, 30).await;
+    run_migration(&pool, 42).await;
 
     for (table, id_column, id_value, expected_owner) in [
         ("agent_metadata", "id", "agent_builtin_legacy", None),
@@ -428,7 +428,7 @@ async fn migration_030_preserves_valid_aggregate_child_rows() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    run_migrations_through(&pool, 28).await;
+    run_migrations_through(&pool, 41).await;
     insert_valid_aggregate_parents(&pool).await;
 
     sqlx::query(
@@ -502,7 +502,7 @@ async fn migration_030_preserves_valid_aggregate_child_rows() {
     .await
     .unwrap();
 
-    run_migration(&pool, 30).await;
+    run_migration(&pool, 42).await;
 
     for (table, id_column, id_value) in [
         ("messages", "id", "msg_parent"),
@@ -590,10 +590,10 @@ async fn migration_030_rejects_aggregate_child_orphans() {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        run_migrations_through(&pool, 28).await;
+        run_migrations_through(&pool, 41).await;
         sqlx::query(setup_sql).execute(&pool).await.unwrap();
 
-        let err = run_migration_result(&pool, 30).await.unwrap_err();
+        let err = run_migration_result(&pool, 42).await.unwrap_err();
         assert!(
             err.to_string().contains("CHECK constraint failed"),
             "unexpected migration error for {name}: {err}"
@@ -608,7 +608,7 @@ async fn migration_030_rejects_channel_session_without_channel_user() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    run_migrations_through(&pool, 28).await;
+    run_migrations_through(&pool, 41).await;
 
     sqlx::query(
         "INSERT INTO assistant_sessions (
@@ -621,7 +621,7 @@ async fn migration_030_rejects_channel_session_without_channel_user() {
     .await
     .unwrap();
 
-    let err = run_migration_result(&pool, 30).await.unwrap_err();
+    let err = run_migration_result(&pool, 42).await.unwrap_err();
     assert!(
         err.to_string().contains("CHECK constraint failed"),
         "unexpected migration error: {err}"
@@ -635,7 +635,7 @@ async fn migration_030_rejects_channel_session_cross_user_conversation() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    run_migrations_through(&pool, 28).await;
+    run_migrations_through(&pool, 41).await;
 
     sqlx::query(
         "INSERT INTO users (id, username, password_hash, created_at, updated_at)
@@ -675,7 +675,7 @@ async fn migration_030_rejects_channel_session_cross_user_conversation() {
     .await
     .unwrap();
 
-    let err = run_migration_result(&pool, 30).await.unwrap_err();
+    let err = run_migration_result(&pool, 42).await.unwrap_err();
     assert!(
         err.to_string().contains("CHECK constraint failed"),
         "unexpected migration error: {err}"
@@ -689,8 +689,8 @@ async fn migration_030_scopes_project_bind_tables_by_user() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    run_migrations_through(&pool, 28).await;
-    run_migration(&pool, 30).await;
+    run_migrations_through(&pool, 41).await;
+    run_migration(&pool, 42).await;
 
     // projects gains a NOT NULL user_id defaulting to the local user so
     // phase-1 store code (which never writes the column) keeps working.
@@ -759,7 +759,7 @@ async fn migration_030_backfills_legacy_project_rows_to_default_user() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    run_migrations_through(&pool, 28).await;
+    run_migrations_through(&pool, 41).await;
 
     // Rows created by phase-1 store code (no owner columns exist in 028)
     // must land on system_default_user after the 029 rebuild, mirroring
@@ -784,7 +784,7 @@ async fn migration_030_backfills_legacy_project_rows_to_default_user() {
     .unwrap();
 
     // Clean legacy data: both rows backfill to system_default_user → passes.
-    run_migration(&pool, 30).await;
+    run_migration(&pool, 42).await;
     let row = sqlx::query("SELECT owner_user_id FROM project_explorer WHERE pe_id = 'pe_legacy'")
         .fetch_one(&pool)
         .await

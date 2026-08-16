@@ -1314,7 +1314,7 @@ mod tests {
             fail: false,
         });
 
-        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", "/tmp/ws", &caps).await;
+        let servers = load_user_mcp_servers(repo.as_ref(), None, TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
 
         assert_eq!(servers.len(), 1, "only the healthy server may be injected");
         assert!(
@@ -1338,7 +1338,7 @@ mod tests {
             fail: false,
         });
 
-        let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", "/tmp/ws", &caps).await;
+        let servers = load_user_mcp_servers(repo.as_ref(), None, TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
         assert_eq!(servers.len(), 1);
     }
 
