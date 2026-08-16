@@ -413,6 +413,7 @@ dependencies = [
  "aionui-file",
  "aionui-mcp",
  "aionui-office",
+ "aionui-process",
  "aionui-project",
  "aionui-realtime",
  "aionui-runtime",

@@ -260,6 +260,23 @@ impl AppServices {
         let runtime_base_url = config.local_base_url();
         let antigravity_hook_tokens = Arc::new(aionui_ai_agent::antigravity_hook::HookTokenRegistry::new());
 
+        // Subprocess spawner for the direct-CLI `SessionAgentTask`. Registry-backed
+        // (feature 001) so spawned processes are reap-gateable; a fresh per-run epoch,
+        // since no cross-run reap authority is required for this spawn path.
+        //
+        // ⚠️ Fork divergence: upstream wires this because claude/codex always take the
+        // direct-CLI path. Here it serves **Antigravity only** — `agy` has no ACP
+        // surface, so it has nowhere else to run. claude/codex stay on the ACP manager
+        // so they keep the first-party Codex/Claude bridge; see
+        // `aionui_ai_agent::factory::acp::route_for_backend`.
+        let process_registry = Arc::new(aionui_process::FileRegistryStore::new(&data_dir));
+        let machine_id = aionui_process::local_machine_id(&data_dir);
+        let session_spawner: Arc<dyn aionui_process::Spawner> = Arc::new(aionui_process::RealSpawner::new(
+            process_registry,
+            uuid::Uuid::now_v7(),
+            machine_id,
+        ));
+
         // NOT adopted this sync (2026-07-29): upstream wires a `session_spawner`
         // here for the direct-CLI SessionAgentTask path — see the matching notes
         // in factory/mod.rs and factory/acp.rs for why (it would bypass our
