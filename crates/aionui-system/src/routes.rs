@@ -275,8 +275,10 @@ async fn list_providers(
     user: Option<Extension<CurrentUser>>,
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<ProviderResponse>>>, ApiError> {
-    // Pinned, not derived from the caller: see PROVIDER_CREDENTIAL_OWNER.
-    let scope_user_id = PROVIDER_CREDENTIAL_OWNER;
+    // The caller's own id. It records WHO on create and is otherwise inert:
+    // scoping is enforced once, in the repository — see
+    // `IProviderRepository::list` for why `providers` stays deployment-global.
+    let scope_user_id = user.as_deref().map_or(PROVIDER_CREDENTIAL_OWNER, |u| u.id.as_str());
     let providers = state.provider_service.list(scope_user_id).await.map_err(ApiError::from)?;
     if may_see_provider_secrets(&headers, user.as_deref()) {
         return Ok(Json(ApiResponse::ok(providers)));
@@ -293,8 +295,10 @@ async fn create_provider(
     body: Result<Json<CreateProviderRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ApiResponse<ProviderResponse>>), ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
-    // Pinned, not derived from the caller: see PROVIDER_CREDENTIAL_OWNER.
-    let scope_user_id = PROVIDER_CREDENTIAL_OWNER;
+    // The caller's own id. It records WHO on create and is otherwise inert:
+    // scoping is enforced once, in the repository — see
+    // `IProviderRepository::list` for why `providers` stays deployment-global.
+    let scope_user_id = user.as_deref().map_or(PROVIDER_CREDENTIAL_OWNER, |u| u.id.as_str());
     let provider = state
         .provider_service
         .create(scope_user_id, req)
@@ -318,8 +322,10 @@ async fn update_provider(
     body: Result<Json<UpdateProviderRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<ProviderResponse>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
-    // Pinned, not derived from the caller: see PROVIDER_CREDENTIAL_OWNER.
-    let scope_user_id = PROVIDER_CREDENTIAL_OWNER;
+    // The caller's own id. It records WHO on create and is otherwise inert:
+    // scoping is enforced once, in the repository — see
+    // `IProviderRepository::list` for why `providers` stays deployment-global.
+    let scope_user_id = user.as_deref().map_or(PROVIDER_CREDENTIAL_OWNER, |u| u.id.as_str());
     let provider = state
         .provider_service
         .update(scope_user_id, &id, req)

@@ -323,15 +323,23 @@ async fn create_provider_ignores_body_user_id() {
         .fetch_one(db.pool())
         .await
         .unwrap();
-    assert_eq!(owner, TEST_USER_ID);
+    assert_eq!(
+        owner, TEST_USER_ID,
+        "the stored owner is the authenticated caller, never the body's claim"
+    );
 
+    // Upstream asserted here that OTHER_USER_ID sees an empty list. That is its
+    // per-user isolation contract; this fork keeps `providers` deployment-global
+    // (see `IProviderRepository::list`), so the row IS visible to another
+    // account — what the body could not do is forge who owns it.
     let other_app = system_routes(build_state(&db));
     let resp = other_app
         .oneshot(get_request_for_user(OTHER_USER_ID, "/api/providers"))
         .await
         .unwrap();
     let json = body_json(resp).await;
-    assert_eq!(json["data"], json!([]));
+    assert_eq!(json["data"].as_array().unwrap().len(), 1);
+    assert_eq!(json["data"][0]["id"].as_str().unwrap(), id);
 }
 
 #[tokio::test]

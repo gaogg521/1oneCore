@@ -366,20 +366,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gate_true_at_version_29() {
+    async fn gate_true_at_version_41() {
         let mut c = conn().await;
-        seed_sqlx_migrations(&mut c, 29).await;
+        // 41 = the version right before this fork's 042_user_scope (upstream: 29/030).
+        seed_sqlx_migrations(&mut c, USER_SCOPE_MIGRATION_VERSION - 1).await;
         assert!(should_run_user_scope_repair(&mut c).await.unwrap());
     }
 
     #[tokio::test]
-    async fn gate_false_at_version_28_and_30() {
+    async fn gate_false_at_version_40_and_42() {
         let mut c = conn().await;
-        seed_sqlx_migrations(&mut c, 28).await;
+        seed_sqlx_migrations(&mut c, USER_SCOPE_MIGRATION_VERSION - 2).await;
         assert!(!should_run_user_scope_repair(&mut c).await.unwrap());
 
         let mut c2 = conn().await;
-        seed_sqlx_migrations(&mut c2, 30).await;
+        seed_sqlx_migrations(&mut c2, USER_SCOPE_MIGRATION_VERSION).await;
         assert!(!should_run_user_scope_repair(&mut c2).await.unwrap());
     }
 

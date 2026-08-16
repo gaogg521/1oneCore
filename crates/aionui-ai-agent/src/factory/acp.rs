@@ -1529,10 +1529,23 @@ mod tests {
         assert_eq!(route_for_backend(Some("antigravity")), BackendRoute::Antigravity);
     }
 
+    /// ⚠️ Fork contract, inverted from upstream's `claude_and_codex_keep_the_direct_cli_route`.
+    ///
+    /// Upstream routes claude/codex to `DirectCli`. Here they must stay on the
+    /// ACP manager, because that is the only path that runs this module's
+    /// first-party Codex/Claude bridge injection — the direct-CLI path wires
+    /// only the third-party cc-switch fallback, so flipping this silently
+    /// regresses enterprise deployments off their company model gateway.
+    ///
+    /// If this test ever fails, do not "fix" it by matching upstream: thread
+    /// `codex_bridge_config_repo` / `claude_bridge_config_repo` into
+    /// `SessionBuildInputs` first, then verify against a real on-disk session
+    /// transcript (see CLAUDE.md, 2026-07-23). A green suite does not catch
+    /// that regression — the bridge failing over is invisible to every test here.
     #[test]
-    fn claude_and_codex_keep_the_direct_cli_route() {
-        assert_eq!(route_for_backend(Some("claude")), BackendRoute::DirectCli);
-        assert_eq!(route_for_backend(Some("codex")), BackendRoute::DirectCli);
+    fn claude_and_codex_stay_on_the_acp_manager_to_keep_the_bridge() {
+        assert_eq!(route_for_backend(Some("claude")), BackendRoute::AcpManager);
+        assert_eq!(route_for_backend(Some("codex")), BackendRoute::AcpManager);
     }
 
     #[test]
