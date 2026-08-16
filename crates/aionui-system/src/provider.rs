@@ -599,10 +599,13 @@ mod tests {
 
         let good = svc.create(TEST_USER_ID, sample_create_request()).await.unwrap();
         let undecryptable = foreign_key_svc
-            .create(TEST_USER_ID, CreateProviderRequest {
-                name: "Undecryptable".into(),
-                ..sample_create_request()
-            })
+            .create(
+                TEST_USER_ID,
+                CreateProviderRequest {
+                    name: "Undecryptable".into(),
+                    ..sample_create_request()
+                },
+            )
             .await
             .unwrap();
 

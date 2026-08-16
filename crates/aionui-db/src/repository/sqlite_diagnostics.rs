@@ -551,10 +551,7 @@ impl SqliteFeedbackDiagnosticsRepository {
         query.push_str(" ORDER BY updated_at DESC LIMIT 20");
 
         let rows = if let Some(provider_id) = provider_id.as_deref() {
-            sqlx::query(&query)
-                .bind(provider_id)
-                .fetch_all(&self.pool)
-                .await?
+            sqlx::query(&query).bind(provider_id).fetch_all(&self.pool).await?
         } else {
             sqlx::query(&query).fetch_all(&self.pool).await?
         };

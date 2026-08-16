@@ -1437,17 +1437,20 @@ mod tests {
         // pasted `{"command": "node D:\\...\\x.js"}` JSON config produces.
         let svc = make_service();
         let created = svc
-            .add_server(TEST_USER_ID, CreateMcpServerRequest {
-                name: "one-web-tools".into(),
-                description: None,
-                transport: McpTransport::Stdio {
-                    command: r"node D:\1one-command\out\main\builtin-mcp-web-tools.js".into(),
-                    args: vec![],
-                    env: HashMap::new(),
+            .add_server(
+                TEST_USER_ID,
+                CreateMcpServerRequest {
+                    name: "one-web-tools".into(),
+                    description: None,
+                    transport: McpTransport::Stdio {
+                        command: r"node D:\1one-command\out\main\builtin-mcp-web-tools.js".into(),
+                        args: vec![],
+                        env: HashMap::new(),
+                    },
+                    original_json: None,
+                    builtin: false,
                 },
-                original_json: None,
-                builtin: false,
-            })
+            )
             .await
             .unwrap();
 
@@ -1638,21 +1641,28 @@ mod team_sync_tests {
     async fn never_clobbers_personal_server_with_same_name() {
         let svc = svc();
         // Member's own personal server.
-        svc.add_server(TEST_USER_ID, CreateMcpServerRequest {
-            name: "my-mcp".to_owned(),
-            description: None,
-            transport: aionui_api_types::McpTransport::Sse {
-                url: "https://personal.example/sse".to_owned(),
-                headers: Default::default(),
+        svc.add_server(
+            TEST_USER_ID,
+            CreateMcpServerRequest {
+                name: "my-mcp".to_owned(),
+                description: None,
+                transport: aionui_api_types::McpTransport::Sse {
+                    url: "https://personal.example/sse".to_owned(),
+                    headers: Default::default(),
+                },
+                original_json: None,
+                builtin: false,
             },
-            original_json: None,
-            builtin: false,
-        })
+        )
         .await
         .unwrap();
 
         let report = svc
-            .sync_team_servers(TEST_USER_ID, &[payload("omcp_x", "my-mcp", "sse", "https://corp.example/sse")], true)
+            .sync_team_servers(
+                TEST_USER_ID,
+                &[payload("omcp_x", "my-mcp", "sse", "https://corp.example/sse")],
+                true,
+            )
             .await
             .unwrap();
         assert_eq!(report.conflicts, vec!["my-mcp".to_owned()]);
@@ -1683,11 +1693,21 @@ mod team_sync_tests {
 
         // Admin deleted team-b on the server: authoritative resync removes it.
         let resync = svc
-            .sync_team_servers(TEST_USER_ID, &[payload("omcp_a", "team-a", "sse", "https://a/sse")], true)
+            .sync_team_servers(
+                TEST_USER_ID,
+                &[payload("omcp_a", "team-a", "sse", "https://a/sse")],
+                true,
+            )
             .await
             .unwrap();
         assert_eq!(resync.removed, vec!["team-b".to_owned()]);
-        let names: Vec<String> = svc.list_servers(TEST_USER_ID).await.unwrap().into_iter().map(|s| s.name).collect();
+        let names: Vec<String> = svc
+            .list_servers(TEST_USER_ID)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
         assert_eq!(names, vec!["team-a".to_owned()]);
     }
 }

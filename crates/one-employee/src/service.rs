@@ -781,7 +781,8 @@ impl EmployeeService {
             .map_err(|e| EmployeeError::Internal(format!("create conversation: {e}")))?;
         let conversation_id = response.id.clone();
 
-        self.ensure_workspace(owner_user_id, &conversation_id, &response.extra).await?;
+        self.ensure_workspace(owner_user_id, &conversation_id, &response.extra)
+            .await?;
 
         let run_id = short_id("run");
         sqlx::query(
@@ -1002,7 +1003,9 @@ impl EmployeeService {
             updated_at: Some(now_ms()),
             ..Default::default()
         };
-        self.conversation_repo.update(owner_user_id, conversation_id, &update).await?;
+        self.conversation_repo
+            .update(owner_user_id, conversation_id, &update)
+            .await?;
         Ok(())
     }
 

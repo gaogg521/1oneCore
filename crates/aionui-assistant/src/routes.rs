@@ -201,27 +201,30 @@ async fn marketplace_install(
     // item's own error instead.
     let outcome = state
         .service
-        .import_personas(&current_user.id, ImportAssistantsRequest {
-            assistants: vec![CreateAssistantRequest {
-                id: Some(entry.id.clone()),
-                name: installed_name,
-                description: entry.description,
-                avatar: None,
-                agent_id: None,
-                enabled_skills: None,
-                custom_skill_names: None,
-                disabled_builtin_skills: None,
-                prompts: None,
-                models: None,
-                name_i18n: None,
-                description_i18n: None,
-                prompts_i18n: None,
-                recommended_prompts: None,
-                recommended_prompts_i18n: None,
-                defaults: None,
-                rule_content: Some(entry.rule_content),
-            }],
-        })
+        .import_personas(
+            &current_user.id,
+            ImportAssistantsRequest {
+                assistants: vec![CreateAssistantRequest {
+                    id: Some(entry.id.clone()),
+                    name: installed_name,
+                    description: entry.description,
+                    avatar: None,
+                    agent_id: None,
+                    enabled_skills: None,
+                    custom_skill_names: None,
+                    disabled_builtin_skills: None,
+                    prompts: None,
+                    models: None,
+                    name_i18n: None,
+                    description_i18n: None,
+                    prompts_i18n: None,
+                    recommended_prompts: None,
+                    recommended_prompts_i18n: None,
+                    defaults: None,
+                    rule_content: Some(entry.rule_content),
+                }],
+            },
+        )
         .await?;
     if let Some(failure) = outcome.errors.first() {
         return Err(ApiError::BadRequest(failure.error.clone()));

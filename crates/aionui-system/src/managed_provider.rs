@@ -245,9 +245,13 @@ mod tests {
         sync.sync(TEST_USER_ID, &[channel("ochan_1", "corp-gateway", "tok-1")], true)
             .await
             .unwrap();
-        sync.sync(TEST_USER_ID, &[channel("ochan_1", "corp-gateway-renamed", "tok-2")], true)
-            .await
-            .unwrap();
+        sync.sync(
+            TEST_USER_ID,
+            &[channel("ochan_1", "corp-gateway-renamed", "tok-2")],
+            true,
+        )
+        .await
+        .unwrap();
 
         let rows = repo.list(TEST_USER_ID).await.unwrap();
         assert_eq!(rows.len(), 1);
@@ -262,11 +266,18 @@ mod tests {
     #[tokio::test]
     async fn an_authoritative_sync_removes_channels_that_went_away() {
         let (sync, repo, _db) = sync_service().await;
-        sync.sync(TEST_USER_ID, &[channel("ochan_1", "a", "t1"), channel("ochan_2", "b", "t2")], true)
+        sync.sync(
+            TEST_USER_ID,
+            &[channel("ochan_1", "a", "t1"), channel("ochan_2", "b", "t2")],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let report = sync
+            .sync(TEST_USER_ID, &[channel("ochan_1", "a", "t1")], true)
             .await
             .unwrap();
-
-        let report = sync.sync(TEST_USER_ID, &[channel("ochan_1", "a", "t1")], true).await.unwrap();
         assert_eq!(report.removed, vec!["b".to_owned()]);
         assert_eq!(repo.list(TEST_USER_ID).await.unwrap().len(), 1);
     }
@@ -276,7 +287,9 @@ mod tests {
     #[tokio::test]
     async fn a_non_authoritative_sync_never_removes_anything() {
         let (sync, repo, _db) = sync_service().await;
-        sync.sync(TEST_USER_ID, &[channel("ochan_1", "a", "t1")], true).await.unwrap();
+        sync.sync(TEST_USER_ID, &[channel("ochan_1", "a", "t1")], true)
+            .await
+            .unwrap();
 
         let report = sync.sync(TEST_USER_ID, &[], false).await.unwrap();
         assert!(report.removed.is_empty());
@@ -331,7 +344,9 @@ mod tests {
         use aionui_api_types::UpdateProviderRequest;
 
         let (sync, repo, _db) = sync_service().await;
-        sync.sync(TEST_USER_ID, &[channel("ochan_1", "corp", "tok")], true).await.unwrap();
+        sync.sync(TEST_USER_ID, &[channel("ochan_1", "corp", "tok")], true)
+            .await
+            .unwrap();
         let service = ProviderService::new(repo.clone(), KEY);
 
         let edit = service
@@ -424,7 +439,9 @@ mod tests {
         })
         .await
         .unwrap();
-        sync.sync(TEST_USER_ID, &[channel("ochan_1", "corp", "tok")], true).await.unwrap();
+        sync.sync(TEST_USER_ID, &[channel("ochan_1", "corp", "tok")], true)
+            .await
+            .unwrap();
 
         sync.sync(TEST_USER_ID, &[], true).await.unwrap();
 

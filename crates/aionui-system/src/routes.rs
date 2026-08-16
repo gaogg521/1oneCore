@@ -279,7 +279,11 @@ async fn list_providers(
     // scoping is enforced once, in the repository — see
     // `IProviderRepository::list` for why `providers` stays deployment-global.
     let scope_user_id = user.as_deref().map_or(PROVIDER_CREDENTIAL_OWNER, |u| u.id.as_str());
-    let providers = state.provider_service.list(scope_user_id).await.map_err(ApiError::from)?;
+    let providers = state
+        .provider_service
+        .list(scope_user_id)
+        .await
+        .map_err(ApiError::from)?;
     if may_see_provider_secrets(&headers, user.as_deref()) {
         return Ok(Json(ApiResponse::ok(providers)));
     }

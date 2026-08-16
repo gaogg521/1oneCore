@@ -1797,8 +1797,13 @@ impl AssistantService {
 
             match self.repo.create_for_user(user_id, &params).await {
                 Ok(row) => {
-                    self.upsert_definition_from_legacy_user_row_for_user(user_id, &row, Some(&resolved_agent_id), "user")
-                        .await?;
+                    self.upsert_definition_from_legacy_user_row_for_user(
+                        user_id,
+                        &row,
+                        Some(&resolved_agent_id),
+                        "user",
+                    )
+                    .await?;
                     result.imported += 1;
                 }
                 Err(aionui_db::DbError::Conflict(_)) => {
@@ -6674,14 +6679,17 @@ mod tests {
         let fx = fixture().await;
         let res = fx
             .service
-            .import_personas(DEFAULT_USER_ID, ImportAssistantsRequest {
-                assistants: vec![CreateAssistantRequest {
-                    id: Some("a-share-advisor".into()),
-                    name: "A Share Advisor".into(),
-                    rule_content: Some("You are an A-share investment advisor.".into()),
-                    ..req_default()
-                }],
-            })
+            .import_personas(
+                DEFAULT_USER_ID,
+                ImportAssistantsRequest {
+                    assistants: vec![CreateAssistantRequest {
+                        id: Some("a-share-advisor".into()),
+                        name: "A Share Advisor".into(),
+                        rule_content: Some("You are an A-share investment advisor.".into()),
+                        ..req_default()
+                    }],
+                },
+            )
             .await
             .unwrap();
         assert_eq!(res.imported, 1);
@@ -6717,28 +6725,34 @@ mod tests {
         let fx = fixture().await;
         let first = fx
             .service
-            .import_personas(DEFAULT_USER_ID, ImportAssistantsRequest {
-                assistants: vec![CreateAssistantRequest {
-                    id: Some("a-share-advisor".into()),
-                    name: "A Share Advisor".into(),
-                    rule_content: Some("v1 prompt".into()),
-                    ..req_default()
-                }],
-            })
+            .import_personas(
+                DEFAULT_USER_ID,
+                ImportAssistantsRequest {
+                    assistants: vec![CreateAssistantRequest {
+                        id: Some("a-share-advisor".into()),
+                        name: "A Share Advisor".into(),
+                        rule_content: Some("v1 prompt".into()),
+                        ..req_default()
+                    }],
+                },
+            )
             .await
             .unwrap();
         assert_eq!(first.imported, 1);
 
         let second = fx
             .service
-            .import_personas(DEFAULT_USER_ID, ImportAssistantsRequest {
-                assistants: vec![CreateAssistantRequest {
-                    id: Some("a-share-advisor".into()),
-                    name: "A Share Advisor v2".into(),
-                    rule_content: Some("v2 prompt".into()),
-                    ..req_default()
-                }],
-            })
+            .import_personas(
+                DEFAULT_USER_ID,
+                ImportAssistantsRequest {
+                    assistants: vec![CreateAssistantRequest {
+                        id: Some("a-share-advisor".into()),
+                        name: "A Share Advisor v2".into(),
+                        rule_content: Some("v2 prompt".into()),
+                        ..req_default()
+                    }],
+                },
+            )
             .await
             .unwrap();
         assert_eq!(second.imported, 1, "re-import must overwrite, not skip");
@@ -6755,13 +6769,16 @@ mod tests {
         let fx = fixture_with_builtins(vec![mk_builtin("builtin-office", "Office")]).await;
         let res = fx
             .service
-            .import_personas(DEFAULT_USER_ID, ImportAssistantsRequest {
-                assistants: vec![CreateAssistantRequest {
-                    id: Some("builtin-office".into()),
-                    name: "spoof".into(),
-                    ..req_default()
-                }],
-            })
+            .import_personas(
+                DEFAULT_USER_ID,
+                ImportAssistantsRequest {
+                    assistants: vec![CreateAssistantRequest {
+                        id: Some("builtin-office".into()),
+                        name: "spoof".into(),
+                        ..req_default()
+                    }],
+                },
+            )
             .await
             .unwrap();
         assert_eq!(res.imported, 0);
@@ -6773,13 +6790,16 @@ mod tests {
         let fx = fixture().await;
         let res = fx
             .service
-            .import_personas(DEFAULT_USER_ID, ImportAssistantsRequest {
-                assistants: vec![CreateAssistantRequest {
-                    id: None,
-                    name: "A".into(),
-                    ..req_default()
-                }],
-            })
+            .import_personas(
+                DEFAULT_USER_ID,
+                ImportAssistantsRequest {
+                    assistants: vec![CreateAssistantRequest {
+                        id: None,
+                        name: "A".into(),
+                        ..req_default()
+                    }],
+                },
+            )
             .await
             .unwrap();
         assert_eq!(res.imported, 0);

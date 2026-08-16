@@ -453,7 +453,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_string(response).await, format!("{}:{}", user.id, user.username.as_deref().unwrap_or("u")));
+        assert_eq!(
+            body_string(response).await,
+            format!("{}:{}", user.id, user.username.as_deref().unwrap_or("u"))
+        );
     }
 
     /// The desktop operator (no token) still resolves to `system_default_user`
@@ -524,7 +527,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_string(response).await, format!("{}:{}", user.id, user.username.as_deref().unwrap_or("u")));
+        assert_eq!(
+            body_string(response).await,
+            format!("{}:{}", user.id, user.username.as_deref().unwrap_or("u"))
+        );
     }
 
     /// A forged/expired token on a proxied request must 401 rather than fall

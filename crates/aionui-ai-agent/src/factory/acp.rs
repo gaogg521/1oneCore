@@ -274,7 +274,6 @@ pub(super) async fn build(
         .await;
     }
 
-
     let mut command_spec = resolve_agent_command_spec(
         &meta,
         &ctx.user_id,
@@ -1488,7 +1487,8 @@ mod tests {
         });
 
         let selected = vec!["mcp_disabled-picked".to_owned()];
-        let servers = load_user_mcp_servers(repo.as_ref(), Some(&selected), TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
+        let servers =
+            load_user_mcp_servers(repo.as_ref(), Some(&selected), TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
 
         assert_eq!(servers.len(), 1);
         match &servers[0] {

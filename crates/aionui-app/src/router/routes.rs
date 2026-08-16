@@ -1317,9 +1317,7 @@ fn boundary_error_for_status(status: StatusCode) -> Option<(&'static str, &'stat
 mod tests {
     use axum::http::StatusCode;
 
-    use super::{
-        billing_denial, boundary_error_for_status, create_router_with_runtime, is_global_websocket_event,
-    };
+    use super::{billing_denial, boundary_error_for_status, create_router_with_runtime, is_global_websocket_event};
     use crate::config::AppConfig;
     use crate::services::AppServices;
 
