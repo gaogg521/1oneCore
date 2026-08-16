@@ -6004,6 +6004,26 @@ mod pump_tests {
     // Image-capable backend: an image attachment leaves the [[AION_FILES]]
     // text and rides as a native Image block; non-media files keep the
     // path-text + resource-link form.
+    //
+    // ⚠️ NOT ADOPTED on this fork. The assertions below are upstream's and are
+    // left verbatim — what is missing is the implementation: multimodal prompt
+    // partitioning landed upstream in `5a78a0b2` (feat(agent): multimodal
+    // prompt — native image/audio content blocks gated by promptCapabilities,
+    // #774), which this fork has not taken. `a326fb26` brought the test in
+    // ahead of it.
+    //
+    // `5a78a0b2` was evaluated and declined for this sync (2026-08-14): it sits
+    // on a chain of other unpicked upstream features — its cherry-pick fails on
+    // `ForkSpec`, `get_message_by_msg_id_any`, `resolve_backend_turn_anchor`,
+    // `end_turn_usage_frame_from_response` and `preserve_known_window`, none of
+    // which exist here. Adopting it means adopting session-fork and the usage
+    // frame work with it, which is its own round.
+    //
+    // Worth doing later: it also touches `manager/acp/agent_session_flow.rs`,
+    // which IS this fork's live path — images to claude/codex/gemini currently
+    // ride as file paths rather than native image blocks. Un-ignore this test
+    // when that lands.
+    #[ignore = "needs upstream 5a78a0b2 (multimodal prompt blocks), not adopted on this fork"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn send_message_partitions_image_into_native_block() {
         let dir = std::env::temp_dir().join("aionui-session-media-tests");
