@@ -1,12 +1,12 @@
-//! End-to-end v29-fixture upgrade tests for the migration-030 pre-migration
+//! End-to-end v41-fixture upgrade tests for the migration-042 pre-migration
 //! repair (Sentry ELECTRON-31Z / ELECTRON-31X).
 //!
-//! The bundled `DB_MIGRATOR` runs straight to 030 and `init_database_memory()`
+//! The bundled `DB_MIGRATOR` runs straight to 042 and `init_database_memory()`
 //! starts from an empty DB, so neither enters the repair branch. These tests
-//! hand-build a file-backed v29 database (migrations 001..=029 applied, so
-//! `_sqlx_migrations` max version == 29) plus dirty data, then trigger
+//! hand-build a file-backed v41 database (migrations 001..=041 applied, so
+//! `_sqlx_migrations` max version == 41) plus dirty data, then trigger
 //! `init_database_staged` so the repair runs on the migrator's connection
-//! immediately before 030.
+//! immediately before 042.
 
 use std::borrow::Cow;
 use std::path::Path;
@@ -15,11 +15,11 @@ use aionui_db::init_database_staged;
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePoolOptions;
 
-/// Build a file-backed DB with migrations 001..=29 applied (leaving 030
-/// pending, so `_sqlx_migrations` max version == 29), then run each `seed`
+/// Build a file-backed DB with migrations 001..=41 applied (leaving 042
+/// pending, so `_sqlx_migrations` max version == 41), then run each `seed`
 /// statement in order. Closes the pool before returning so the caller can open
 /// it via the staged-init path.
-async fn build_v29_db(path: &Path, seed: &[&str]) {
+async fn build_v41_db(path: &Path, seed: &[&str]) {
     let url = format!("sqlite://{}?mode=rwc", path.display());
     let pool = SqlitePoolOptions::new().max_connections(1).connect(&url).await.unwrap();
     sqlx::query("PRAGMA foreign_keys = OFF").execute(&pool).await.unwrap();
@@ -27,7 +27,7 @@ async fn build_v29_db(path: &Path, seed: &[&str]) {
     let subset = full
         .migrations
         .iter()
-        .filter(|m| m.version <= 29)
+        .filter(|m| m.version <= 41)
         .cloned()
         .collect::<Vec<_>>();
     let migrator = Migrator {
@@ -66,10 +66,10 @@ async fn latest_bundled_version() -> i64 {
 }
 
 #[tokio::test]
-async fn stuck_user_with_orphans_self_heals_and_030_applies() {
+async fn stuck_user_with_orphans_self_heals_and_042_applies() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("aionui-backend.db");
-    build_v29_db(
+    build_v41_db(
         &path,
         &[
             "INSERT INTO conversations (id, user_id, name, type, extra, status, created_at, updated_at) \
@@ -86,11 +86,11 @@ async fn stuck_user_with_orphans_self_heals_and_030_applies() {
 
     let db = init_database_staged(&path)
         .await
-        .expect("stuck DB must self-heal and finish 030");
+        .expect("stuck DB must self-heal and finish 042");
     assert_eq!(
         max_applied_version(&db).await,
         latest_bundled_version().await,
-        "migration 030+ applied after repair"
+        "migration 042+ applied after repair"
     );
 
     let valid: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE id='m_valid'")
@@ -107,10 +107,10 @@ async fn stuck_user_with_orphans_self_heals_and_030_applies() {
 }
 
 #[tokio::test]
-async fn already_applied_030_upgrades_without_version_mismatch() {
+async fn already_applied_042_upgrades_without_version_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("aionui-backend.db");
-    // Apply the FULL migrator (through 030) to simulate an already-migrated user.
+    // Apply the FULL migrator (through 042) to simulate an already-migrated user.
     {
         let url = format!("sqlite://{}?mode=rwc", path.display());
         let pool = SqlitePoolOptions::new().max_connections(1).connect(&url).await.unwrap();
@@ -136,7 +136,7 @@ async fn already_applied_030_upgrades_without_version_mismatch() {
 async fn repair_then_startup_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("aionui-backend.db");
-    build_v29_db(
+    build_v41_db(
         &path,
         &[
             "INSERT INTO mailbox (id, team_id, to_agent_id, from_agent_id, type, content, created_at) \
@@ -150,7 +150,7 @@ async fn repair_then_startup_is_idempotent() {
     assert_eq!(max_applied_version(&db1).await, latest);
     db1.close().await;
     // Second startup on the healed DB must also succeed (gate now sees the DB
-    // already past 030 → skips the repair).
+    // already past 042 → skips the repair).
     let db2 = init_database_staged(&path).await.unwrap();
     assert_eq!(max_applied_version(&db2).await, latest);
     db2.close().await;
@@ -158,21 +158,21 @@ async fn repair_then_startup_is_idempotent() {
 
 #[tokio::test]
 async fn defensive_dedup_prevents_unique_family_failure() {
-    // spec §10 item 4: a DB whose 030 full-table rebuild would abort with the
-    // UNIQUE/NOT-NULL family (not `ok = 1`) must be repaired so 030 succeeds.
+    // spec §10 item 4: a DB whose 042 full-table rebuild would abort with the
+    // UNIQUE/NOT-NULL family (not `ok = 1`) must be repaired so 042 succeeds.
     //
-    // A pristine v29 chain CANNOT hold duplicate mcp_servers names: `mcp_servers`
+    // A pristine v41 chain CANNOT hold duplicate mcp_servers names: `mcp_servers`
     // carries `UNIQUE(name)` since migration 001 (`verified`:
-    // 001_initial_schema.sql:381), and 030's rebuild key `UNIQUE(user_id,name)`
+    // 001_initial_schema.sql:381), and 042's rebuild key `UNIQUE(user_id,name)`
     // with a single owner is no wider. So the only way a real database reaches
-    // 030 with duplicate names is a legacy/damaged DB whose UNIQUE was absent.
+    // 042 with duplicate names is a legacy/damaged DB whose UNIQUE was absent.
     // We simulate exactly that state: rebuild `mcp_servers` without constraints
     // via `CREATE TABLE ... AS SELECT` (which drops PK/UNIQUE), then seed the
     // duplicates. This drives the real staged-init path (pre-migration dedup →
-    // 030 rebuild) and proves the defensive dedup keeps 030 from aborting.
+    // 042 rebuild) and proves the defensive dedup keeps 042 from aborting.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("aionui-backend.db");
-    build_v29_db(
+    build_v41_db(
         &path,
         &[
             // Drop the 001-era UNIQUE(name) by recreating the table constraint-free.
@@ -189,7 +189,7 @@ async fn defensive_dedup_prevents_unique_family_failure() {
 
     let db = init_database_staged(&path)
         .await
-        .expect("duplicate mcp name must be deduped, not abort 030");
+        .expect("duplicate mcp name must be deduped, not abort 042");
     assert_eq!(max_applied_version(&db).await, latest_bundled_version().await);
     let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mcp_servers WHERE name='dup'")
         .fetch_one(db.pool())
