@@ -4102,7 +4102,11 @@ mod build_mapping_tests {
     /// other path must not be silently added to it).
     #[test]
     fn initial_cost_seed_reads_the_persisted_usd_cost_only() {
-        use agent_client_protocol::schema::v1::{Cost, UsageUpdate};
+        // Fork pins agent-client-protocol 0.11.1, where these live directly under
+        // `schema` — upstream (2.0.0) moved them behind a `v1` module. Same
+        // constructors and fields either way (verified:
+        // agent-client-protocol-schema-0.12.0/src/client.rs:264,285,296,332).
+        use agent_client_protocol::schema::{Cost, UsageUpdate};
         let usd = PersistedSessionState {
             context_usage: Some(UsageUpdate::new(12_600, 262_144).cost(Cost::new(6.4294, "USD"))),
             ..Default::default()
