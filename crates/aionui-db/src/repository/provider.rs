@@ -8,18 +8,46 @@ use crate::models::Provider;
 #[async_trait::async_trait]
 pub trait IProviderRepository: Send + Sync {
     /// Returns all providers, ordered by creation time ascending.
+    ///
+    /// ⚠️ **`user_id` does not scope the query in this fork.** Upstream
+    /// (`7f8ed6c5`) made `providers` per-account; we deliberately kept the table
+    /// deployment-global, because this fork's server deployment is "the
+    /// operator configures the company's keys once and every member reaching
+    /// this backend uses them". Scoping per account would show every existing
+    /// member an empty model list the moment they upgrade.
+    ///
+    /// The parameter is kept so upstream's call sites keep merging cleanly, and
+    /// because it is the natural place to reintroduce scoping if that decision
+    /// is ever reversed. Do NOT "fix" it by adding the `WHERE user_id = ?` back
+    /// without also solving how members get models — the failure is silent
+    /// (empty list, no error). `provider_scope_is_deployment_global` in
+    /// `sqlite_provider.rs` locks this.
+    ///
+    /// Members still cannot read the operator's API key out: redaction lives at
+    /// the HTTP boundary (`aionui-system`'s `may_see_provider_secrets`).
+    /// Genuinely per-member credentials go through enterprise model channels
+    /// (`managed_by='enterprise'`, migration 041), not through this column.
     async fn list(&self, user_id: &str) -> Result<Vec<Provider>, DbError>;
 
     /// Finds a provider by ID, or `None` if not found.
+    ///
+    /// ⚠️ `user_id` does not scope the lookup — see [`Self::list`].
     async fn find_by_id(&self, user_id: &str, id: &str) -> Result<Option<Provider>, DbError>;
 
     /// Creates a new provider and returns the inserted row.
+    ///
+    /// `params.user_id` IS written to the row (so the column stays populated and
+    /// the schema honest); it just does not gate later reads.
     async fn create(&self, params: CreateProviderParams<'_>) -> Result<Provider, DbError>;
 
     /// Updates an existing provider. Returns `DbError::NotFound` if the ID doesn't exist.
+    ///
+    /// ⚠️ `user_id` does not scope the update — see [`Self::list`].
     async fn update(&self, user_id: &str, id: &str, params: UpdateProviderParams<'_>) -> Result<Provider, DbError>;
 
     /// Deletes a provider by ID. Returns `DbError::NotFound` if the ID doesn't exist.
+    ///
+    /// ⚠️ `user_id` does not scope the delete — see [`Self::list`].
     async fn delete(&self, user_id: &str, id: &str) -> Result<(), DbError>;
 }
 

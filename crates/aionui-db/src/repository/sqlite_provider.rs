@@ -19,18 +19,19 @@ impl SqliteProviderRepository {
 
 #[async_trait::async_trait]
 impl IProviderRepository for SqliteProviderRepository {
-    async fn list(&self, user_id: &str) -> Result<Vec<Provider>, DbError> {
-        let rows = sqlx::query_as::<_, Provider>("SELECT * FROM providers WHERE user_id = ? ORDER BY created_at ASC")
-            .bind(user_id)
+    /// ⚠️ `user_id` is accepted and ignored — see the trait docs. This fork
+    /// keeps `providers` deployment-global.
+    async fn list(&self, _user_id: &str) -> Result<Vec<Provider>, DbError> {
+        let rows = sqlx::query_as::<_, Provider>("SELECT * FROM providers ORDER BY created_at ASC")
             .fetch_all(&self.pool)
             .await?;
 
         Ok(rows)
     }
 
-    async fn find_by_id(&self, user_id: &str, id: &str) -> Result<Option<Provider>, DbError> {
-        let row = sqlx::query_as::<_, Provider>("SELECT * FROM providers WHERE user_id = ? AND id = ?")
-            .bind(user_id)
+    /// ⚠️ `user_id` is accepted and ignored — see the trait docs.
+    async fn find_by_id(&self, _user_id: &str, id: &str) -> Result<Option<Provider>, DbError> {
+        let row = sqlx::query_as::<_, Provider>("SELECT * FROM providers WHERE id = ?")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -103,9 +104,10 @@ impl IProviderRepository for SqliteProviderRepository {
         })
     }
 
-    async fn update(&self, user_id: &str, id: &str, params: UpdateProviderParams<'_>) -> Result<Provider, DbError> {
+    /// ⚠️ `user_id` is accepted and ignored — see the trait docs.
+    async fn update(&self, _user_id: &str, id: &str, params: UpdateProviderParams<'_>) -> Result<Provider, DbError> {
         let existing = self
-            .find_by_id(user_id, id)
+            .find_by_id(_user_id, id)
             .await?
             .ok_or_else(|| DbError::NotFound(format!("Provider '{id}' not found")))?;
 
@@ -117,7 +119,7 @@ impl IProviderRepository for SqliteProviderRepository {
                 models = ?, enabled = ?, capabilities = ?, context_limit = ?, \
                 model_protocols = ?, model_enabled = ?, model_health = ?, \
                 model_settings = ?, bedrock_config = ?, is_full_url = ?, updated_at = ? \
-             WHERE user_id = ? AND id = ?",
+             WHERE id = ?",
         )
         .bind(&merged.platform)
         .bind(&merged.name)
@@ -134,7 +136,6 @@ impl IProviderRepository for SqliteProviderRepository {
         .bind(&merged.bedrock_config)
         .bind(merged.is_full_url)
         .bind(merged.updated_at)
-        .bind(user_id)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -142,9 +143,9 @@ impl IProviderRepository for SqliteProviderRepository {
         Ok(merged)
     }
 
-    async fn delete(&self, user_id: &str, id: &str) -> Result<(), DbError> {
-        let result = sqlx::query("DELETE FROM providers WHERE user_id = ? AND id = ?")
-            .bind(user_id)
+    /// ⚠️ `user_id` is accepted and ignored — see the trait docs.
+    async fn delete(&self, _user_id: &str, id: &str) -> Result<(), DbError> {
+        let result = sqlx::query("DELETE FROM providers WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -480,13 +481,20 @@ mod tests {
         assert_eq!(all[0].id, p2.id);
     }
 
+    /// Locks this fork's divergence from upstream `7f8ed6c5`: `providers` is
+    /// deployment-global, so `user_id` is written but never gates a read. See
+    /// `IProviderRepository::list` for why.
+    ///
+    /// This is the test to look at first if members ever report an empty model
+    /// list — reintroducing `WHERE user_id = ?` produces exactly that, with no
+    /// error anywhere.
     #[tokio::test]
-    async fn provider_operations_are_scoped_by_user() {
+    async fn provider_scope_is_deployment_global() {
         let (repo, _db) = setup().await;
         let provider_a = repo.create(sample_params()).await.unwrap();
         let provider_b = repo
             .create(CreateProviderParams {
-                id: Some("same-visible-provider-id"),
+                id: Some("provider-created-by-another-account"),
                 user_id: USER_B,
                 name: "Other User Provider",
                 ..sample_params()
@@ -494,25 +502,35 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(repo.list(USER_A).await.unwrap().len(), 1);
-        assert_eq!(repo.list(USER_B).await.unwrap().len(), 1);
-        assert!(repo.find_by_id(USER_B, &provider_a.id).await.unwrap().is_none());
+        // Both rows are visible from either account, and the column still
+        // records who created each one.
+        for viewer in [USER_A, USER_B] {
+            let all = repo.list(viewer).await.unwrap();
+            assert_eq!(all.len(), 2, "{viewer} must see every provider on this deployment");
+        }
+        assert_eq!(repo.list(USER_A).await.unwrap()[0].user_id, USER_A);
+        assert_eq!(
+            repo.find_by_id(USER_B, &provider_a.id).await.unwrap().unwrap().user_id,
+            USER_A,
+            "lookup crosses accounts; the stored owner is unchanged"
+        );
 
-        let err = repo
+        // Writes cross accounts too — one shared set of company credentials.
+        let updated = repo
             .update(
                 USER_B,
                 &provider_a.id,
                 UpdateProviderParams {
-                    name: Some("cross-user update"),
+                    name: Some("renamed by the other account"),
                     ..Default::default()
                 },
             )
             .await
-            .unwrap_err();
-        assert!(matches!(err, DbError::NotFound(_)));
+            .unwrap();
+        assert_eq!(updated.name, "renamed by the other account");
 
-        repo.delete(USER_B, &provider_b.id).await.unwrap();
+        repo.delete(USER_A, &provider_b.id).await.unwrap();
         assert_eq!(repo.list(USER_A).await.unwrap().len(), 1);
-        assert!(repo.list(USER_B).await.unwrap().is_empty());
+        assert_eq!(repo.list(USER_B).await.unwrap().len(), 1);
     }
 }

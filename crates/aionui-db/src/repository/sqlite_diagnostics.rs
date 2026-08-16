@@ -537,24 +537,26 @@ impl SqliteFeedbackDiagnosticsRepository {
         request: &FeedbackDiagnosticsRequest,
     ) -> Result<FeedbackDiagnosticsProfileResult, DbError> {
         let provider_id = self.resolve_provider_id(request).await?;
+        // Not scoped by user: `providers` is deployment-global in this fork
+        // (see `IProviderRepository::list`). Scoping here would report "no
+        // providers configured" to every member — on the one report whose whole
+        // job is diagnosing why their model will not run.
         let mut query = "SELECT id, platform, name, base_url, api_key_encrypted, models, enabled, capabilities, \
                             context_limit, model_enabled, model_health, is_full_url, created_at, updated_at \
-                         FROM providers \
-                         WHERE user_id = ?"
+                         FROM providers"
             .to_owned();
         if provider_id.is_some() {
-            query.push_str(" AND id = ?");
+            query.push_str(" WHERE id = ?");
         }
         query.push_str(" ORDER BY updated_at DESC LIMIT 20");
 
         let rows = if let Some(provider_id) = provider_id.as_deref() {
             sqlx::query(&query)
-                .bind(&request.user_id)
                 .bind(provider_id)
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query(&query).bind(&request.user_id).fetch_all(&self.pool).await?
+            sqlx::query(&query).fetch_all(&self.pool).await?
         };
 
         let providers = rows
@@ -985,8 +987,9 @@ impl SqliteFeedbackDiagnosticsRepository {
         .bind(&request.user_id)
         .fetch_one(&self.pool)
         .await?;
-        let provider_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM providers WHERE user_id = ?")
-            .bind(&request.user_id)
+        // Deployment-global, so not scoped by user — see
+        // `IProviderRepository::list`.
+        let provider_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM providers")
             .fetch_one(&self.pool)
             .await?;
         let agent_count: i64 =
@@ -1489,16 +1492,17 @@ impl SqliteFeedbackDiagnosticsRepository {
         }))
     }
 
-    async fn collect_global_provider_health(&self, user_id: &str) -> Result<Value, DbError> {
+    /// ⚠️ `user_id` is accepted and ignored: `providers` is deployment-global in
+    /// this fork (see `IProviderRepository::list`), and "global provider health"
+    /// means the whole deployment's — that is the point of the report.
+    async fn collect_global_provider_health(&self, _user_id: &str) -> Result<Value, DbError> {
         let rows = sqlx::query(
             "SELECT id, platform, name, base_url, api_key_encrypted, models, enabled, capabilities, \
                     context_limit, model_enabled, model_health, is_full_url, created_at, updated_at \
              FROM providers \
-             WHERE user_id = ? \
              ORDER BY updated_at DESC, id DESC \
              LIMIT ?",
         )
-        .bind(user_id)
         .bind(GLOBAL_HEALTH_LIMIT)
         .fetch_all(&self.pool)
         .await?;

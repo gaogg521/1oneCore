@@ -207,9 +207,23 @@ async fn update_client_preferences(
 
 /// The account that owns this deployment's provider credentials.
 ///
-/// Providers are deployment-global — the table has no owner column — so the
-/// machine's operator is the only person whose keys these are. Everyone else
-/// reaching the same backend is a member of their org, not a co-owner.
+/// ⚠️ Fork decision, deliberately diverging from upstream. `7f8ed6c5` gave
+/// `providers` a `user_id` and scoped every read to the calling account. That
+/// is right for a personal multi-account install and wrong for how this fork is
+/// deployed: one machine runs the backend, the operator configures the
+/// company's keys once, and everyone else reaching it is a member of their org
+/// who is meant to USE those models, not to own a separate set. Per-user
+/// scoping would have shown every existing member an empty model list on
+/// upgrade.
+///
+/// So the column exists and the plumbing is upstream's, but every provider
+/// handler pins the scope here — the table stays deployment-global, as it was
+/// before the sync. Members share the operator's providers; what they cannot do
+/// is read the key out (see `may_see_provider_secrets`).
+///
+/// Per-member credentials are a different feature and already have their own
+/// path: enterprise model channels materialize a `managed_by='enterprise'` row
+/// per member with a revocable channel token (migration 041).
 const PROVIDER_CREDENTIAL_OWNER: &str = "system_default_user";
 
 /// Whether this caller may see provider API keys in plaintext.
@@ -250,13 +264,21 @@ fn redact_provider_secret(mut provider: ProviderResponse) -> ProviderResponse {
     provider
 }
 
+/// `user` stays OPTIONAL: a request that reached us through the WebUI proxy
+/// without a resolvable identity must still get the list — with every key
+/// redacted — rather than a hard rejection. Making the extractor mandatory
+/// turns that case into an empty 500 and silently drops the redaction path
+/// this endpoint exists to exercise. Falls back to the local default user for
+/// the scope query, which is who an unauthenticated desktop request is.
 async fn list_providers(
     State(state): State<SystemRouterState>,
-    Extension(user): Extension<CurrentUser>,
+    user: Option<Extension<CurrentUser>>,
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<Vec<ProviderResponse>>>, ApiError> {
-    let providers = state.provider_service.list(&user.id).await.map_err(ApiError::from)?;
-    if may_see_provider_secrets(&headers, Some(&user)) {
+    // Pinned, not derived from the caller: see PROVIDER_CREDENTIAL_OWNER.
+    let scope_user_id = PROVIDER_CREDENTIAL_OWNER;
+    let providers = state.provider_service.list(scope_user_id).await.map_err(ApiError::from)?;
+    if may_see_provider_secrets(&headers, user.as_deref()) {
         return Ok(Json(ApiResponse::ok(providers)));
     }
     Ok(Json(ApiResponse::ok(
@@ -266,19 +288,21 @@ async fn list_providers(
 
 async fn create_provider(
     State(state): State<SystemRouterState>,
-    Extension(user): Extension<CurrentUser>,
+    user: Option<Extension<CurrentUser>>,
     headers: HeaderMap,
     body: Result<Json<CreateProviderRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ApiResponse<ProviderResponse>>), ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    // Pinned, not derived from the caller: see PROVIDER_CREDENTIAL_OWNER.
+    let scope_user_id = PROVIDER_CREDENTIAL_OWNER;
     let provider = state
         .provider_service
-        .create(&user.id, req)
+        .create(scope_user_id, req)
         .await
         .map_err(ApiError::from)?;
     // Echoing the key back would hand it to a caller the list endpoint would
     // have redacted for.
-    let provider = if may_see_provider_secrets(&headers, Some(&user)) {
+    let provider = if may_see_provider_secrets(&headers, user.as_deref()) {
         provider
     } else {
         redact_provider_secret(provider)
@@ -288,18 +312,20 @@ async fn create_provider(
 
 async fn update_provider(
     State(state): State<SystemRouterState>,
-    Extension(user): Extension<CurrentUser>,
+    user: Option<Extension<CurrentUser>>,
     headers: HeaderMap,
     Path(id): Path<String>,
     body: Result<Json<UpdateProviderRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<ProviderResponse>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    // Pinned, not derived from the caller: see PROVIDER_CREDENTIAL_OWNER.
+    let scope_user_id = PROVIDER_CREDENTIAL_OWNER;
     let provider = state
         .provider_service
-        .update(&user.id, &id, req)
+        .update(scope_user_id, &id, req)
         .await
         .map_err(ApiError::from)?;
-    let provider = if may_see_provider_secrets(&headers, Some(&user)) {
+    let provider = if may_see_provider_secrets(&headers, user.as_deref()) {
         provider
     } else {
         redact_provider_secret(provider)

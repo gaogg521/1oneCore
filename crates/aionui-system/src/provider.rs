@@ -20,7 +20,10 @@ impl ProviderService {
         Self { repo, encryption_key }
     }
 
-    /// List all providers (scoped to `user_id`) with their plaintext API keys.
+    /// List all providers on this deployment with their plaintext API keys.
+    ///
+    /// ⚠️ `user_id` does not scope the result — `providers` is deployment-global
+    /// in this fork. See `IProviderRepository::list`.
     ///
     /// Rows whose API key cannot be decrypted (for example because the
     /// encryption key changed) are returned with an empty `api_key` and
@@ -594,9 +597,9 @@ mod tests {
         let svc = ProviderService::new(Arc::clone(&repo), TEST_KEY);
         let foreign_key_svc = ProviderService::new(repo, [0x99u8; 32]);
 
-        let good = svc.create(sample_create_request()).await.unwrap();
+        let good = svc.create(TEST_USER_ID, sample_create_request()).await.unwrap();
         let undecryptable = foreign_key_svc
-            .create(CreateProviderRequest {
+            .create(TEST_USER_ID, CreateProviderRequest {
                 name: "Undecryptable".into(),
                 ..sample_create_request()
             })
@@ -607,7 +610,7 @@ mod tests {
         // surfaced with an empty api_key + Unrecoverable status (not hidden),
         // so the UI can prompt the user to re-enter it rather than the
         // provider silently vanishing.
-        let all = svc.list().await.unwrap();
+        let all = svc.list(TEST_USER_ID).await.unwrap();
         assert_eq!(all.len(), 2);
 
         let good_resp = all.iter().find(|p| p.id == good.id).unwrap();

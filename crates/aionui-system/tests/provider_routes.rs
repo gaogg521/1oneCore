@@ -30,6 +30,9 @@ use aionui_system::{
 const TEST_ENCRYPTION_KEY: [u8; 32] = [0x42; 32];
 const TEST_USER_ID: &str = "user-1";
 const OTHER_USER_ID: &str = "user-2";
+/// Mirrors `routes.rs`'s `PROVIDER_SCOPE_FALLBACK_USER` — the identity a request
+/// with no resolved user falls back to.
+const OPERATOR_USER_ID: &str = "system_default_user";
 
 fn build_state(db: &aionui_db::Database) -> SystemRouterState {
     let provider_repo = Arc::new(SqliteProviderRepository::new(db.pool().clone()));
@@ -54,7 +57,7 @@ async fn setup() -> (axum::Router, aionui_db::Database) {
     let db = init_database_memory().await.unwrap();
     for user_id in [TEST_USER_ID, OTHER_USER_ID] {
         sqlx::query(
-            "INSERT INTO users (id, user_type, username, password_hash, status, session_generation, created_at, updated_at) \
+            "INSERT OR IGNORE INTO users (id, user_type, username, password_hash, status, session_generation, created_at, updated_at) \
              VALUES (?, 'local', ?, '', 'active', 0, 1, 1)",
         )
         .bind(user_id)
@@ -182,79 +185,76 @@ async fn list_providers_returns_plaintext_api_key() {
     assert!(!api_key.contains("***"));
 }
 
-/// Providers are deployment-global: there is no owner column, so the keys are
-/// the machine operator's. A member of their org reaching the same backend over
-/// the WebUI must not be able to walk away with a billable credential, so the
-/// key is redacted for everyone the request did not come from the desktop app
-/// or the operator's own account.
+fn webui_get_request_for_user(user_id: &str, uri: &str) -> Request<Body> {
+    let mut req = get_request_for_user(user_id, uri);
+    req.headers_mut().insert(
+        aionui_auth::WEBUI_PROXY_HEADER,
+        aionui_auth::WEBUI_PROXY_VALUE.parse().unwrap(),
+    );
+    req
+}
+
+/// The member-facing case this fork's provider sharing exists for: an org
+/// member on the WebUI SEES the deployment's providers — name, models, the row
+/// is fully selectable — but the key comes back masked. Seeing the row is what
+/// lets them pick a model; masking the key is what stops them walking off with
+/// a billable credential.
 #[tokio::test]
-async fn list_providers_redacts_api_key_for_an_org_member_over_the_webui() {
+async fn list_providers_shows_the_row_but_masks_the_key_for_a_member() {
     let (_app, db) = setup().await;
     create_one(&db).await;
 
     let app2 = system_routes(build_state(&db));
-    let request = Request::builder()
-        .method("GET")
-        .uri("/api/providers")
-        .header(aionui_auth::WEBUI_PROXY_HEADER, aionui_auth::WEBUI_PROXY_VALUE)
-        .extension(aionui_auth::CurrentUser {
-            id: "sso_member_42".to_string(),
-            username: "member".to_string(),
-        })
-        .body(Body::empty())
+    let resp = app2
+        .oneshot(webui_get_request_for_user(OTHER_USER_ID, "/api/providers"))
+        .await
         .unwrap();
-    let resp = app2.oneshot(request).await.unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
+    assert_eq!(
+        json["data"].as_array().unwrap().len(),
+        1,
+        "a member must see the operator's providers, or they have no models at all"
+    );
     let api_key = json["data"][0]["api_key"].as_str().unwrap();
     assert_eq!(api_key, "***");
     assert!(!api_key.contains("sk-ant"));
-    // Everything else stays visible — the member can still pick this provider.
     assert_eq!(json["data"][0]["name"].as_str().unwrap(), "Anthropic");
 }
 
-/// The operator using the WebUI from a browser is still the operator.
+/// The operator using the WebUI from a browser is still the operator, so the
+/// key stays in the clear for that session — otherwise configuring providers
+/// from the browser would be impossible.
 #[tokio::test]
 async fn list_providers_keeps_plaintext_for_the_operator_over_the_webui() {
     let (_app, db) = setup().await;
     create_one(&db).await;
 
     let app2 = system_routes(build_state(&db));
-    let request = Request::builder()
-        .method("GET")
-        .uri("/api/providers")
-        .header(aionui_auth::WEBUI_PROXY_HEADER, aionui_auth::WEBUI_PROXY_VALUE)
-        .extension(aionui_auth::CurrentUser {
-            id: "system_default_user".to_string(),
-            username: "admin".to_string(),
-        })
-        .body(Body::empty())
+    let resp = app2
+        .oneshot(webui_get_request_for_user(OPERATOR_USER_ID, "/api/providers"))
+        .await
         .unwrap();
-    let resp = app2.oneshot(request).await.unwrap();
 
+    assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert_eq!(json["data"][0]["api_key"].as_str().unwrap(), "sk-ant-api03-test1234");
 }
 
-/// A proxied request with no resolved identity must not fall through to
-/// plaintext — the absent extension is a misconfiguration, not a licence.
+/// The desktop app talking to its own co-located backend (no proxy header)
+/// gets its own key in the clear — that is what lets the settings page show a
+/// saved key for editing.
 #[tokio::test]
-async fn list_providers_redacts_a_proxied_request_with_no_identity() {
+async fn list_providers_keeps_plaintext_for_the_local_desktop() {
     let (_app, db) = setup().await;
     create_one(&db).await;
 
     let app2 = system_routes(build_state(&db));
-    let request = Request::builder()
-        .method("GET")
-        .uri("/api/providers")
-        .header(aionui_auth::WEBUI_PROXY_HEADER, aionui_auth::WEBUI_PROXY_VALUE)
-        .body(Body::empty())
-        .unwrap();
-    let resp = app2.oneshot(request).await.unwrap();
+    let resp = app2.oneshot(get_request("/api/providers")).await.unwrap();
 
     let json = body_json(resp).await;
-    assert_eq!(json["data"][0]["api_key"].as_str().unwrap(), "***");
+    assert_eq!(json["data"][0]["api_key"].as_str().unwrap(), "sk-ant-api03-test1234");
 }
 
 // ===========================================================================
@@ -599,10 +599,13 @@ async fn update_provider_nonexistent() {
 }
 
 #[tokio::test]
-async fn cross_user_provider_update_delete_are_not_found() {
+async fn providers_are_shared_across_accounts_on_one_deployment() {
     let (_app, db) = setup().await;
     let (_, id) = create_one(&db).await;
 
+    // Another signed-in account reaching the same backend edits the same row —
+    // there is one set of company credentials per deployment, not one per
+    // account. See `IProviderRepository::list` for the reasoning.
     let update_app = system_routes(build_state(&db));
     let resp = update_app
         .oneshot(json_request_for_user(
@@ -613,20 +616,32 @@ async fn cross_user_provider_update_delete_are_not_found() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let owner_app = system_routes(build_state(&db));
+    let resp = owner_app.oneshot(get_request("/api/providers")).await.unwrap();
+    let json = body_json(resp).await;
+    assert_eq!(json["data"][0]["id"], id);
+    assert_eq!(json["data"][0]["name"], "Other User Update");
 
     let delete_app = system_routes(build_state(&db));
     let resp = delete_app
         .oneshot(delete_request_for_user(OTHER_USER_ID, &format!("/api/providers/{id}")))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(resp.status(), StatusCode::OK);
 
-    let owner_app = system_routes(build_state(&db));
-    let resp = owner_app.oneshot(get_request("/api/providers")).await.unwrap();
-    let json = body_json(resp).await;
-    assert_eq!(json["data"][0]["id"], id);
-    assert_eq!(json["data"][0]["name"], "Anthropic");
+    let after = system_routes(build_state(&db));
+    let resp = after.oneshot(get_request("/api/providers")).await.unwrap();
+    assert_eq!(body_json(resp).await["data"].as_array().unwrap().len(), 0);
+
+    // Unknown ids are still 404 — sharing is not "anything succeeds".
+    let missing = system_routes(build_state(&db));
+    let resp = missing
+        .oneshot(delete_request_for_user(OTHER_USER_ID, "/api/providers/no-such-id"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 // ===========================================================================
