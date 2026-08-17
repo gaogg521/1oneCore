@@ -202,7 +202,9 @@ fn read_head(repo: &Repository) -> Option<ScmHead> {
         Ok(head) => {
             let detached = repo.head_detached().unwrap_or(false);
             Some(ScmHead {
-                name: head.shorthand().map(str::to_owned),
+                // git2 0.21: Reference::shorthand() returns Result (was Option).
+                // `.ok()` keeps the prior "non-UTF-8 / no shorthand → None" behavior.
+                name: head.shorthand().ok().map(str::to_owned),
                 detached: detached.then_some(true),
             })
         }
@@ -375,7 +377,9 @@ fn collect_status(repo: &Repository) -> Result<(Vec<ScmResource>, bool, bool, Op
     let mut truncated = false;
 
     for entry in statuses_owned.iter() {
-        let Some(path) = entry.path() else {
+        // git2 0.21: StatusEntry::path() returns Result (was Option). `.ok()` keeps
+        // the prior "non-UTF-8 path → skip" behavior.
+        let Some(path) = entry.path().ok() else {
             // Non-UTF-8 path: skipped rather than lossily rendered, since a
             // mangled path would not round-trip back to a real file.
             tracing::warn!("scm status: skipping entry with non-UTF-8 path");

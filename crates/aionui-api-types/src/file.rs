@@ -1,7 +1,7 @@
 use aionui_common::FileChangeOperation;
 use serde::{Deserialize, Serialize};
 
-use crate::chat_file::ChatFileRef;
+use crate::chat_file::{ChatFileRef, TaggedChatFileRef};
 
 // ---------------------------------------------------------------------------
 // Content endpoint (ChatFileRef identity) — Request DTOs
@@ -70,18 +70,20 @@ impl StreamQuery {
     pub fn to_chat_file_ref(&self) -> Result<ChatFileRef, &'static str> {
         match self.kind.as_str() {
             "project" => match (self.pe_id.clone(), self.relative_path.clone()) {
-                (Some(pe_id), Some(relative_path)) => Ok(ChatFileRef::Project { pe_id, relative_path }),
+                (Some(pe_id), Some(relative_path)) => {
+                    Ok(ChatFileRef::Tagged(TaggedChatFileRef::Project { pe_id, relative_path }))
+                }
                 _ => Err("project stream requires pe_id and relative_path"),
             },
             "upload" => self
                 .path
                 .clone()
-                .map(|path| ChatFileRef::Upload { path })
+                .map(|path| ChatFileRef::Tagged(TaggedChatFileRef::Upload { path }))
                 .ok_or("upload stream requires path"),
             "local" => self
                 .path
                 .clone()
-                .map(|path| ChatFileRef::Local { path })
+                .map(|path| ChatFileRef::Tagged(TaggedChatFileRef::Local { path }))
                 .ok_or("local stream requires path"),
             _ => Err("unknown stream kind (expected project|upload|local)"),
         }
