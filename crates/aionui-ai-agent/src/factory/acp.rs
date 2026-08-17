@@ -1165,7 +1165,10 @@ mod tests {
         )
         .await
         .expect("resolved release-pinned builtin command spec");
-        assert_eq!(spec.args, vec!["-y", "pi-acp@0.0.32"]);
+        // Tracks `aionui-runtime/resources/acp-registry-npx-lock.json`. This one is behind
+        // `cfg(unix)`, so a stale pin here is invisible on Windows and only surfaces on the
+        // macOS gate — which is precisely how it got left at 0.0.32.
+        assert_eq!(spec.args, vec!["-y", "pi-acp@0.0.33"]);
     }
 
     #[cfg(unix)]

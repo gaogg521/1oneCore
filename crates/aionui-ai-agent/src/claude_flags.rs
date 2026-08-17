@@ -27,8 +27,8 @@ const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Lowest claude version VERIFIED to accept `--thinking-display`.
 ///
 /// This is a verified floor, NOT the introduction version: 2.1.0 hard-errors with
-/// `unknown option '--thinking-display'`, while 2.1.191 / 2.1.215 (our bundled
-/// pin) / 2.1.218 / 2.1.220 all accept it. Everything between 2.1.0 and 2.1.191 is
+/// `unknown option '--thinking-display'`, while 2.1.191 / 2.1.215 / 2.1.218 /
+/// 2.1.220 all accept it (live-probed). Everything between 2.1.0 and 2.1.191 is
 /// untested and is treated as unsupported, because the failure mode of guessing
 /// wrong is a dead session rather than a missing thinking card.
 const THINKING_DISPLAY_MIN_VERSION: (u32, u32, u32) = (2, 1, 191);
@@ -126,7 +126,7 @@ mod tests {
         assert!(!supported("2.1.0"), "2.1.0 hard-errors on --thinking-display");
         assert!(!supported("2.1.190"), "below the verified floor stays off");
         assert!(supported("2.1.191"), "lowest live-probed OK version");
-        assert!(supported("2.1.215"), "our bundled CLAUDE_CLI_VERSION pin");
+        assert!(supported("2.1.233"), "our bundled CLAUDE_CLI_VERSION pin");
         assert!(supported("2.1.220"));
         assert!(supported("3.0.0"), "a future major must not regress the gate");
     }
