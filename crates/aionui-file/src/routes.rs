@@ -27,7 +27,7 @@ use aionui_common::constants::UPLOAD_MAX_SIZE;
 
 use crate::browse;
 use crate::error::FileError;
-use crate::traits::{FileServiceRef, FileWatchServiceRef, ItemRevealerRef, SnapshotServiceRef};
+use crate::traits::{ClipboardWriterRef, FileServiceRef, FileWatchServiceRef, ItemRevealerRef, SnapshotServiceRef};
 
 /// Request-body cap for `PUT /api/fs/content`, aligned with the 256 MB read cap
 /// so large files can be saved (the 10 MB global limit would otherwise 413).
@@ -121,6 +121,10 @@ pub struct FileRouterState {
     /// Reveals a resolved absolute path in the OS file manager
     /// (`/api/fs/reveal`). Injected by composition over the shell service.
     pub revealer: ItemRevealerRef,
+    /// Writes a resolved absolute path to the OS clipboard
+    /// (`/api/fs/copy-absolute-path`). Injected by composition over the shell
+    /// service; the path is written server-side and never returned to the client.
+    pub clipboard: ClipboardWriterRef,
     pub allowed_roots: Vec<std::path::PathBuf>,
     /// Roots permitted by the shallow `/api/fs/browse` endpoint. This is
     /// typically wider than `allowed_roots` (it includes `cwd`, Windows
@@ -176,6 +180,7 @@ pub fn file_routes(state: FileRouterState) -> Router {
         .route("/api/fs/remove", post(remove_entry))
         .route("/api/fs/rename", post(rename_entry))
         .route("/api/fs/temp", post(create_temp_file))
+        .route("/api/fs/copy-absolute-path", post(copy_absolute_path))
         .route("/api/fs/image-base64", post(get_image_base64))
         .route("/api/fs/fetch-remote-image", post(fetch_remote_image))
         .route("/api/fs/zip", post(create_zip))
@@ -383,6 +388,51 @@ async fn reveal_resolved(
 ) -> Result<(), FileError> {
     let abs = absolute_path.ok_or_else(|| FileError::BadRequest("reveal target is not a local path".to_owned()))?;
     revealer.reveal(&abs).await
+}
+
+/// `POST /api/fs/copy-absolute-path` — resolve a pe-addressed file/dir to its
+/// absolute device path and write it to the OS clipboard, for the Explorer "copy
+/// absolute path" action. Returns void.
+///
+/// Mirrors `/api/fs/reveal`: the backend resolves the path server-side and
+/// performs the OS action (here: a clipboard write) itself, so the absolute path
+/// is NEVER returned to the client (the error branch carries coded errors only,
+/// no path). A non-local reference (a folder root that no longer resolves)
+/// yields a path-free BadRequest.
+async fn copy_absolute_path(
+    State(state): State<FileRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    body: Result<Json<RevealItemRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let resolved = state
+        .project
+        .resolve_reference(
+            &user.id,
+            aionui_project::ReferenceInput {
+                pe_id: req.pe_id,
+                relative_path: req.relative_path,
+                op: aionui_project::FileOp::Read,
+            },
+        )
+        .await
+        .map_err(ApiError::from)?;
+    copy_absolute_path_resolved(state.clipboard.as_ref(), resolved.absolute_path).await?;
+    Ok(Json(ApiResponse::success()))
+}
+
+/// Write the resolved absolute path to the clipboard via the clipboard port, or
+/// fail with a path-free `BadRequest` when the reference is not a local path.
+/// Split from the handler so the resolve → clipboard wiring (no-local-path /
+/// clipboard-failure mapping) is unit-testable with a mock writer, independent of
+/// the project service (`resolve_reference` is covered in `aionui-project`).
+/// Symmetric with [`reveal_resolved`].
+async fn copy_absolute_path_resolved(
+    clipboard: &dyn crate::traits::IClipboardWriter,
+    absolute_path: Option<String>,
+) -> Result<(), FileError> {
+    let abs = absolute_path.ok_or_else(|| FileError::BadRequest("copy target is not a local path".to_owned()))?;
+    clipboard.write_text(&abs).await
 }
 
 async fn remove_entry(
@@ -1116,6 +1166,65 @@ mod tests {
             matches!(result, Err(FileError::RevealFailed(_))),
             "reveal failure must propagate, got {result:?}"
         );
+    }
+
+    // -- copy_absolute_path_resolved: resolve → clipboard wiring (mock seam) ----
+
+    /// Records the text handed to `write_text`, and optionally fails.
+    struct MockClipboardWriter {
+        calls: std::sync::Mutex<Vec<String>>,
+        fail: bool,
+    }
+    impl MockClipboardWriter {
+        fn new(fail: bool) -> Self {
+            Self {
+                calls: std::sync::Mutex::new(Vec::new()),
+                fail,
+            }
+        }
+    }
+    #[async_trait::async_trait]
+    impl crate::traits::IClipboardWriter for MockClipboardWriter {
+        async fn write_text(&self, text: &str) -> Result<(), FileError> {
+            self.calls.lock().unwrap().push(text.to_owned());
+            if self.fail {
+                Err(FileError::Internal("mock clipboard failed".to_owned()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn copy_absolute_path_resolved_writes_the_absolute_path_to_the_clipboard() {
+        // The backend performs the OS action (clipboard write) itself; the abs is
+        // never returned — the handler returns void on success.
+        let mock = MockClipboardWriter::new(false);
+        let result = copy_absolute_path_resolved(&mock, Some("/abs/target.txt".to_owned())).await;
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        assert_eq!(
+            *mock.calls.lock().unwrap(),
+            vec!["/abs/target.txt".to_owned()],
+            "clipboard must receive the resolved absolute path"
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_absolute_path_resolved_without_local_path_is_bad_request_and_skips_clipboard() {
+        let mock = MockClipboardWriter::new(false);
+        let result = copy_absolute_path_resolved(&mock, None).await;
+        assert!(
+            matches!(result, Err(FileError::BadRequest(_))),
+            "non-local target must be BadRequest, got {result:?}"
+        );
+        assert!(mock.calls.lock().unwrap().is_empty(), "clipboard must not be called");
+    }
+
+    #[tokio::test]
+    async fn copy_absolute_path_resolved_propagates_clipboard_failure() {
+        let mock = MockClipboardWriter::new(true);
+        let result = copy_absolute_path_resolved(&mock, Some("/abs/x".to_owned())).await;
+        assert!(result.is_err(), "clipboard failure must propagate, got {result:?}");
     }
 
     #[test]
