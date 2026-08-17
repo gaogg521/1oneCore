@@ -117,7 +117,7 @@ dependencies = [
 [[package]]
 name = "aion-agent"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=master#e4d1638bbcb3e9394b6c8d97bbbdc42bcde46767"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#1d485e551511fb390cdf70f87380366a59cf4835"
 dependencies = [
  "aion-compact",
  "aion-config",
@@ -148,7 +148,7 @@ dependencies = [
 [[package]]
 name = "aion-compact"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=master#e4d1638bbcb3e9394b6c8d97bbbdc42bcde46767"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#1d485e551511fb390cdf70f87380366a59cf4835"
 dependencies = [
  "regex",
  "serde",
@@ -160,7 +160,7 @@ dependencies = [
 [[package]]
 name = "aion-config"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=master#e4d1638bbcb3e9394b6c8d97bbbdc42bcde46767"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#1d485e551511fb390cdf70f87380366a59cf4835"
 dependencies = [
  "aion-compact",
  "aion-process",
@@ -185,7 +185,7 @@ dependencies = [
 [[package]]
 name = "aion-mcp"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=master#e4d1638bbcb3e9394b6c8d97bbbdc42bcde46767"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#1d485e551511fb390cdf70f87380366a59cf4835"
 dependencies = [
  "aion-config",
  "aion-protocol",
@@ -206,7 +206,7 @@ dependencies = [
 [[package]]
 name = "aion-memory"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=master#e4d1638bbcb3e9394b6c8d97bbbdc42bcde46767"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#1d485e551511fb390cdf70f87380366a59cf4835"
 dependencies = [
  "aion-config",
  "chrono",
@@ -220,7 +220,7 @@ dependencies = [
 [[package]]
 name = "aion-process"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=master#e4d1638bbcb3e9394b6c8d97bbbdc42bcde46767"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#1d485e551511fb390cdf70f87380366a59cf4835"
 dependencies = [
  "libc",
  "tokio",
@@ -231,7 +231,7 @@ dependencies = [
 [[package]]
 name = "aion-protocol"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=master#e4d1638bbcb3e9394b6c8d97bbbdc42bcde46767"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#1d485e551511fb390cdf70f87380366a59cf4835"
 dependencies = [
  "aion-types",
  "serde",
@@ -244,7 +244,7 @@ dependencies = [
 [[package]]
 name = "aion-providers"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=master#e4d1638bbcb3e9394b6c8d97bbbdc42bcde46767"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#1d485e551511fb390cdf70f87380366a59cf4835"
 dependencies = [
  "aion-config",
  "aion-types",
@@ -273,7 +273,7 @@ dependencies = [
 [[package]]
 name = "aion-skills"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=master#e4d1638bbcb3e9394b6c8d97bbbdc42bcde46767"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#1d485e551511fb390cdf70f87380366a59cf4835"
 dependencies = [
  "aion-config",
  "aion-mcp",
@@ -300,11 +300,12 @@ dependencies = [
 [[package]]
 name = "aion-tools"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=master#e4d1638bbcb3e9394b6c8d97bbbdc42bcde46767"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#1d485e551511fb390cdf70f87380366a59cf4835"
 dependencies = [
  "aion-config",
  "aion-process",
  "aion-protocol",
+ "aion-providers",
  "aion-types",
  "anyhow",
  "async-trait",
@@ -322,7 +323,7 @@ dependencies = [
 [[package]]
 name = "aion-types"
 version = "0.2.11"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=master#e4d1638bbcb3e9394b6c8d97bbbdc42bcde46767"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#1d485e551511fb390cdf70f87380366a59cf4835"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -7245,7 +7246,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 [[package]]
 name = "workspace-hack"
 version = "0.1.0"
-source = "git+https://github.com/gaogg521/aionrs.git?branch=master#e4d1638bbcb3e9394b6c8d97bbbdc42bcde46767"
+source = "git+https://github.com/gaogg521/aionrs.git?branch=master#1d485e551511fb390cdf70f87380366a59cf4835"
 dependencies = [
  "bitflags",
  "cc",

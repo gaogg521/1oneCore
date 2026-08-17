@@ -18,8 +18,8 @@ use aionui_api_types::{
     GetImageBase64Request, ListWorkspaceFilesRequest, ReadContentRequest, ReadFileBufferRequest, ReadFileRequest,
     RemoveEntryRequest, RenameRequest, RenameResponse, RevealItemRequest, SnapshotBaselineRequest,
     SnapshotCompareResponse, SnapshotDiscardRequest, SnapshotInfoResponse, SnapshotStageRequest,
-    SnapshotWorkspaceRequest, StreamQuery, WorkspaceFlatFileResponse, WorkspaceOfficeWatchRequest,
-    WriteContentRequest, WriteFileRequest, ZipRequest,
+    SnapshotWorkspaceRequest, StreamQuery, WorkspaceFlatFileResponse, WorkspaceOfficeWatchRequest, WriteContentRequest,
+    WriteFileRequest, ZipRequest,
 };
 use aionui_auth::CurrentUser;
 use aionui_common::ApiError;

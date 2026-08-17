@@ -98,6 +98,9 @@ impl ProviderHealthCheckService {
             max_tool_call_malformed_turns: Some(1),
             max_tool_call_failure_turns: Some(1),
             compat_overrides,
+            // A health probe answers "OK" and never touches attachments, so it
+            // has no use for an image-reading delegate.
+            vision_model: None,
             session_directory: self.data_dir.join("aionrs-health-check-sessions"),
             session_mode: None,
             skills: Vec::new(),

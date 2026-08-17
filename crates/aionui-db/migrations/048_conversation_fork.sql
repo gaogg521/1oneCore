@@ -1,0 +1,51 @@
+-- Conversation fork groundwork (feature: fork-as-new-conversation).
+--
+-- Upstream ships this as migration 036; this fork renumbered it to 048 because
+-- 036 is already taken here by `036_marketplace_persona_display_fields.sql`.
+--
+-- `messages.backend_turn_id` — the backend-side turn anchor. A backend that can
+-- fork at an arbitrary turn (aionrs `ForkBoundary::AtTurn`, codex's
+-- `thread/fork {lastTurnId}`) needs a stable id for the cut point. Our runtime
+-- `turn_<shortid>` ids are minted by the conversation layer and have NO relation
+-- to the backend's internal turn id, so the manager emits the backend turn id
+-- when a turn starts and the stream persistence layer stamps it onto every
+-- message row written for that turn. Fork-point resolution is then a pure DB
+-- lookup ("nearest non-NULL at or before the fork point"). Rows written before
+-- this column existed stay NULL: HEAD forks never need the anchor, and a
+-- mid-history fork request that cannot resolve an anchor is rejected explicitly
+-- (FORK_POINT_UNSUPPORTED) rather than silently degraded to a HEAD fork.
+--
+-- ⚠️ FORK DIVERGENCE — the constructed claude/codex capability seeds that
+-- upstream ships in this migration are deliberately NOT carried over.
+--
+-- Upstream's rationale for hand-seeding `session_capabilities.fork` onto the
+-- builtin claude (`2d23ff1c`) and codex (`8e1acf31`) rows is, quoting its own
+-- comment: "claude and codex are routed as direct CLI connections and never
+-- perform an ACP handshake, so their column stays NULL forever — which is
+-- exactly why a constructed value here is safe: nothing will overwrite it."
+--
+-- That premise is FALSE on this fork. `route_for_backend`
+-- (`aionui-ai-agent/src/factory/acp.rs`) deliberately maps claude/codex to
+-- `BackendRoute::AcpManager`, not `DirectCli`, so the bridge env injection
+-- survives (there are tests locking this down). Consequences:
+--
+--   1. claude/codex DO perform an ACP `initialize` handshake here, and
+--      `apply_handshake` REPLACES `agent_metadata.agent_capabilities`
+--      wholesale (see `sqlite_agent_metadata.rs`) rather than merging — so a
+--      constructed value would be silently wiped on the next connect.
+--   2. Until that handshake lands, a constructed value would advertise a fork
+--      surface the live ACP agent may not actually implement, producing an
+--      entry point that fails on click.
+--
+-- Both outcomes are worse than having no seed. On this fork the live
+-- `sessionCapabilities.fork` from the ACP handshake is the single source of
+-- truth for claude/codex, which is also the gate `open_session_fork` already
+-- enforces as its second line of defense. aionrs is seeded separately in 049,
+-- where upstream's "never handshakes, so nothing overwrites it" rationale does
+-- still hold.
+--
+-- Antigravity (agy) deliberately gets NO fork key, matching upstream: per
+-- product decision it is not supported (its only fork surface is an internal
+-- RPC / TUI command, not reachable from headless spawns).
+
+ALTER TABLE messages ADD COLUMN backend_turn_id TEXT;

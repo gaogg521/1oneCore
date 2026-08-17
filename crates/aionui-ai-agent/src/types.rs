@@ -143,6 +143,14 @@ pub struct AionrsResolvedConfig {
     pub max_tool_call_failure_turns: Option<usize>,
     /// Provider-specific compat overrides.
     pub compat_overrides: AionrsCompatOverrides,
+    /// A vision-capable model from the user's configured providers that the
+    /// `ReadImage` tool delegates to when [`Self::model`] cannot accept images.
+    ///
+    /// `None` means either the session model can see images itself (aionrs then
+    /// uses it directly) or the user has no vision-capable model at all, in
+    /// which case `ReadImage` reports images as unreadable instead of letting
+    /// the agent invent their contents.
+    pub vision_model: Option<aion_config::config::VisionModelConfig>,
     /// Directory for aionrs session persistence files.
     pub session_directory: PathBuf,
     /// Session mode (default, auto_edit, yolo).

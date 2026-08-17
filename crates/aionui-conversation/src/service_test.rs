@@ -2735,6 +2735,7 @@ async fn list_artifacts_includes_legacy_cron_trigger_messages() {
             status: Some("finish".into()),
             hidden: false,
             created_at: 1234,
+            backend_turn_id: None,
         },
     )
     .await
@@ -5244,6 +5245,7 @@ async fn latest_conversation_error_message_prefers_error_detail() {
             status: Some("error".into()),
             hidden: false,
             created_at: 10,
+            backend_turn_id: None,
         },
     )
     .await
@@ -5564,6 +5566,7 @@ async fn startup_recovery_closes_stale_runtime_messages_without_failure_tip() {
             status: Some("work".into()),
             hidden: false,
             created_at: 1,
+            backend_turn_id: None,
         },
     )
     .await
@@ -5580,6 +5583,7 @@ async fn startup_recovery_closes_stale_runtime_messages_without_failure_tip() {
             status: Some("pending".into()),
             hidden: false,
             created_at: 2,
+            backend_turn_id: None,
         },
     )
     .await
@@ -8120,6 +8124,7 @@ async fn insert_raw_message_persists_row_and_broadcasts_stream() {
         status: Some("finish".into()),
         hidden: false,
         created_at: 1234,
+        backend_turn_id: None,
     };
 
     svc.insert_raw_message("user_1", &row).await.unwrap();

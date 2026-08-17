@@ -521,7 +521,9 @@ pub fn build_file_state(services: &AppServices) -> Result<FileRouterState, Route
     // Reveal-in-file-manager for `/api/fs/reveal`: an adapter over the shell
     // service, injected as the file crate's revealer port (keeps aionui-file
     // free of a shell dependency).
-    let shell = Arc::new(aionui_shell::ShellService::new(Arc::new(aionui_shell::DefaultSystemOpener)));
+    let shell = Arc::new(aionui_shell::ShellService::new(Arc::new(
+        aionui_shell::DefaultSystemOpener,
+    )));
     let revealer: aionui_file::ItemRevealerRef = Arc::new(super::item_revealer::ShellItemRevealer::new(shell.clone()));
     // Clipboard capability for `/api/fs/copy-absolute-path`: the backend resolves
     // the path and writes it to the clipboard itself, so the abs never returns.
