@@ -58,16 +58,6 @@ pub struct ResourceRef {
     pub relative_path: String,
 }
 
-/// Content encoding for `fs/read` / `fs/write`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Encoding {
-    #[serde(rename = "utf-8")]
-    #[default]
-    Utf8,
-    Base64,
-}
-
 // ── Method params ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,21 +73,6 @@ pub struct SubscribeParams {
 #[derive(Debug, Clone, Deserialize)]
 pub struct UnsubscribeParams {
     pub targets: Vec<ResourceRef>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ReadParams {
-    pub file: ResourceRef,
-    #[serde(default)]
-    pub encoding: Option<Encoding>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct WriteParams {
-    pub file: ResourceRef,
-    pub content: String,
-    #[serde(default)]
-    pub encoding: Option<Encoding>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

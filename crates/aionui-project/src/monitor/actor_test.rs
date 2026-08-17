@@ -223,100 +223,6 @@ async fn subscribe_parent_escape_is_invalid_relative_path() {
 }
 
 #[tokio::test]
-async fn read_existing_file_returns_utf8() {
-    let (mut actor, _rx, push, pe, dir, _db) = setup().await;
-    std::fs::write(dir.path().join("a.txt"), b"hello").unwrap();
-
-    actor
-        .dispatch_frame(
-            "1",
-            "system_default_user",
-            request(4, "fs/read", json!({"file":dir_ref(&pe, "a.txt")})),
-        )
-        .await;
-    let reply = push.last_for("1").unwrap();
-    assert_eq!(reply["result"]["content"], "hello");
-    assert_eq!(reply["result"]["encoding"], "utf-8");
-}
-
-#[tokio::test]
-async fn read_missing_file_is_resource_not_found() {
-    let (mut actor, _rx, push, pe, _dir, _db) = setup().await;
-    actor
-        .dispatch_frame(
-            "1",
-            "system_default_user",
-            request(5, "fs/read", json!({"file":dir_ref(&pe, "missing.txt")})),
-        )
-        .await;
-    let reply = push.last_for("1").unwrap();
-    assert_eq!(reply["error"]["code"], -32002);
-    assert_eq!(reply["error"]["message"], "resource_not_found");
-    assert_eq!(reply["error"]["data"]["relative_path"], "missing.txt");
-}
-
-#[tokio::test]
-async fn read_non_utf8_falls_back_to_base64() {
-    let (mut actor, _rx, push, pe, dir, _db) = setup().await;
-    std::fs::write(dir.path().join("bin"), [0xff, 0xfe, 0x00]).unwrap();
-    actor
-        .dispatch_frame(
-            "1",
-            "system_default_user",
-            request(6, "fs/read", json!({"file":dir_ref(&pe, "bin")})),
-        )
-        .await;
-    let reply = push.last_for("1").unwrap();
-    assert_eq!(reply["result"]["encoding"], "base64");
-    assert!(!reply["result"]["content"].as_str().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn write_then_read_roundtrip() {
-    let (mut actor, _rx, push, pe, _dir, _db) = setup().await;
-    actor
-        .dispatch_frame(
-            "1",
-            "system_default_user",
-            request(
-                7,
-                "fs/write",
-                json!({"file":dir_ref(&pe, "new.txt"),"content":"written"}),
-            ),
-        )
-        .await;
-    assert!(push.last_for("1").unwrap()["result"].is_object());
-
-    actor
-        .dispatch_frame(
-            "1",
-            "system_default_user",
-            request(8, "fs/read", json!({"file":dir_ref(&pe, "new.txt")})),
-        )
-        .await;
-    assert_eq!(push.last_for("1").unwrap()["result"]["content"], "written");
-}
-
-#[tokio::test]
-async fn write_base64_decodes_to_bytes() {
-    let (mut actor, _rx, push, pe, dir, _db) = setup().await;
-    // base64("hi") = "aGk="
-    actor
-        .dispatch_frame(
-            "1",
-            "system_default_user",
-            request(
-                9,
-                "fs/write",
-                json!({"file":dir_ref(&pe, "b.bin"),"content":"aGk=","encoding":"base64"}),
-            ),
-        )
-        .await;
-    assert!(push.last_for("1").unwrap()["result"].is_object());
-    assert_eq!(std::fs::read(dir.path().join("b.bin")).unwrap(), b"hi");
-}
-
-#[tokio::test]
 async fn mkdir_then_remove_roundtrip() {
     let (mut actor, _rx, push, pe, dir, _db) = setup().await;
     actor
@@ -440,6 +346,7 @@ async fn unsubscribe_is_notification_no_reply() {
 /// IO. Unix-only — creating a symlink on Windows needs elevated privilege; the
 /// `realpath_within` logic itself is platform-agnostic (walks the deepest
 /// existing ancestor), exercised on unix here and noted in the test report.
+/// Driven through `fs/mkdir` — any resolve-guarded command shares the guard.
 #[cfg(unix)]
 #[tokio::test]
 async fn command_symlink_escape_is_resource_outside_folder() {
@@ -453,7 +360,7 @@ async fn command_symlink_escape_is_resource_outside_folder() {
         .dispatch_frame(
             "1",
             "system_default_user",
-            request(20, "fs/read", json!({"file":dir_ref(&pe, "link/secret.txt")})),
+            request(20, "fs/mkdir", json!({"dir":dir_ref(&pe, "link/secret.txt")})),
         )
         .await;
     let reply = push.last_for("1").unwrap();

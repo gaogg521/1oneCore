@@ -3,7 +3,7 @@
 //! Parses one inner frame, routes by `method`, and drives the runtime:
 //! `initialize` handshakes; `fs/subscribe`/`fs/unsubscribe` go through the shard
 //! (identity resolved via [`ProjectService::resolve_reference`]); the file
-//! commands (`fs/read|write|mkdir|remove|rename`) resolve + realpath-guard, then
+//! commands (`fs/mkdir|remove|rename`) resolve + realpath-guard, then
 //! hit the provider directly. Responses/notifications go out via the actor's
 //! push port. Errors map to protocol codes ([`wire`]) with `pe_id`/`relative_path`
 //! context in `error.data`.
@@ -12,8 +12,6 @@
 
 use std::path::Path;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 
 use crate::canonical;
@@ -23,8 +21,8 @@ use crate::types::{FileOp, ReferenceInput, ResolvedResource};
 use super::actor::FsMonitorActor;
 use super::search::{self, ActiveSearch, SearchRoot};
 use super::wire::{
-    self, Encoding, InitializeParams, MkdirParams, ReadParams, RemoveParams, RenameParams, ResourceRef,
-    SearchCancelParams, SearchParams, SubscribeParams, UnsubscribeParams, WriteParams,
+    self, InitializeParams, MkdirParams, RemoveParams, RenameParams, ResourceRef, SearchCancelParams, SearchParams,
+    SubscribeParams, UnsubscribeParams,
 };
 
 impl FsMonitorActor {
@@ -49,8 +47,6 @@ impl FsMonitorActor {
             "initialize" => self.handle_initialize(session, id, params),
             "fs/subscribe" => self.handle_subscribe(session, user_id, id, params).await,
             "fs/unsubscribe" => self.handle_unsubscribe(session, user_id, params).await,
-            "fs/read" => self.handle_read(session, user_id, id, params).await,
-            "fs/write" => self.handle_write(session, user_id, id, params).await,
             "fs/mkdir" => self.handle_mkdir(session, user_id, id, params).await,
             "fs/remove" => self.handle_remove(session, user_id, id, params).await,
             "fs/rename" => self.handle_rename(session, user_id, id, params).await,
@@ -201,59 +197,6 @@ impl FsMonitorActor {
     }
 
     // ── file commands ───────────────────────────────────────────────────────
-
-    async fn handle_read(&mut self, session: &str, user_id: &str, id: Option<Value>, params: Value) {
-        let Ok(p) = serde_json::from_value::<ReadParams>(params) else {
-            self.push(session, invalid_params(id));
-            return;
-        };
-        let resolved = match self.resolve_guarded(user_id, &p.file, FileOp::Read).await {
-            Ok(r) => r,
-            Err((code, message)) => {
-                self.push(session, wire::error(id, code, message, ref_data(&p.file)));
-                return;
-            }
-        };
-        match self.runtime().provider().read(&resolved.resource_uri).await {
-            Ok(bytes) => {
-                // Byte count only — never the content itself.
-                tracing::info!(session, op = "read", pe_id = %p.file.pe_id, rel = %p.file.relative_path, bytes = bytes.len(), "fs command ok");
-                let (content, encoding) = encode_content(bytes, p.encoding.unwrap_or_default());
-                self.push(
-                    session,
-                    wire::success(id, json!({ "content": content, "encoding": encoding })),
-                );
-            }
-            Err(err) => {
-                let (code, message) = wire::fs_error_to_rpc(&err);
-                tracing::warn!(session, op = "read", pe_id = %p.file.pe_id, rel = %p.file.relative_path, code = message, "fs command failed");
-                self.push(session, wire::error(id, code, message, ref_data(&p.file)));
-            }
-        }
-    }
-
-    async fn handle_write(&mut self, session: &str, user_id: &str, id: Option<Value>, params: Value) {
-        let Ok(p) = serde_json::from_value::<WriteParams>(params) else {
-            self.push(session, invalid_params(id));
-            return;
-        };
-        let bytes = match decode_content(&p.content, p.encoding.unwrap_or_default()) {
-            Ok(b) => b,
-            Err(()) => {
-                self.push(session, invalid_params(id));
-                return;
-            }
-        };
-        let resolved = match self.resolve_guarded(user_id, &p.file, FileOp::Write).await {
-            Ok(r) => r,
-            Err((code, message)) => {
-                self.push(session, wire::error(id, code, message, ref_data(&p.file)));
-                return;
-            }
-        };
-        let outcome = self.runtime().provider().write(&resolved.resource_uri, &bytes).await;
-        self.reply_unit(session, id, "write", &p.file, outcome);
-    }
 
     async fn handle_mkdir(&mut self, session: &str, user_id: &str, id: Option<Value>, params: Value) {
         let Ok(p) = serde_json::from_value::<MkdirParams>(params) else {
@@ -476,27 +419,6 @@ fn invalid_params(id: Option<Value>) -> Value {
 /// `error.data` context for a reference.
 fn ref_data(target: &ResourceRef) -> Value {
     json!({ "pe_id": target.pe_id, "relative_path": target.relative_path })
-}
-
-/// Encode file bytes for the wire, honoring the requested encoding. A utf-8
-/// request over non-utf-8 bytes falls back to base64 (the `encoding` field in
-/// the result tells the client what it actually got).
-fn encode_content(bytes: Vec<u8>, requested: Encoding) -> (String, Encoding) {
-    match requested {
-        Encoding::Base64 => (STANDARD.encode(&bytes), Encoding::Base64),
-        Encoding::Utf8 => match String::from_utf8(bytes) {
-            Ok(text) => (text, Encoding::Utf8),
-            Err(err) => (STANDARD.encode(err.as_bytes()), Encoding::Base64),
-        },
-    }
-}
-
-/// Decode wire content to bytes per its declared encoding.
-fn decode_content(content: &str, encoding: Encoding) -> Result<Vec<u8>, ()> {
-    match encoding {
-        Encoding::Utf8 => Ok(content.as_bytes().to_vec()),
-        Encoding::Base64 => STANDARD.decode(content.as_bytes()).map_err(|_| ()),
-    }
 }
 
 /// Realpath containment: the access-time symlink/alias escape guard that stage 0
