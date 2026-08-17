@@ -57,7 +57,7 @@ async fn verified_registry_npx_agents_use_stable_packages_and_conservative_team_
             Some(r#"[".compass/skills"]"#),
             None,
         ),
-        // omp is deliberately absent: 039 moved it off the npx bridge to a
+        // omp is deliberately absent: 047 moved it off the npx bridge to a
         // direct `omp acp` launch. Its shape is asserted in
         // `omp_direct_cli_migration.rs`.
         ("sigit", "sigit", r#"["-y","@smbcloud/sigit"]"#, None, None),
