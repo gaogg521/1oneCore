@@ -90,16 +90,19 @@ fn resolve_from_catalog(
             }
             ImageInputCapability::Unknown
         }
-        // Custom LiteLLM / private OpenAI-compatible gateways reuse first-party model IDs
-        // (often with hyphen/dot aliases). If the ID is already on the allowlist for any
-        // verified provider, pass images through instead of stripping them.
-        ProviderLookup::CustomGateway => {
-            if catalog_lists_vision_model(catalog, model) {
-                ImageInputCapability::Supported
-            } else {
-                ImageInputCapability::Unknown
-            }
-        }
+        // Custom LiteLLM / private OpenAI-compatible gateways front whatever model the
+        // operator wired up behind an arbitrary alias (e.g. "glm-latest",
+        // "deepseek-pro-latest") — the catalog has no way to identify what that alias
+        // actually points to, so a name-match miss here says nothing about the real
+        // model's capability. Failing closed (Unknown → images silently stripped, see
+        // `supports_images()` in aion-types) turned every unrecognized alias into a
+        // permanent vision blackout with no error, no matter what the backend model
+        // could actually do. A custom gateway is, by construction, unidentifiable by
+        // name — so default to Supported and let the provider itself reject the
+        // request if the underlying model truly can't take images; that failure is
+        // loud and actionable, whereas a local strip is not. A positive catalog match
+        // still short-circuits to Supported without needing this default.
+        ProviderLookup::CustomGateway => ImageInputCapability::Supported,
         ProviderLookup::None => ImageInputCapability::Unknown,
     }
 }
@@ -157,13 +160,6 @@ fn builtin_provider_id(provider: &str) -> Option<&'static str> {
         "bedrock" => Some("amazon-bedrock"),
         _ => None,
     }
-}
-
-fn catalog_lists_vision_model(catalog: &ImageInputCatalog, model: &str) -> bool {
-    catalog
-        .providers
-        .values()
-        .any(|provider| model_supports_image(provider, model))
 }
 
 fn model_supports_image(provider: &ImageInputProvider, model: &str) -> bool {
