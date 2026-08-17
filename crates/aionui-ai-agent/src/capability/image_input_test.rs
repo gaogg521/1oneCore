@@ -164,9 +164,6 @@ fn custom_gateway_matches_allowlisted_model_aliases() {
             "alias {alias} should match catalog kimi-k2.6"
         );
     }
-    // A custom gateway can't be identified by name, so an unmatched model
-    // defaults to Supported rather than silently stripping every image sent
-    // to it — see the `ProviderLookup::CustomGateway` arm in `resolve_from_catalog`.
     assert_eq!(
         resolve_from_catalog(
             &catalog,
@@ -174,7 +171,7 @@ fn custom_gateway_matches_allowlisted_model_aliases() {
             Some("https://litellm-internal.example.com/v1"),
             "deepseek-v4-flash",
         ),
-        ImageInputCapability::Supported
+        ImageInputCapability::Unknown
     );
 }
 
@@ -217,16 +214,12 @@ fn cross_vendor_common_spellings_match_allowlist_on_custom_gateway() {
         );
     }
 
-    // Same-vendor lookalikes that aren't in the vision allowlist (e.g. a text-only
-    // sibling model) still resolve to Supported here — not because the catalog
-    // identified them as vision-capable, but because they're on a custom gateway,
-    // which defaults to Supported for anything it can't name-match either way. See
-    // `custom_gateway_unmatched_models_default_to_supported` for that invariant.
-    for unmatched in ["deepseek-v4-flash", "minimax-2-7", "gpt-3.5-turbo"] {
+    // 纯文本 / 未入白名单：即使同厂系列也不放行
+    for rejected in ["deepseek-v4-flash", "minimax-2-7", "gpt-3.5-turbo"] {
         assert_eq!(
-            resolve_from_catalog(&catalog, "openai", Some(gateway), unmatched),
-            ImageInputCapability::Supported,
-            "{unmatched} is unmatched but still defaults to Supported on a custom gateway"
+            resolve_from_catalog(&catalog, "openai", Some(gateway), rejected),
+            ImageInputCapability::Unknown,
+            "{rejected} must stay Unknown"
         );
     }
 }
@@ -281,17 +274,8 @@ fn maps_official_provider_hosts_without_catalog_api_urls() {
     );
 }
 
-/// Whether an unmatched model fails closed (Unknown) or defaults open
-/// (Supported) depends on *why* it went unmatched:
-/// - A recognized official provider (its API root matched a catalog entry) has
-///   a real, enumerable model list — a miss there means the model genuinely
-///   isn't on it, so it fails closed.
-/// - A custom/private gateway can't be identified by name at all, so a miss
-///   says nothing about the real backend model — it defaults open instead (see
-///   the `ProviderLookup::CustomGateway` arm in `resolve_from_catalog`).
-/// - An unparseable base_url can't be resolved either way and fails closed.
 #[test]
-fn unmatched_model_resolution_depends_on_whether_the_provider_is_identifiable() {
+fn unknown_provider_or_model_fails_closed_as_unknown() {
     let catalog = catalog();
 
     // Custom gateway + allowlisted vision model ID → Supported (pass-through).
@@ -299,7 +283,7 @@ fn unmatched_model_resolution_depends_on_whether_the_provider_is_identifiable() 
         resolve_from_catalog(&catalog, "openai", Some("https://private.example/v1"), "gpt-4o",),
         ImageInputCapability::Supported
     );
-    // Custom gateway + unrecognized model ID → defaults open (see module docs above).
+    // Custom gateway + unknown model ID still fails closed.
     assert_eq!(
         resolve_from_catalog(
             &catalog,
@@ -307,14 +291,12 @@ fn unmatched_model_resolution_depends_on_whether_the_provider_is_identifiable() 
             Some("https://private.example/v1"),
             "totally-unknown-model",
         ),
-        ImageInputCapability::Supported
+        ImageInputCapability::Unknown
     );
-    // Recognized official provider (openai.com) + a model not on its list → fails closed.
     assert_eq!(
         resolve_from_catalog(&catalog, "openai", Some("https://api.openai.com/v1"), "missing-model"),
         ImageInputCapability::Unknown
     );
-    // Unparseable base_url → fails closed.
     assert_eq!(
         resolve_from_catalog(&catalog, "openai", Some("not-a-url"), "gpt-4o"),
         ImageInputCapability::Unknown
@@ -333,23 +315,18 @@ fn embedded_allowlist_resolves_kimi_hyphen_alias_on_moonshot() {
     );
 }
 
-/// A private/custom gateway (e.g. an operator-run LiteLLM instance fronting
-/// arbitrary provider aliases such as `glm-latest`, `deepseek-pro-latest`)
-/// can't be identified by name, so the catalog has no way to confirm *or*
-/// rule out vision support for a model it doesn't recognize on one. Prior to
-/// this test's introduction, an unmatched model on such a gateway defaulted
-/// to `Unknown`, which the engine treats as "strip every attached image" —
-/// in practice this permanently blacked out vision for any operator-aliased
-/// model, including genuinely vision-capable ones, with no error surfaced to
-/// the user. The default was flipped to `Supported`: let the provider itself
-/// reject an image it truly can't handle, rather than the client silently
-/// discarding it. These specific models (real text-only siblings of vision
-/// models — MiniMax vision is the M3 line not M2.7, DeepSeek vision is the
-/// VL/OCR line not v4-flash) are the ones the old fail-closed test guarded;
-/// this asserts the new default explicitly so a future revert is deliberate,
-/// not accidental.
+/// Regression lock for the edition-letter normalization heuristic
+/// (`strip_edition_letter_before_version`): it mangles brand names whose last
+/// letter sits right before the version digits — `minimax-2-7` → `minima27`,
+/// `deepseek-v4-flash` → `deepsee4flash`. Those mangled keys collide with
+/// nothing in the REAL embedded allowlist today, so these text-only models stay
+/// `Unknown`. This asserts it against the *embedded* catalog (via
+/// `resolve_image_input_capability`, not the fixture) so that if a future
+/// allowlist entry accidentally matches a mangled key — leaking image input to
+/// a text-only model — this test fails and catches it. MiniMax vision is M3,
+/// not M2.7; DeepSeek vision is the VL/OCR line, not v4-flash.
 #[test]
-fn custom_gateway_unmatched_models_default_to_supported() {
+fn embedded_allowlist_keeps_text_only_lookalikes_unknown_despite_normalization() {
     let gateway = Some("https://litellm-internal.123u.com/v1");
     for model in [
         "minimax-2-7",
@@ -358,13 +335,11 @@ fn custom_gateway_unmatched_models_default_to_supported() {
         "deepseek-v4-flash",
         "deepseek-v4",
         "deepseek-v4-flash-2024-11-20",
-        "glm-latest",
-        "deepseek-pro-latest",
     ] {
         assert_eq!(
             resolve_image_input_capability("openai", gateway, model),
-            ImageInputCapability::Supported,
-            "{model} is unmatched on a custom gateway and must default open, not silently strip images"
+            ImageInputCapability::Unknown,
+            "{model} is text-only and must not leak image_input via normalization"
         );
     }
 }
