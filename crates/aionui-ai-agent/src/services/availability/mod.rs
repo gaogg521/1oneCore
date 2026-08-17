@@ -655,7 +655,10 @@ mod tests {
         pi.agent_source_info.binary_name = Some("pi".into());
         pi.agent_source_info.bridge_binary = Some("npx".into());
         pi.args = vec!["-y".into(), "pi-acp".into()];
-        assert_eq!(explicit_probe_args(&pi).unwrap(), ["-y", "pi-acp@0.0.32"]);
+        // Version tracks `acp-registry-npx-lock.json` — bumped to 0.0.33 by
+        // upstream 9c35aa6a. The assertion's point is that the pinned version
+        // gets appended from the lock at all, so it has to move with the lock.
+        assert_eq!(explicit_probe_args(&pi).unwrap(), ["-y", "pi-acp@0.0.33"]);
     }
 
     // ---- #675: manual health check runs --version for direct CLIs and is
