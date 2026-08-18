@@ -20,8 +20,9 @@ use crate::registry::CatalogSender;
 use crate::shared_kernel::{ConfigKey, ConfigValue, ModeId, ModelId, SessionId as DomainSessionId};
 use crate::types::SendMessageData;
 use agent_client_protocol::schema::{
-    AvailableCommand, CancelNotification, SessionConfigOptionCategory, SessionId, SessionModelState,
-    SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest, SetSessionModelRequest, UsageUpdate,
+    AvailableCommand, CancelNotification, ContentBlock, PromptRequest, SessionConfigOptionCategory, SessionId,
+    SessionModelState, SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest,
+    SetSessionModelRequest, UsageUpdate,
 };
 use aionui_api_types::{
     AgentHandshake, ConfigOptionConfirmation, GetConfigOptionsResponse, SetConfigOptionResponse,
@@ -1488,6 +1489,14 @@ impl crate::agent_task::IAgentTask for AcpAgentManager {
         self.runtime.subscribe()
     }
 
+    fn supports_midturn_delivery(&self) -> bool {
+        self.params
+            .metadata
+            .backend
+            .as_deref()
+            .is_some_and(aionui_session::backend_supports_midturn_delivery)
+    }
+
     #[tracing::instrument(skip_all, fields(conversation_id = %self.params.conversation_id, msg_id = %data.msg_id))]
     async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
         self.runtime.bump_activity();
@@ -1691,6 +1700,43 @@ impl crate::agent_task::IAgentTask for AcpAgentManager {
             self.runtime.emit_error(message);
         }
 
+        Ok(())
+    }
+}
+
+impl AcpAgentManager {
+    /// The bundled Claude/Codex ACP bridges translate a concurrent
+    /// `session/prompt` into their native steer operation.  Keep this path
+    /// separate from `send_message`: it belongs to the already-running turn
+    /// and must not emit a second Start/Finish pair or reset runtime state.
+    pub async fn deliver_midturn(&self, data: SendMessageData) -> Result<(), AgentSendError> {
+        if !crate::agent_task::IAgentTask::supports_midturn_delivery(self) {
+            return Err(AgentSendError::from_agent_error(AgentError::BadRequest(
+                "mid-turn delivery is not supported by this ACP backend".into(),
+            )));
+        }
+        let session_id = self
+            .session
+            .read()
+            .await
+            .session_id()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| AgentSendError::from_agent_error(AgentError::conflict("ACP session is not ready")))?;
+        self.runtime.bump_activity();
+        // ACP itself has no steer request.  The bundled Claude/Codex adapters
+        // do guarantee prompt cancellation, so preempt the current prompt and
+        // reuse the same session for the interjection.  The short yield lets
+        // the cancel notification win the wire race with the next request.
+        self.protocol
+            .cancel(CancelNotification::new(SessionId::new(session_id.as_str())));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        self.protocol
+            .prompt(PromptRequest::new(
+                SessionId::new(session_id),
+                vec![ContentBlock::from(data.content)],
+            ))
+            .await
+            .map_err(|error| AgentSendError::from_agent_error(AgentError::from(error)))?;
         Ok(())
     }
 }

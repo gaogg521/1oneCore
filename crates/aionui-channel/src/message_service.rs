@@ -244,6 +244,9 @@ impl ChannelMessageService {
             // A tool borrowing another model is accounting, not output — the
             // relay meters it and never forwards it anywhere user-facing.
             | AgentStreamEvent::DelegateUsage(_) => None,
+            // Internal-only correlation frame for mid-turn interjection; never
+            // user-facing (consumed by the conversation layer's watcher).
+            | AgentStreamEvent::MessageLifecycle(_) => None,
         }
     }
 

@@ -624,6 +624,18 @@ impl StreamRelay {
                             // or an otherwise-empty turn would look non-empty).
                             delegate_usage.push(data.clone());
                         }
+                        AgentStreamEvent::MessageLifecycle(_) => {
+                            // Internal-only correlation frame (mid-turn interjection
+                            // Task 3): consumed by the BackgroundStreamWatcher between
+                            // turns; inside a turn it is pure bookkeeping. Never
+                            // forwarded to the WebSocket.
+                        }
+                        // NOTE: AcpSessionInfo (agent session titles) is deliberately
+                        // NOT consumed here. Titles arrive at session-open and at the
+                        // turn's final instant (pi/omp race the relay's exit by ~1ms;
+                        // claude replies seconds after Finish), so the per-instance
+                        // BackgroundStreamWatcher is the single gate-free consumer.
+                        // The frame still reaches the frontend via the catch-all.
                         _ => {
                             self.forward_to_websocket(&event);
                         }
@@ -734,6 +746,7 @@ impl StreamRelay {
             AgentStreamEvent::WorkflowProgress(_) => "WorkflowProgress",
             AgentStreamEvent::AcpDialectSignal(_) => "AcpDialectSignal",
             AgentStreamEvent::DelegateUsage(_) => "DelegateUsage",
+            AgentStreamEvent::MessageLifecycle(_) => "MessageLifecycle",
         }
     }
 

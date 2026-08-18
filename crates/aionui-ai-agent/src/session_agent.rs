@@ -526,6 +526,29 @@ impl SessionAgentTask {
         self.command_seq.fetch_add(1, Ordering::Relaxed) as u64
     }
 
+    pub async fn deliver_midturn(&self, data: SendMessageData) -> Result<(), AgentSendError> {
+        self.runtime.touch();
+        let mut content = Vec::new();
+        if !data.content.is_empty() {
+            content.push(ContentBlock::Text(data.content));
+        }
+        for path in data.files {
+            content.push(ContentBlock::ResourceLink {
+                uri: path,
+                mime_type: None,
+            });
+        }
+        self.dump_session_cli_final_input(&content, Some(data.msg_id.as_str()));
+        self.backend
+            .dispatch(Command::Steer {
+                content,
+                client_msg_id: Some(data.msg_id),
+            })
+            .await
+            .map(|_| ())
+            .map_err(|e| AgentSendError::from_agent_error(AgentError::bad_gateway(e.to_string())))
+    }
+
     /// DEV (`--dump-prompts`): dump this turn's final input blocks as a
     /// `session-cli-final-input` JSON, symmetric with the ACP path's
     /// `acp-final-input`. Best-effort: a failure only warns and never affects
@@ -1144,6 +1167,10 @@ impl IAgentTask for SessionAgentTask {
 
     fn subscribe(&self) -> broadcast::Receiver<AgentStreamEvent> {
         self.runtime.tx.subscribe()
+    }
+
+    fn supports_midturn_delivery(&self) -> bool {
+        self.backend.capabilities().supports_midturn_delivery
     }
 
     async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
@@ -4225,6 +4252,11 @@ fn translate_event(event: SessionEvent, conversation_id: &str, terminal_result_s
                 code,
                 params,
             })]
+        }
+        SessionEvent::MessageLifecycle { client_msg_id, phase } => {
+            vec![AgentStreamEvent::MessageLifecycle(
+                crate::protocol::events::MessageLifecycleData { client_msg_id, phase },
+            )]
         }
         // Events with no origin-side counterpart (or purely internal) are dropped.
         // Cancel folds into the Finish emitted by the resulting terminal; Heartbeat,
