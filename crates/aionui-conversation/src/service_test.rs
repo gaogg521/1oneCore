@@ -2302,6 +2302,88 @@ async fn list_with_pinned_filter() {
 
 // ── Update tests ───────────────────────────────────────────────────
 
+/*
+ * `extra.fork` is a capability token, not data.
+ *
+ * `extra.fork.parent_session_id` is handed straight to `SessionManager::load` when the agent is
+ * built, and aionrs sessions live in one process-wide directory with no per-user namespacing —
+ * nothing downstream checks the caller owns that session. For aionrs the id IS the parent
+ * conversation id, so a client able to write this field could attach another user's agent state
+ * to a conversation it owns and read their history back out of the model.
+ *
+ * `create` has guarded this since the fork API landed, with a test to match
+ * (`tests/conversation_extended.rs::create_strips_client_supplied_fork_spec`). `update` had
+ * neither, which made the guard decorative: the same payload just goes to the other verb. These
+ * two lock both halves — including the one a careless fix breaks.
+ */
+#[tokio::test]
+async fn update_rejects_a_client_supplied_fork_spec() {
+    let (svc, _broadcaster, _repo, task_mgr) = make_service();
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+
+    let req: UpdateConversationRequest = serde_json::from_value(json!({
+        "extra": {
+            "fork": {
+                "parent_conversation_id": "victim-conv",
+                "parent_message_id": "victim-msg",
+                "parent_session_id": "victim-session",
+            }
+        }
+    }))
+    .unwrap();
+    svc.update("user_1", &conv.id, req, &task_mgr).await.unwrap();
+
+    let stored = svc.get("user_1", &conv.id).await.unwrap();
+    let extra = &stored.extra;
+    assert!(
+        extra.get("fork").is_none(),
+        "a client-written extra.fork would load another user's agent session; got {extra}"
+    );
+}
+
+/*
+ * The counterpart, and the reason `update` strips the request rather than the merge result:
+ * a real fork records its lineage in `extra.fork`, so stripping post-merge (which is what
+ * `create` does, correctly, for a brand-new row) would erase it on any unrelated update — a
+ * rename would silently drop the fork badge.
+ */
+#[tokio::test]
+async fn update_preserves_a_server_minted_fork_spec() {
+    let (svc, _broadcaster, repo, task_mgr) = make_service();
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+
+    // Stand in for the fork API: write the lineage server-side, bypassing the request path.
+    let minted = json!({
+        "fork": { "parent_conversation_id": "parent-1", "parent_message_id": "m-1", "parent_session_id": "parent-1" }
+    });
+    repo.update(
+        "user_1",
+        &conv.id,
+        &ConversationRowUpdate {
+            extra: Some(serde_json::to_string(&minted).unwrap()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    // The update MUST carry an `extra` of its own: with `extra: None` the whole merge block is
+    // skipped, so a post-merge strip would never run and this test would pass against the very
+    // bug it exists to catch. (Verified: an earlier version of this test sent only `name` and
+    // stayed green with the broken fix in place.)
+    let req: UpdateConversationRequest =
+        serde_json::from_value(json!({ "name": "Renamed", "extra": { "session_mode": "yolo" } })).unwrap();
+    svc.update("user_1", &conv.id, req, &task_mgr).await.unwrap();
+
+    let stored = svc.get("user_1", &conv.id).await.unwrap();
+    let extra = &stored.extra;
+    assert_eq!(
+        extra["fork"]["parent_conversation_id"], "parent-1",
+        "an unrelated extra update must not drop a real fork's lineage; got {extra}"
+    );
+    assert_eq!(extra["session_mode"], "yolo", "the update itself must still apply");
+}
+
 #[tokio::test]
 async fn update_name() {
     let (svc, broadcaster, _repo, task_mgr) = make_service();

@@ -984,7 +984,7 @@ impl ConversationService {
         // `extra.fork` is server-minted by the fork API only. A client-supplied
         // value would let anyone fork an arbitrary `parent_session_id` they do
         // not own — strip it unconditionally on the create path.
-        strip_request_fork_spec(&mut extra);
+        strip_request_fork_spec(&mut extra, "create");
 
         let assistant_id = req
             .assistant
@@ -2275,7 +2275,28 @@ impl ConversationService {
         let merged_extra = if let Some(new_extra) = &req.extra {
             let mut existing_extra: serde_json::Value =
                 serde_json::from_str(&existing.extra).unwrap_or_else(|_| serde_json::json!({}));
-            merge_json(&mut existing_extra, new_extra);
+            /*
+             * Strip `fork` from the REQUEST, not from the merge result.
+             *
+             * `create` strips it post-merge because the row is brand new and can never carry a
+             * legitimate one. Here the opposite holds: a forked conversation records its lineage
+             * in `extra.fork`, so stripping the merged value would erase that on every unrelated
+             * update — a rename would silently drop the fork badge.
+             *
+             * Why it must be stripped at all: `extra.fork.parent_session_id` is fed straight to
+             * `SessionManager::load` when the agent is built, and aionrs sessions live in one
+             * process-wide directory with no per-user namespacing, so nothing downstream checks
+             * that the caller owns that session. For aionrs the id IS the parent conversation id
+             * (see `fork`), so a client that could write this field could attach any other user's
+             * agent state to a conversation it owns and read their history back out of the model.
+             * `create` already guards this; leaving `update` open made the guard decorative.
+             */
+            let sanitized_new_extra = {
+                let mut sanitized = new_extra.clone();
+                strip_request_fork_spec(&mut sanitized, "update");
+                sanitized
+            };
+            merge_json(&mut existing_extra, &sanitized_new_extra);
             strip_request_owner_user_id(&mut existing_extra);
             if existing_type == AgentType::Aionrs
                 && let Some(obj) = existing_extra.as_object_mut()
@@ -4360,13 +4381,18 @@ fn strip_request_owner_user_id(extra: &mut serde_json::Value) {
     }
 }
 
-/// See the call site in `create`: `extra.fork` may only be minted by the
-/// server-side fork API, never accepted from a client payload.
-fn strip_request_fork_spec(extra: &mut serde_json::Value) {
+/// `extra.fork` may only be minted by the server-side fork API, never accepted from a client
+/// payload — it names the aionrs session whose agent state gets loaded, and that lookup is not
+/// ownership-checked. Called from both `create` and `update`; `route` only labels the log line.
+///
+/// ⚠️ On `update` this must be applied to the incoming request, not to the merge result: an
+/// existing row may legitimately hold a server-minted `fork`, and stripping post-merge would
+/// erase a real fork's lineage on any unrelated update.
+fn strip_request_fork_spec(extra: &mut serde_json::Value, route: &str) {
     if let Some(obj) = extra.as_object_mut()
         && obj.remove("fork").is_some()
     {
-        warn!("create: stripped client-supplied `extra.fork` (server-minted only)");
+        warn!("{route}: stripped client-supplied `extra.fork` (server-minted only)");
     }
 }
 
