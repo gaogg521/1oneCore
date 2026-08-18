@@ -78,6 +78,15 @@ pub struct AgentFactoryDeps {
     /// Per-conversation tokens authenticating the permission hook's callback.
     /// Shared with the HTTP endpoint that answers those callbacks.
     pub antigravity_hook_tokens: Arc<crate::antigravity_hook::HookTokenRegistry>,
+    /// Company model allowlist, consulted when picking the vision delegate that
+    /// `ReadImage` calls (`aionrs::resolve_vision_delegate`). That is a model
+    /// choice the send-path gates never see, so without this an admin could
+    /// remove a model from the allowlist and still have it invoked here.
+    ///
+    /// `None` for personal builds and for tests/composition paths with no
+    /// billing plane — the delegate is then chosen on capability alone, exactly
+    /// as before this existed.
+    pub model_allowlist: Option<Arc<dyn crate::model_policy::ModelAllowlistGate>>,
 }
 
 /// Build a production agent factory that dispatches to concrete agent types.

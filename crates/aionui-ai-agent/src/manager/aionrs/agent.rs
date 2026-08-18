@@ -209,6 +209,12 @@ impl AionrsAgentManager {
         // providers; `None` here means the tool will report images as
         // unreadable rather than let the agent guess.
         config.vision = config_extra.vision_model;
+        // Why there is no delegate, when the factory knows a reason more
+        // specific than "none configured" — today: the company's model
+        // allowlist excluded every vision-capable model this user has. Without
+        // it `ReadImage` tells them to add a vision model in Settings, which
+        // for a policy refusal is both wrong and impossible to act on.
+        let vision_unavailable_reason = config_extra.vision_unavailable_reason;
 
         if let Some(mode) = config_extra.compat_overrides.openai_api_mode {
             config.compat.transport.openai_api_mode = Some(mode);
@@ -227,7 +233,9 @@ impl AionrsAgentManager {
         let is_resume = resume_session.is_some();
         let provider_label = config.provider_label.clone();
 
-        let mut bootstrap = AgentBootstrap::new(config, &workspace, sink).runtime_env(runtime_env);
+        let mut bootstrap = AgentBootstrap::new(config, &workspace, sink)
+            .runtime_env(runtime_env)
+            .vision_unavailable_reason(vision_unavailable_reason);
         if let Some(session) = resume_session {
             info!(
                 conversation_id = %conversation_id,

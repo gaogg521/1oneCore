@@ -12,6 +12,9 @@ mod state;
 mod team_conversation_adapters;
 mod trace;
 
+/// Lives with the other one-billing adapters in `routes.rs`, but is wired in
+/// `AppServices` — the agent factory is built before any router exists.
+pub(crate) use routes::BillingModelAllowlistGate;
 pub use routes::{
     RouterRuntime, create_router, create_router_with_all_state, create_router_with_runtime, create_router_with_states,
 };

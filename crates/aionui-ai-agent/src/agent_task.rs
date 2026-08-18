@@ -584,6 +584,7 @@ mod aionrs_config_option_tests {
             max_tool_call_failure_turns: None,
             compat_overrides: Default::default(),
             vision_model: None,
+            vision_unavailable_reason: None,
             session_directory: std::env::temp_dir().join("aionrs-agent-task-test-sessions"),
             session_mode: None,
             skills: Vec::new(),

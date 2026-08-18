@@ -885,6 +885,20 @@ impl BillingService {
             (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
         };
         let cost = model.map(|m| estimate_cost_micros(m, input_tokens.unwrap_or(0), output_tokens.unwrap_or(0)));
+        // Same diagnosis hatch as `record_media_usage`: a turn costed at 0
+        // consumes none of the company's spend cap, so the cap silently stops
+        // binding for that model. The built-in rate table matches on model
+        // name, and a gateway with its own naming misses it entirely — as does
+        // a vision delegate whose model the table has never heard of. Nothing
+        // here invents a rate (that would be a pricing decision); the row is
+        // recorded as-is, but an operator can now find out why their cap is
+        // not moving.
+        if cost == Some(0) && total_tokens.unwrap_or(0) > 0 && enterprise_id.is_some() {
+            tracing::warn!(
+                model,
+                "turn usage recorded at zero cost: no built-in rate matched this model, so it does not count                  against the company's spend cap"
+            );
+        }
         sqlx::query(
             "INSERT INTO one_usage_events \
                 (id, user_id, enterprise_id, department_id, conversation_id, model, input_tokens, output_tokens, total_tokens, estimated_cost_micros, created_at) \

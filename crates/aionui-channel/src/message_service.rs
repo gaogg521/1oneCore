@@ -240,7 +240,10 @@ impl ChannelMessageService {
             // web UI; an IM transcript has no card to update, and streaming one
             // message per refresh would spam the channel.
             | AgentStreamEvent::WorkflowProgress(_)
-            | AgentStreamEvent::AcpDialectSignal(_) => None,
+            | AgentStreamEvent::AcpDialectSignal(_)
+            // A tool borrowing another model is accounting, not output — the
+            // relay meters it and never forwards it anywhere user-facing.
+            | AgentStreamEvent::DelegateUsage(_) => None,
         }
     }
 

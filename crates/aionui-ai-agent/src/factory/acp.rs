@@ -1,10 +1,15 @@
 use std::sync::Arc;
 
 use crate::agent_task::AgentInstance;
+use crate::capability::image_input::resolve_image_input_capability;
+use crate::capability::vision_delegate::{AcpVisionPolicy, resolve_vision_delegate};
 use crate::error::AgentError;
 use crate::factory::AgentFactoryDeps;
 use crate::factory::acp_assembler::{WorkspaceInfo, assemble_acp_params};
 use crate::factory::acp_launch_policy::{AcpLaunchPolicyInput, apply_acp_launch_policy};
+use crate::factory::aionrs::{
+    map_aionrs_provider, resolve_aionrs_url_and_compat_with_mode, resolve_model_compat_overrides,
+};
 use crate::factory::context::FactoryContext;
 use crate::factory::session_mcp::load_session_mcp_rows;
 use crate::manager::acp::{AcpAgentManager, CatalogForwarder};
@@ -180,6 +185,129 @@ async fn resolve_codex_bridge_context_window(
     }
 }
 
+/// Resolve the image policy for the model actually configured behind a
+/// Claude/Codex bridge. This is deliberately done while the session is built:
+/// the bridge target and the selected delegate are session configuration, not
+/// per-message guesses. A native CLI login, an incomplete bridge config, or a
+/// bridged model that already accepts images all leave the prompt untouched.
+async fn resolve_bridge_vision_policy(
+    deps: &AgentFactoryDeps,
+    user_id: &str,
+    conversation_id: &str,
+    meta: &AgentMetadata,
+    codex_bridge_config: Option<&aionui_db::CodexBridgeConfig>,
+    claude_bridge_active: bool,
+) -> AcpVisionPolicy {
+    let target: Option<(String, String)> = match meta.backend.as_deref() {
+        Some("codex") => codex_bridge_config
+            .filter(|config| config.enabled)
+            .and_then(|config| config.provider_id.as_deref().zip(config.model.as_deref()))
+            .map(|(provider_id, model)| (provider_id.to_owned(), model.to_owned())),
+        Some("claude") if claude_bridge_active => {
+            let Some(repo) = deps.claude_bridge_config_repo.as_ref() else {
+                return AcpVisionPolicy::NotBridged;
+            };
+            match repo.get().await {
+                Ok(Some(config)) if config.enabled => config
+                    .provider_id
+                    .as_deref()
+                    .zip(config.model.as_deref())
+                    .map(|(provider_id, model)| (provider_id.to_owned(), model.to_owned())),
+                Ok(_) => None,
+                Err(error) => {
+                    warn!(error = %error, "claude-bridge: config lookup failed while resolving image policy");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let Some((provider_id, model)) = target else {
+        return AcpVisionPolicy::NotBridged;
+    };
+
+    resolve_bridged_target_vision_policy(
+        deps.provider_repo.as_ref(),
+        &deps.encryption_key,
+        user_id,
+        conversation_id,
+        deps.model_allowlist.as_deref(),
+        &provider_id,
+        &model,
+    )
+    .await
+}
+
+/// Resolve the policy once the bridge's provider/model pair is known. Kept
+/// separate from config lookup so the capability and delegate decision has a
+/// small, direct unit-test seam; both Claude and Codex intentionally share it.
+async fn resolve_bridged_target_vision_policy(
+    provider_repo: &dyn aionui_db::IProviderRepository,
+    encryption_key: &[u8],
+    user_id: &str,
+    conversation_id: &str,
+    allowlist: Option<&dyn crate::model_policy::ModelAllowlistGate>,
+    provider_id: &str,
+    model: &str,
+) -> AcpVisionPolicy {
+    let row = match provider_repo.find_by_id(user_id, provider_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            warn!(
+                provider_id,
+                model, "bridge image policy skipped because its provider is missing"
+            );
+            return AcpVisionPolicy::NotBridged;
+        }
+        Err(error) => {
+            warn!(error = %error, provider_id, model, "bridge image policy provider lookup failed");
+            return AcpVisionPolicy::Unavailable {
+                reason: Some("The bridged model's image capability could not be verified. Do not guess what an attached image shows.".to_owned()),
+            };
+        }
+    };
+    let provider = match map_aionrs_provider(&row.platform, model, row.model_protocols.as_deref()) {
+        Ok(provider) => provider,
+        Err(error) => {
+            warn!(error = %error, provider_id, model, "bridge image policy could not map the configured provider");
+            return AcpVisionPolicy::Unavailable {
+                reason: Some("The bridged model's image capability could not be determined. Do not guess what an attached image shows.".to_owned()),
+            };
+        }
+    };
+    let overrides = match resolve_model_compat_overrides(model, &row.model_settings) {
+        Ok(overrides) => overrides,
+        Err(error) => {
+            warn!(error = %error, provider_id, model, "bridge image policy could not parse model settings");
+            return AcpVisionPolicy::Unavailable {
+                reason: Some("The bridged model's image capability could not be determined. Do not guess what an attached image shows.".to_owned()),
+            };
+        }
+    };
+    let (base_url, _) = resolve_aionrs_url_and_compat_with_mode(
+        &row.platform,
+        &row.base_url,
+        &provider,
+        model,
+        row.is_full_url,
+        overrides.openai_api_mode,
+    );
+    let capability = overrides
+        .image_input
+        .unwrap_or_else(|| resolve_image_input_capability(&provider, base_url.as_deref(), model));
+    if capability.supports_images() {
+        return AcpVisionPolicy::NotBridged;
+    }
+
+    let delegate = resolve_vision_delegate(provider_repo, encryption_key, user_id, conversation_id, allowlist).await;
+    match delegate.config {
+        Some(config) => AcpVisionPolicy::Delegate(Box::new(config)),
+        None => AcpVisionPolicy::Unavailable {
+            reason: delegate.unavailable_reason(),
+        },
+    }
+}
+
 /// Where a conversation that arrived on the ACP factory actually has to run.
 ///
 /// Conversations reach this factory by their *family*, not by how their agent
@@ -298,6 +426,15 @@ pub(super) async fn build(
         None => None,
     };
     let claude_bridge_env = resolve_claude_bridge_env(&deps, &ctx.user_id, &meta).await;
+    let vision_policy = resolve_bridge_vision_policy(
+        &deps,
+        &ctx.user_id,
+        &ctx.conversation_id,
+        &meta,
+        codex_bridge_config.as_ref(),
+        claude_bridge_env.is_some(),
+    )
+    .await;
     let codex_bridge_context_window =
         resolve_codex_bridge_context_window(&deps, &ctx.user_id, codex_bridge_config.as_ref()).await;
     apply_acp_launch_policy(
@@ -380,6 +517,7 @@ pub(super) async fn build(
             session_snapshot,
             deps.data_dir.clone(),
             deps.dump_prompts,
+            vision_policy,
         )
         .await,
     );
@@ -841,8 +979,10 @@ fn session_server_supported_by_capabilities(server: &SessionMcpServer, capabilit
 mod tests {
     use super::*;
     use aionui_api_types::AcpBuildExtra;
+    use aionui_common::encrypt_string;
     use aionui_db::{
-        IAgentMetadataRepository, SqliteAgentMetadataRepository, UpsertAgentMetadataParams, init_database_memory,
+        CreateProviderParams, IAgentMetadataRepository, IProviderRepository, SqliteAgentMetadataRepository,
+        SqliteProviderRepository, UpsertAgentMetadataParams, init_database_memory,
     };
     use aionui_realtime::BroadcastEventBus;
     use aionui_runtime::{ManagedResourcesMode, init as init_runtime, set_managed_resources_mode};
@@ -853,6 +993,83 @@ mod tests {
     };
 
     const TEST_USER_ID: &str = "user-1";
+    const BRIDGE_POLICY_TEST_KEY: [u8; 32] = [0xB4; 32];
+
+    async fn bridge_policy_repo(fixtures: &[(&str, &str)]) -> (aionui_db::Database, Arc<dyn IProviderRepository>) {
+        let db = init_database_memory().await.expect("in-memory database");
+        let repo: Arc<dyn IProviderRepository> = Arc::new(SqliteProviderRepository::new(db.pool().clone()));
+        let encrypted = encrypt_string("sk-bridge-policy-test", &BRIDGE_POLICY_TEST_KEY).expect("encrypt API key");
+        for (id, models) in fixtures {
+            repo.create(CreateProviderParams {
+                id: Some(*id),
+                user_id: TEST_USER_ID,
+                platform: "openai",
+                name: id,
+                base_url: "https://api.openai.com/v1",
+                api_key_encrypted: &encrypted,
+                models,
+                enabled: true,
+                capabilities: "[]",
+                context_limit: None,
+                model_protocols: None,
+                model_enabled: None,
+                model_health: None,
+                model_settings: "{}",
+                bedrock_config: None,
+                is_full_url: false,
+                managed_by: None,
+            })
+            .await
+            .expect("insert provider fixture");
+        }
+        (db, repo)
+    }
+
+    #[tokio::test]
+    async fn bridged_text_only_target_uses_available_vision_delegate() {
+        let (_db, repo) = bridge_policy_repo(&[
+            ("bridge-target", r#"["kimi-k2-6"]"#),
+            ("vision-provider", r#"["gpt-4o"]"#),
+        ])
+        .await;
+
+        let policy = resolve_bridged_target_vision_policy(
+            repo.as_ref(),
+            &BRIDGE_POLICY_TEST_KEY,
+            TEST_USER_ID,
+            "conv-bridge-policy",
+            None,
+            "bridge-target",
+            "kimi-k2-6",
+        )
+        .await;
+
+        match policy {
+            AcpVisionPolicy::Delegate(vision) => assert_eq!(vision.model, "gpt-4o"),
+            other => panic!("expected a vision delegate, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn bridged_text_only_target_without_vision_provider_is_unavailable() {
+        let (_db, repo) = bridge_policy_repo(&[("bridge-target", r#"["kimi-k2-6"]"#)]).await;
+
+        let policy = resolve_bridged_target_vision_policy(
+            repo.as_ref(),
+            &BRIDGE_POLICY_TEST_KEY,
+            TEST_USER_ID,
+            "conv-bridge-policy",
+            None,
+            "bridge-target",
+            "kimi-k2-6",
+        )
+        .await;
+
+        assert!(
+            matches!(policy, AcpVisionPolicy::Unavailable { reason: None }),
+            "expected no-delegate policy, got {policy:?}"
+        );
+    }
 
     fn make_row(
         name: &str,

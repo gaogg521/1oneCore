@@ -12,6 +12,7 @@ pub(crate) mod mode_normalize;
 pub mod permission_router;
 pub mod session;
 mod stderr_error_extractor;
+mod vision_image_hook;
 
 pub use agent::AcpAgentManager;
 pub use agent::RequiredFullAutoApplication;
@@ -21,3 +22,4 @@ pub use catalog_forwarder::CatalogForwarder;
 pub use hooks::SessionNewPreludeHook;
 pub use permission_router::PermissionRouter;
 pub use session::AcpSession;
+pub use vision_image_hook::ImageAttachmentVisionHook;

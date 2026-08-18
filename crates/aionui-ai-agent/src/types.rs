@@ -151,6 +151,11 @@ pub struct AionrsResolvedConfig {
     /// which case `ReadImage` reports images as unreadable instead of letting
     /// the agent invent their contents.
     pub vision_model: Option<aion_config::config::VisionModelConfig>,
+    /// Why no vision delegate is available, when the reason is company policy
+    /// rather than a missing configuration. `ReadImage` prefers this over its
+    /// generic "add a vision model in Settings" advice, which is wrong (and
+    /// unactionable) for a member whose admin banned every candidate.
+    pub vision_unavailable_reason: Option<String>,
     /// Directory for aionrs session persistence files.
     pub session_directory: PathBuf,
     /// Session mode (default, auto_edit, yolo).

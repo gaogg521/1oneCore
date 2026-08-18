@@ -9,9 +9,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use aionui_ai_agent::capability::AcpVisionPolicy;
 use aionui_ai_agent::capability::prompt_pipeline::{PromptCtx, PromptPipeline};
 use aionui_ai_agent::factory::acp_assembler::{AcpSessionParams, WorkspaceInfo, assemble_acp_params};
-use aionui_ai_agent::manager::acp::{AcpSession, SessionNewPreludeHook};
+use aionui_ai_agent::manager::acp::{AcpSession, ImageAttachmentVisionHook, SessionNewPreludeHook};
 use aionui_ai_agent::registry::AgentRegistry;
 use aionui_ai_agent::shared_kernel::ModelId;
 use aionui_ai_agent::{AcpBuildExtra, AcpSkillManager, AgentRuntime};
@@ -23,6 +24,21 @@ async fn fixture_params(
     backend: &str,
     preset_context: Option<&str>,
     is_custom_workspace: bool,
+) -> Arc<AcpSessionParams> {
+    fixture_params_with_vision_policy(
+        backend,
+        preset_context,
+        is_custom_workspace,
+        AcpVisionPolicy::NotBridged,
+    )
+    .await
+}
+
+async fn fixture_params_with_vision_policy(
+    backend: &str,
+    preset_context: Option<&str>,
+    is_custom_workspace: bool,
+    vision_policy: AcpVisionPolicy,
 ) -> Arc<AcpSessionParams> {
     let db = init_database_memory().await.unwrap();
     let repo = Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone()));
@@ -74,6 +90,7 @@ async fn fixture_params(
             None,
             std::env::temp_dir(),
             false,
+            vision_policy,
         )
         .await,
     )
@@ -93,7 +110,10 @@ fn fixture_runtime() -> AgentRuntime {
 }
 
 fn make_pipeline() -> PromptPipeline {
-    PromptPipeline::new(vec![Arc::new(SessionNewPreludeHook)])
+    PromptPipeline::new(vec![
+        Arc::new(SessionNewPreludeHook),
+        Arc::new(ImageAttachmentVisionHook::default()),
+    ])
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -116,6 +136,7 @@ async fn brand_new_first_prompt_injects_preset_context() {
         params: &params,
         skill_manager: &skill_manager,
         runtime: &runtime,
+        files: &[],
     };
 
     let out = pipeline.pre_send(&mut ctx, "hello".into()).await;
@@ -148,6 +169,7 @@ async fn second_prompt_is_passthrough() {
             params: &params,
             skill_manager: &skill_manager,
             runtime: &runtime,
+            files: &[],
         };
         let _ = pipeline.pre_send(&mut ctx, "first".into()).await;
     }
@@ -158,6 +180,7 @@ async fn second_prompt_is_passthrough() {
         params: &params,
         skill_manager: &skill_manager,
         runtime: &runtime,
+        files: &[],
     };
     let out = pipeline.pre_send(&mut ctx, "second".into()).await;
     assert_eq!(out, "second", "no prelude / no reminder expected on second turn");
@@ -181,6 +204,7 @@ async fn resume_path_does_not_inject() {
         params: &params,
         skill_manager: &skill_manager,
         runtime: &runtime,
+        files: &[],
     };
 
     let out = pipeline.pre_send(&mut ctx, "continue the story".into()).await;
@@ -202,6 +226,7 @@ async fn observed_model_change_does_not_inject_model_identity_reminder() {
         params: &params,
         skill_manager: &skill_manager,
         runtime: &runtime,
+        files: &[],
     };
 
     let out = pipeline.pre_send(&mut ctx, "who are you?".to_owned()).await;
@@ -209,6 +234,42 @@ async fn observed_model_change_does_not_inject_model_identity_reminder() {
     assert_eq!(out, "who are you?");
     assert!(!out.contains("<system-reminder>"));
     assert!(!out.contains("claude-opus-4"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn text_only_bridge_replaces_image_path_with_an_honest_notice() {
+    let params = fixture_params_with_vision_policy(
+        "claude",
+        None,
+        true,
+        AcpVisionPolicy::Unavailable {
+            reason: Some("No allowed vision delegate is configured.".into()),
+        },
+    )
+    .await;
+    let skill_manager = fixture_skill_manager();
+    let runtime = fixture_runtime();
+    let mut session = AcpSession::new(None, None, HashMap::new());
+    let pipeline = make_pipeline();
+    let image_path = r"C:\\attachments\\diagram.png".to_owned();
+    let content = format!(
+        "Please inspect this.\n\n{}\n{}",
+        aionui_common::constants::AIONUI_FILES_MARKER,
+        image_path
+    );
+
+    let mut ctx = PromptCtx {
+        session: &mut session,
+        params: &params,
+        skill_manager: &skill_manager,
+        runtime: &runtime,
+        files: std::slice::from_ref(&image_path),
+    };
+    let out = pipeline.pre_send(&mut ctx, content).await;
+
+    assert!(out.contains("No allowed vision delegate is configured."));
+    assert!(out.contains("Do NOT guess"));
+    assert!(!out.ends_with(&image_path));
 }
 
 /// Skeleton: unlock once inject_first_message_prefix surfaces errors.

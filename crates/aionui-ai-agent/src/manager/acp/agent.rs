@@ -7,7 +7,9 @@ use crate::capability::prompt_pipeline::PromptPipeline;
 use crate::capability::skill_manager::AcpSkillManager;
 use crate::error::AgentError;
 use crate::factory::acp_assembler::AcpSessionParams;
-use crate::manager::acp::{AcpSession, AcpSessionEvent, PermissionRouter, SessionNewPreludeHook};
+use crate::manager::acp::{
+    AcpSession, AcpSessionEvent, ImageAttachmentVisionHook, PermissionRouter, SessionNewPreludeHook,
+};
 use crate::manager::process_registry::{register_session_process, unregister_agent_process};
 use crate::protocol::acp::{AcpProtocol, PermissionRequest};
 use crate::protocol::error::{AcpError, CloseReason};
@@ -673,7 +675,10 @@ impl AcpAgentManager {
         );
         seed_startup_config_preferences(&mut session, &params, &startup_config_seed_base);
 
-        let pipeline = PromptPipeline::new(vec![Arc::new(SessionNewPreludeHook)]);
+        let pipeline = PromptPipeline::new(vec![
+            Arc::new(SessionNewPreludeHook),
+            Arc::new(ImageAttachmentVisionHook::default()),
+        ]);
 
         let manager = Self {
             params,
@@ -1332,6 +1337,7 @@ impl AcpAgentManager {
                 params: &self.params,
                 skill_manager: &self.skill_manager,
                 runtime: &self.runtime,
+                files: &data.files,
             };
             let transformed = self.pipeline.pre_send(&mut ctx, data.content.clone()).await;
             self.commit_session_changes(&mut s).await;

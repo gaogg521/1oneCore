@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use aionui_ai_agent::protocol::events::{ErrorEventData, TipType};
+use aionui_ai_agent::protocol::events::{DelegateUsageEventData, ErrorEventData, TipType};
 use aionui_ai_agent::{AgentSendError, AgentStreamEvent, protocol::events::ThinkingEventData};
 
 use crate::response_middleware::{ISkillLoadService, MessageMiddleware, MiddlewareResult};
@@ -70,6 +70,13 @@ pub struct RelayOutcome {
     pub model: Option<String>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
+    /// Token usage of model calls a *tool* made on its own behalf during this
+    /// attempt — today `ReadImage` delegating an image to a vision model.
+    ///
+    /// Kept separate from the three fields above because each entry is a
+    /// different model with its own rate. Callers meter these in addition to
+    /// the turn's own usage; empty is the overwhelmingly common case.
+    pub delegate_usage: Vec<DelegateUsageEventData>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -236,6 +243,9 @@ impl StreamRelay {
         let mut send_error_done = send_error_rx.is_none();
         let mut pending_send_error: Option<AgentSendError> = None;
         let mut attempt = TurnAttemptSummary::default();
+        // Delegated-model usage seen during this attempt. Drained into whichever
+        // `RelayOutcome` the loop ends up producing.
+        let mut delegate_usage: Vec<DelegateUsageEventData> = Vec::new();
 
         loop {
             let recv_result = if send_error_done {
@@ -476,6 +486,7 @@ impl StreamRelay {
                                     model: usage_model,
                                     input_tokens: usage_input_tokens,
                                     output_tokens: usage_output_tokens,
+                                    delegate_usage,
                                 };
                             }
 
@@ -506,6 +517,7 @@ impl StreamRelay {
                                     model: usage_model,
                                     input_tokens: usage_input_tokens,
                                     output_tokens: usage_output_tokens,
+                                    delegate_usage: Vec::new(),
                                 }
                             } else {
                                 // `finalize` extracts model/tokens from `event`
@@ -514,6 +526,7 @@ impl StreamRelay {
                                 self.finalize(&full_text_buffer, &text_segments, &event, terminal).await
                             };
                             outcome.attempt = attempt.clone();
+                            outcome.delegate_usage = std::mem::take(&mut delegate_usage);
                             if !full_text_buffer.is_empty() {
                                 outcome.attempt.persisted_assistant_output = true;
                             }
@@ -602,6 +615,15 @@ impl StreamRelay {
                             attempt.saw_tool_or_side_effect = true;
                             self.forward_to_websocket(&event);
                         }
+                        AgentStreamEvent::DelegateUsage(data) => {
+                            // Accounting, not output. Collected for the caller
+                            // to meter and deliberately NOT forwarded: the
+                            // frontend has no renderer for it, and a tool
+                            // borrowing another model is not the turn "saying
+                            // something" (it must not count as visible output,
+                            // or an otherwise-empty turn would look non-empty).
+                            delegate_usage.push(data.clone());
+                        }
                         _ => {
                             self.forward_to_websocket(&event);
                         }
@@ -643,6 +665,7 @@ impl StreamRelay {
                             model: None,
                             input_tokens: None,
                             output_tokens: None,
+                            delegate_usage: Vec::new(),
                         }
                     } else {
                         self.finalize(
@@ -654,6 +677,7 @@ impl StreamRelay {
                         .await
                     };
                     outcome.attempt = attempt.clone();
+                    outcome.delegate_usage = std::mem::take(&mut delegate_usage);
                     if !full_text_buffer.is_empty() {
                         outcome.attempt.persisted_assistant_output = true;
                     }
@@ -709,6 +733,7 @@ impl StreamRelay {
             AgentStreamEvent::BackendTurnBound(_) => "BackendTurnBound",
             AgentStreamEvent::WorkflowProgress(_) => "WorkflowProgress",
             AgentStreamEvent::AcpDialectSignal(_) => "AcpDialectSignal",
+            AgentStreamEvent::DelegateUsage(_) => "DelegateUsage",
         }
     }
 
@@ -785,6 +810,9 @@ impl StreamRelay {
             model,
             input_tokens,
             output_tokens,
+            // `finalize` cannot see the event stream, so the relay loop fills
+            // this in from what it collected across the attempt.
+            delegate_usage: Vec::new(),
         };
         let status = match event {
             AgentStreamEvent::Error(_) => "error",
@@ -971,7 +999,9 @@ mod tests {
     use super::*;
     use crate::stream_persistence::StreamPersistenceAdapter;
     use aionui_ai_agent::AgentError;
-    use aionui_ai_agent::protocol::events::{ErrorEventData, FinishEventData, TextEventData, ThinkingEventData};
+    use aionui_ai_agent::protocol::events::{
+        DelegateUsageEventData, ErrorEventData, FinishEventData, TextEventData, ThinkingEventData,
+    };
     use aionui_db::DbError;
     use aionui_db::models::MessageRow;
     use std::io::Write;
@@ -1179,6 +1209,124 @@ mod tests {
         assert_eq!(outcome.model, None);
         assert_eq!(outcome.input_tokens, None);
         assert_eq!(outcome.output_tokens, None);
+    }
+
+    /// A tool that borrows a second model mid-turn (today `ReadImage`'s vision
+    /// delegate) produces a `DelegateUsage` event. It must reach the outcome so
+    /// the orchestrator can meter it — before this, the delegate's tokens were
+    /// dropped inside aionrs and the call was invisible to every spend cap.
+    ///
+    /// It must NOT reach the WebSocket: it is accounting, not output, and the
+    /// frontend has no renderer for it.
+    #[tokio::test]
+    async fn delegate_usage_reaches_the_outcome_but_never_the_websocket() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            "conv-1".into(),
+            "asst-1".into(),
+            "turn-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+        );
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::Text(TextEventData {
+            content: "reading the chart".into(),
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::DelegateUsage(DelegateUsageEventData {
+            model: "kimi-k2-6".into(),
+            input_tokens: 1_234,
+            output_tokens: 56,
+        }))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            model: Some("deepseek-v4-flash".into()),
+            input_tokens: Some(900),
+            output_tokens: Some(80),
+        }))
+        .unwrap();
+
+        let outcome = relay.consume(rx).await;
+
+        assert_eq!(
+            outcome.delegate_usage,
+            vec![DelegateUsageEventData {
+                model: "kimi-k2-6".into(),
+                input_tokens: 1_234,
+                output_tokens: 56,
+            }]
+        );
+        // The turn's own usage stays the session model's, unmerged.
+        assert_eq!(outcome.model.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(outcome.input_tokens, Some(900));
+
+        let mut saw_delegate_frame = false;
+        while let Ok(evt) = ws_rx.try_recv() {
+            if evt.name == "message.stream" && evt.data["type"] == "delegate_usage" {
+                saw_delegate_frame = true;
+            }
+        }
+        assert!(!saw_delegate_frame, "DelegateUsage must never be forwarded to the WS");
+    }
+
+    /// Several images in one turn means several delegate calls; each is billed
+    /// separately by the provider and must be recorded separately.
+    #[tokio::test]
+    async fn every_delegate_call_in_a_turn_is_collected() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            "conv-1".into(),
+            "asst-1".into(),
+            "turn-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+        );
+        let rx = tx.subscribe();
+
+        for tokens in [10_i64, 20, 30] {
+            tx.send(AgentStreamEvent::DelegateUsage(DelegateUsageEventData {
+                model: "kimi-k2-6".into(),
+                input_tokens: tokens,
+                output_tokens: 1,
+            }))
+            .unwrap();
+        }
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        let outcome = relay.consume(rx).await;
+
+        assert_eq!(outcome.delegate_usage.len(), 3);
+        assert_eq!(outcome.delegate_usage.iter().map(|u| u.input_tokens).sum::<i64>(), 60);
+    }
+
+    /// The common case. An empty vec must not become a phantom zero-cost row.
+    #[tokio::test]
+    async fn a_turn_with_no_delegate_call_reports_none() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+        let relay = StreamRelay::new(
+            "conv-1".into(),
+            "asst-1".into(),
+            "turn-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+        );
+        let rx = tx.subscribe();
+
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+
+        assert!(relay.consume(rx).await.delegate_usage.is_empty());
     }
 
     #[tokio::test]

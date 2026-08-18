@@ -368,13 +368,7 @@ impl ConversationTurnOrchestrator {
             // billed by the provider.
             let recorder = self.service.usage_recorder.read().ok().and_then(|g| g.clone());
             if let Some(recorder) = recorder {
-                recorder.record_turn(
-                    input.user_id.clone(),
-                    input.conv_id.clone(),
-                    outcome.model.clone(),
-                    outcome.input_tokens,
-                    outcome.output_tokens,
-                );
+                meter_attempt(recorder.as_ref(), &input.user_id, &input.conv_id, &outcome);
             }
 
             if let Some(session_key) = agent.get_session_key() {
@@ -815,10 +809,128 @@ async fn record_agent_session_success(service: &ConversationService, user_id: &s
     }
 }
 
+/// Record everything one completed attempt cost.
+///
+/// Two kinds of usage, deliberately kept as separate rows:
+///
+/// - the turn's own model, from the backend's terminal event;
+/// - one row per model a *tool* borrowed mid-turn (today `ReadImage`'s vision
+///   delegate). Each is billed separately by the provider and priced by ITS OWN
+///   model name — the rate table matches on model — so folding them into the
+///   turn would charge the session model for tokens it never spent. Until this
+///   existed the delegate's cost was invisible to the company's spend cap.
+///
+/// Extracted from the orchestrator loop so it can be tested without standing up
+/// a whole conversation service.
+fn meter_attempt(recorder: &dyn crate::state::UsageRecorder, user_id: &str, conv_id: &str, outcome: &RelayOutcome) {
+    recorder.record_turn(
+        user_id.to_owned(),
+        conv_id.to_owned(),
+        outcome.model.clone(),
+        outcome.input_tokens,
+        outcome.output_tokens,
+    );
+    for delegate in &outcome.delegate_usage {
+        recorder.record_turn(
+            user_id.to_owned(),
+            conv_id.to_owned(),
+            Some(delegate.model.clone()),
+            Some(delegate.input_tokens),
+            Some(delegate.output_tokens),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aionui_ai_agent::protocol::events::DelegateUsageEventData;
+
     use crate::stream_relay::RelayTerminal;
+
+    /// Captures what the billing plane would have been told.
+    #[derive(Default)]
+    struct RecordingUsageRecorder(std::sync::Mutex<Vec<(String, Option<String>, Option<i64>, Option<i64>)>>);
+
+    impl crate::state::UsageRecorder for RecordingUsageRecorder {
+        fn record_turn(
+            &self,
+            user_id: String,
+            _conversation_id: String,
+            model: Option<String>,
+            input_tokens: Option<i64>,
+            output_tokens: Option<i64>,
+        ) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((user_id, model, input_tokens, output_tokens));
+        }
+    }
+
+    /// The governance assertion for the vision delegate's cost: a turn where a
+    /// tool borrowed another model must produce TWO usage rows, priced under
+    /// two different model names. One merged row would charge the session
+    /// model for tokens it never spent — and the rate table matches on model
+    /// name, so the delegate's real rate would never be applied.
+    #[test]
+    fn a_delegated_model_call_is_metered_as_its_own_row() {
+        let recorder = RecordingUsageRecorder::default();
+        let outcome = RelayOutcome {
+            model: Some("deepseek-v4-flash".into()),
+            input_tokens: Some(900),
+            output_tokens: Some(80),
+            delegate_usage: vec![DelegateUsageEventData {
+                model: "kimi-k2-6".into(),
+                input_tokens: 1_234,
+                output_tokens: 56,
+            }],
+            ..finish_outcome(false)
+        };
+
+        meter_attempt(&recorder, "user-1", "conv-1", &outcome);
+
+        let rows = recorder.0.lock().unwrap();
+        assert_eq!(rows.len(), 2, "the delegate call needs a row of its own");
+        assert_eq!(
+            rows[0],
+            ("user-1".into(), Some("deepseek-v4-flash".into()), Some(900), Some(80))
+        );
+        assert_eq!(
+            rows[1],
+            ("user-1".into(), Some("kimi-k2-6".into()), Some(1_234), Some(56)),
+            "the delegate row must be priced under the model that was actually called"
+        );
+    }
+
+    #[test]
+    fn every_delegate_call_gets_its_own_row() {
+        let recorder = RecordingUsageRecorder::default();
+        let outcome = RelayOutcome {
+            delegate_usage: (1..=3)
+                .map(|n| DelegateUsageEventData {
+                    model: "kimi-k2-6".into(),
+                    input_tokens: n * 10,
+                    output_tokens: n,
+                })
+                .collect(),
+            ..finish_outcome(false)
+        };
+
+        meter_attempt(&recorder, "user-1", "conv-1", &outcome);
+
+        assert_eq!(recorder.0.lock().unwrap().len(), 4, "1 turn + 3 delegate calls");
+    }
+
+    /// The common case must be unchanged: exactly one row, no phantom extras.
+    #[test]
+    fn a_turn_without_a_delegate_call_records_one_row() {
+        let recorder = RecordingUsageRecorder::default();
+
+        meter_attempt(&recorder, "user-1", "conv-1", &finish_outcome(false));
+
+        assert_eq!(recorder.0.lock().unwrap().len(), 1);
+    }
 
     fn finish_outcome(needs_auth: bool) -> RelayOutcome {
         RelayOutcome {
@@ -831,6 +943,7 @@ mod tests {
             model: None,
             input_tokens: None,
             output_tokens: None,
+            delegate_usage: Vec::new(),
         }
     }
 
@@ -845,6 +958,7 @@ mod tests {
             model: None,
             input_tokens: None,
             output_tokens: None,
+            delegate_usage: Vec::new(),
         }
     }
 

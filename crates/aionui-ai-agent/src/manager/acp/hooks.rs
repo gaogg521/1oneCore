@@ -6,6 +6,7 @@
 //! and the prompt is returned in a gracefully-degraded form.
 
 use crate::capability::first_message_injector::{InjectionConfig, inject_first_message_prefix};
+use crate::capability::local_ocr_skill::with_host_local_ocr_skill;
 use crate::capability::prompt_pipeline::{PreSendHook, PromptCtx};
 use crate::protocol::events::AgentStreamEvent;
 use aionui_api_types::AcpPromptHookWarningPayload;
@@ -21,10 +22,15 @@ impl PreSendHook for SessionNewPreludeHook {
         }
 
         let metadata = &ctx.params.metadata;
+        let skills = with_host_local_ocr_skill(&ctx.params.config.skills);
         let config = InjectionConfig {
             user_id: &ctx.params.user_id,
             preset_context: ctx.params.preset_context.as_deref(),
-            skills: &ctx.params.config.skills,
+            // Every supported desktop host has one platform-specific local
+            // OCR skill. It is a built-in default, not a user opt-in, so
+            // bridged text-only sessions can inspect image attachments before
+            // attempting a remote vision delegate.
+            skills: &skills,
             native_skill_support: metadata
                 .native_skills_dirs
                 .as_ref()
@@ -42,7 +48,6 @@ impl PreSendHook for SessionNewPreludeHook {
 /// Emit a non-blocking toast warning back to the UI via the stream
 /// channel. Used by hook adapters when their underlying helper fails
 /// but the pipeline must keep the prompt flowing.
-#[allow(dead_code)] // Seed for future hook-failure surfacing; Task 7's ignored skeleton unlocks this.
 pub(crate) fn emit_hook_warning(ctx: &PromptCtx<'_>, hook: &'static str, message: impl Into<String>) {
     let payload = AcpPromptHookWarningPayload {
         hook: hook.to_owned(),

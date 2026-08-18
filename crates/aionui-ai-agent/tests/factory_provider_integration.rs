@@ -99,6 +99,7 @@ fn make_factory(
         // Antigravity permission path.
         antigravity_hook_base_url: None,
         antigravity_hook_tokens: Arc::new(aionui_ai_agent::antigravity_hook::HookTokenRegistry::new()),
+        model_allowlist: None,
     })
 }
 

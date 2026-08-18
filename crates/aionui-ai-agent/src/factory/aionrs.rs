@@ -20,6 +20,7 @@ use serde_json::{Map, Value};
 use tracing::{debug, info, warn};
 
 use crate::agent_task::AgentInstance;
+use crate::capability::vision_delegate::{VisionDelegate, resolve_vision_delegate};
 use crate::error::AgentError;
 use crate::factory::AgentFactoryDeps;
 use crate::factory::context::FactoryContext;
@@ -142,17 +143,20 @@ pub(super) async fn build(
     let image_input_capability = compat_overrides.image_input.unwrap_or_else(|| {
         crate::capability::image_input::resolve_image_input_capability(&provider, base_url.as_deref(), &model_id)
     });
-    let vision_model = if image_input_capability.supports_images() {
-        None
+    let vision = if image_input_capability.supports_images() {
+        VisionDelegate::default()
     } else {
         resolve_vision_delegate(
             deps.provider_repo.as_ref(),
             &deps.encryption_key,
             &ctx.user_id,
             &ctx.conversation_id,
+            deps.model_allowlist.as_deref(),
         )
         .await
     };
+    let vision_unavailable_reason = vision.unavailable_reason();
+    let vision_model = vision.config;
 
     let session_directory = deps.data_dir.join("aionrs-sessions");
 
@@ -175,6 +179,7 @@ pub(super) async fn build(
         max_tool_call_failure_turns: overrides.max_tool_call_failure_turns,
         compat_overrides,
         vision_model,
+        vision_unavailable_reason,
         session_directory,
         session_mode: overrides.session_mode,
         skills: resolved_skills,
@@ -325,104 +330,6 @@ fn resolve_build_session(
         "No existing aionrs session found, starting fresh"
     );
     Ok(None)
-}
-
-/// Find a vision-capable model among the user's configured providers so a
-/// text-only session still has a way to read images.
-///
-/// Capability is decided by exactly the same rules the session model goes
-/// through — an explicit per-model `image_input` setting, otherwise
-/// [`resolve_image_input_capability`]'s allowlist. This function only widens
-/// *which models are examined*; it never relaxes the judgement, so a text-only
-/// look-alike such as `deepseek-v4-flash` is rejected here too.
-///
-/// Returns `None` when nothing qualifies, which `ReadImage` reports to the user
-/// as an actionable error.
-pub(crate) async fn resolve_vision_delegate(
-    provider_repo: &dyn aionui_db::IProviderRepository,
-    encryption_key: &[u8],
-    user_id: &str,
-    conversation_id: &str,
-) -> Option<aion_config::config::VisionModelConfig> {
-    let rows = match provider_repo.list(user_id).await {
-        Ok(rows) => rows,
-        Err(error) => {
-            warn!(
-                conversation_id = %conversation_id,
-                error = %error,
-                "Failed to list providers while looking for a vision delegate"
-            );
-            return None;
-        }
-    };
-
-    for row in rows {
-        if !row.enabled {
-            continue;
-        }
-        let models = serde_json::from_str::<Vec<String>>(&row.models).unwrap_or_default();
-        let model_enabled = row
-            .model_enabled
-            .as_deref()
-            .and_then(|json| serde_json::from_str::<HashMap<String, bool>>(json).ok())
-            .unwrap_or_default();
-
-        for model in models {
-            if model_enabled.get(&model) == Some(&false) {
-                continue;
-            }
-            // A malformed protocol/settings entry disqualifies this candidate
-            // only; it must never abort the session being built.
-            let Ok(provider) = map_aionrs_provider(&row.platform, &model, row.model_protocols.as_deref()) else {
-                continue;
-            };
-            let Ok(model_overrides) = resolve_model_compat_overrides(&model, &row.model_settings) else {
-                continue;
-            };
-            let (base_url, _) = resolve_aionrs_url_and_compat_with_mode(
-                &row.platform,
-                &row.base_url,
-                &provider,
-                &model,
-                row.is_full_url,
-                model_overrides.openai_api_mode,
-            );
-            let capability = model_overrides.image_input.unwrap_or_else(|| {
-                crate::capability::image_input::resolve_image_input_capability(&provider, base_url.as_deref(), &model)
-            });
-            if !capability.supports_images() {
-                continue;
-            }
-
-            match resolve_provider_config_for_bridge(provider_repo, encryption_key, user_id, &row.id, &model).await {
-                Ok(mut config) => {
-                    config.compat.image_input = Some(ImageInputCapability::Supported);
-                    info!(
-                        conversation_id = %conversation_id,
-                        vision_provider = %row.id,
-                        vision_model = %model,
-                        "Resolved vision delegate for text-only aionrs session"
-                    );
-                    return Some(aion_config::config::VisionModelConfig::from_config(&config));
-                }
-                Err(error) => {
-                    warn!(
-                        conversation_id = %conversation_id,
-                        vision_provider = %row.id,
-                        vision_model = %model,
-                        error = %error,
-                        "Vision-capable model could not be resolved into a provider config"
-                    );
-                }
-            }
-        }
-    }
-
-    info!(
-        conversation_id = %conversation_id,
-        "No vision-capable model configured; images will be reported as unreadable"
-    );
-    None
 }
 
 /// Map AionUi DB platform/protocol settings to the aionrs provider identifier.
@@ -1064,10 +971,6 @@ pub async fn resolve_provider_config_for_bridge(
 #[cfg(test)]
 #[path = "aionrs_model_settings_test.rs"]
 mod model_settings_test;
-
-#[cfg(test)]
-#[path = "aionrs_vision_delegate_test.rs"]
-mod vision_delegate_test;
 
 #[cfg(test)]
 mod tests {

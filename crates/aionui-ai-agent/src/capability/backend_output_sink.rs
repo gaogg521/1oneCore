@@ -1,9 +1,10 @@
 use aion_agent::output::OutputSink;
+use aion_types::message::TokenUsage;
 use tokio::sync::broadcast;
 
 use crate::protocol::events::{
-    AgentStreamEvent, ErrorEventData, FinishEventData, StartEventData, TextEventData, ThinkingEventData, TipType,
-    TipsEventData, ToolCallEventData, ToolCallStatus,
+    AgentStreamEvent, DelegateUsageEventData, ErrorEventData, FinishEventData, StartEventData, TextEventData,
+    ThinkingEventData, TipType, TipsEventData, ToolCallEventData, ToolCallStatus,
 };
 
 pub struct BackendOutputSink {
@@ -144,6 +145,19 @@ impl OutputSink for BackendOutputSink {
             input_tokens: Some(input_tokens as i64),
             output_tokens: Some(output_tokens as i64),
         }));
+    }
+
+    /// A tool delegated to another model (today: `ReadImage`'s vision model).
+    /// Forwarded as its own event so the meter attributes the cost to the model
+    /// that was actually called, rather than to this session's model.
+    fn emit_delegate_usage(&self, model: &str, usage: &TokenUsage) {
+        let _ = self
+            .event_tx
+            .send(AgentStreamEvent::DelegateUsage(DelegateUsageEventData {
+                model: model.to_owned(),
+                input_tokens: usage.input_tokens as i64,
+                output_tokens: usage.output_tokens as i64,
+            }));
     }
 
     fn emit_error(&self, msg: &str) {

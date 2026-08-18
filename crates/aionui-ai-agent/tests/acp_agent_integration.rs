@@ -116,6 +116,7 @@ async fn make_mock_agent(script: &str, backend: &str) -> (Arc<AcpAgentManager>, 
             None,
             std::env::temp_dir(),
             false,
+            aionui_ai_agent::capability::AcpVisionPolicy::NotBridged,
         )
         .await,
     );
@@ -198,6 +199,7 @@ fn event_type_name(event: &AgentStreamEvent) -> &'static str {
         AgentStreamEvent::SegmentBreak => "SegmentBreak",
         AgentStreamEvent::BackendTurnBound(_) => "BackendTurnBound",
         AgentStreamEvent::WorkflowProgress(_) => "WorkflowProgress",
+        AgentStreamEvent::DelegateUsage(_) => "DelegateUsage",
         AgentStreamEvent::AcpDialectSignal(_) => "AcpDialectSignal",
     }
 }

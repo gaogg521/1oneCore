@@ -1,3 +1,4 @@
+use crate::capability::AcpVisionPolicy;
 use crate::shared_kernel::PersistedSessionState;
 use agent_client_protocol::schema::{EnvVariable, McpServer, McpServerStdio, NewSessionRequest};
 use aionui_api_types::AgentMetadata;
@@ -34,6 +35,10 @@ pub struct AcpSessionParams {
     pub data_dir: PathBuf,
     /// Whether prompt diagnostics should be dumped under `data_dir/prompt-dumps`.
     pub dump_prompts: bool,
+    /// Resolved once for a bridged Claude/Codex session. The send pipeline
+    /// uses it to prevent a text-only bridged model from inventing image
+    /// contents when an attachment is represented only by a path.
+    pub vision_policy: AcpVisionPolicy,
 }
 
 impl AcpSessionParams {
@@ -69,6 +74,7 @@ pub async fn assemble_acp_params(
     session_snapshot: Option<PersistedSessionState>,
     data_dir: PathBuf,
     dump_prompts: bool,
+    vision_policy: AcpVisionPolicy,
 ) -> AcpSessionParams {
     let mcp_servers = resolve_mcp_servers(&config, user_mcp_servers);
     let preset_context = compose_preset_context(config.preset_context.as_deref());
@@ -85,6 +91,7 @@ pub async fn assemble_acp_params(
         session_snapshot,
         data_dir,
         dump_prompts,
+        vision_policy,
     }
 }
 
@@ -215,6 +222,7 @@ mod tests {
             None,
             PathBuf::from("/tmp/data"),
             true,
+            AcpVisionPolicy::NotBridged,
         )
         .await;
 

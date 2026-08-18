@@ -19,6 +19,7 @@ pub mod manager;
 /// conversation's configured MCP servers into the SDK-free `SessionMcpServer`
 /// shape the `SessionBackend` stack carries in `SessionConfig.init.mcp_servers`.
 pub(crate) mod mcp_resolve;
+pub mod model_policy;
 pub(crate) mod persistence;
 pub mod protocol;
 pub mod registry;
@@ -51,6 +52,7 @@ pub use idle_scanner::{
     IdleCleanupCoordinator, resolve_idle_config_from_env, start_idle_scanner, start_idle_scanner_with_coordinator,
 };
 pub use manager::acp::RequiredFullAutoApplication;
+pub use model_policy::ModelAllowlistGate;
 pub use persistence::AcpSessionSyncService;
 pub use protocol::error::AcpError;
 pub use protocol::events::AgentStreamEvent;

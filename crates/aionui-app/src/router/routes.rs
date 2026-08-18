@@ -442,6 +442,37 @@ impl aionui_conversation::SendGate for BillingSendGate {
     }
 }
 
+/// Adapts one-billing's `check_model_allowed` to the agent factory's
+/// `ModelAllowlistGate` (P0, vision delegate).
+///
+/// Allowlist-only on purpose. The delegate is resolved once when the agent is
+/// built and then reused for the whole session, so a budget check here would
+/// answer a question about one instant and cache it for hours — and the send
+/// path already checks the budget per turn. The delegate's *cost* is handled
+/// separately, by metering the call so the cap can see it at all.
+///
+/// `pub(crate)` because `services.rs` builds the factory long before any router
+/// exists; this is the same adapter, wired earlier.
+pub(crate) struct BillingModelAllowlistGate(pub(crate) std::sync::Arc<one_billing::BillingService>);
+
+#[async_trait::async_trait]
+impl aionui_ai_agent::ModelAllowlistGate for BillingModelAllowlistGate {
+    async fn is_model_allowed(&self, user_id: &str, model: &str) -> Result<bool, String> {
+        match self.0.check_model_allowed(user_id, model).await {
+            Ok(()) => Ok(true),
+            // The two policy refusals: the admin's allowlist, and a member who
+            // arrived after the seat cap filled (T6-4 — governed by nothing, so
+            // denied outright rather than falling through an empty allowlist).
+            Err(one_billing::BillingError::ModelNotAllowed(_) | one_billing::BillingError::SeatLimitExceeded) => {
+                Ok(false)
+            }
+            // Anything else is the check failing, not the policy passing. The
+            // caller fails closed on `Err`; same posture as `BillingSendGate`.
+            Err(other) => Err(other.to_string()),
+        }
+    }
+}
+
 /// Adapts aionui-system's local content inspector to the conversation crate's
 /// `ContentInspector` trait (T4). Personal builds have no rules distributed, so
 /// this costs a read lock and a length check per send.
@@ -775,13 +806,12 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let system_authenticated =
         system_routes(states.system).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
-    // one-billing service (subscription tier / seats / usage). Built here — it
-    // is dependency-free (pool + manual provider) — so its usage recorder can be
-    // injected into the conversation routes below and its routes mounted later.
-    let one_billing_service = std::sync::Arc::new(one_billing::BillingService::new(
-        services.database.pool().clone(),
-        std::sync::Arc::new(one_billing::ManualBillingProvider),
-    ));
+    // one-billing service (subscription tier / seats / usage). Built in
+    // `AppServices` rather than here: the agent factory is assembled before any
+    // router exists and needs the same instance for the vision-delegate model
+    // allowlist (`BillingModelAllowlistGate`). It stays dependency-free (pool +
+    // manual provider), so nothing about the construction order changes.
+    let one_billing_service = services.billing.clone();
 
     // P0-3 usage metering: wired onto the shared `ConversationService`
     // (interior-mutability setter, like `with_project_service` below) rather

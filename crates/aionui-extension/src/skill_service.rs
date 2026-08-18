@@ -2440,6 +2440,24 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
+    #[test]
+    fn embedded_corpus_contains_every_platform_local_ocr_skill() {
+        let corpus = builtin_skills_corpus();
+        for path in [
+            "local-ocr-windows/SKILL.md",
+            "local-ocr-windows/scripts/ocr.ps1",
+            "local-ocr-macos/SKILL.md",
+            "local-ocr-macos/scripts/ocr.swift",
+            "local-ocr-linux/SKILL.md",
+            "local-ocr-linux/scripts/ocr.sh",
+        ] {
+            assert!(
+                corpus.get_file(path).is_some(),
+                "missing embedded builtin skill file: {path}"
+            );
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Frontmatter parsing
     // -----------------------------------------------------------------------

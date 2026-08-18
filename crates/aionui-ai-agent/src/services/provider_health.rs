@@ -101,6 +101,7 @@ impl ProviderHealthCheckService {
             // A health probe answers "OK" and never touches attachments, so it
             // has no use for an image-reading delegate.
             vision_model: None,
+            vision_unavailable_reason: None,
             session_directory: self.data_dir.join("aionrs-health-check-sessions"),
             session_mode: None,
             skills: Vec::new(),

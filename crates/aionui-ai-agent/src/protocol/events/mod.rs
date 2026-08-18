@@ -97,6 +97,19 @@ pub enum AgentStreamEvent {
     /// never forwarded to the WebSocket. Mirrors `SegmentBreak`'s "relay consumes
     /// internally, never forwards" contract.
     AcpDialectSignal(AcpDialectSignalData),
+    /// Internal-only: token usage of a model call a *tool* made on its own
+    /// behalf — today `ReadImage` delegating an image to a vision model.
+    ///
+    /// Separate from `Finish` because it is a different model with its own
+    /// rate: folding it into the turn total would bill the session model for
+    /// tokens it never spent, and the rate table matches on model name. The
+    /// relay collects these into `RelayOutcome::delegate_usage`, which the turn
+    /// orchestrator meters alongside the turn's own usage.
+    ///
+    /// Consumed by the relay and never forwarded to the WebSocket — it is
+    /// accounting, not output, so no frontend renderer is required. Same
+    /// contract as `SegmentBreak` / `BackendTurnBound`.
+    DelegateUsage(DelegateUsageEventData),
 }
 
 /// Data for the `Start` event.
@@ -158,6 +171,17 @@ pub struct FinishEventData {
     pub input_tokens: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<i64>,
+}
+
+/// Data for the `DelegateUsage` event.
+///
+/// `model` is the model that was actually billed — the delegate's, never the
+/// session's.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DelegateUsageEventData {
+    pub model: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
 }
 
 /// Kind of CodeBuddy ACP dialect signal absorbed by the tolerant transport

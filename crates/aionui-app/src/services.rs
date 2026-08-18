@@ -69,6 +69,14 @@ pub struct AppServices {
     /// states need the *same* instance: the system router loads rules into it,
     /// the conversation router enforces them.
     pub content_inspection: Arc<aionui_system::ContentInspectionService>,
+    /// Billing plane (license tier / seats / usage / model allowlist).
+    ///
+    /// Constructed here rather than in `routes.rs` because the agent factory —
+    /// built in this function, before any router exists — needs the model
+    /// allowlist to gate the `ReadImage` vision delegate. It is dependency-free
+    /// (pool + manual provider), so building it early costs nothing, and the
+    /// router reuses this instance instead of making a second one.
+    pub billing: Arc<one_billing::BillingService>,
     runtime_helper_bin: String,
     runtime_base_url: String,
     /// Shared with the Antigravity hook endpoint so it can authenticate callbacks.
@@ -277,6 +285,16 @@ impl AppServices {
             machine_id,
         ));
 
+        // Billing plane. Built before the agent factory so the factory can take
+        // the model allowlist: picking the `ReadImage` vision delegate is a
+        // model choice the send-path gates never see (they only ever look at
+        // the *session* model), so without this an admin could remove a model
+        // from the allowlist and still have it invoked as a delegate.
+        let billing = Arc::new(one_billing::BillingService::new(
+            database.pool().clone(),
+            Arc::new(one_billing::ManualBillingProvider),
+        ));
+
         // NOT adopted this sync (2026-07-29): upstream wires a `session_spawner`
         // here for the direct-CLI SessionAgentTask path — see the matching notes
         // in factory/mod.rs and factory/acp.rs for why (it would bypass our
@@ -303,6 +321,7 @@ impl AppServices {
             // back here to raise the user's permission card.
             antigravity_hook_base_url: Some(runtime_base_url.clone()),
             antigravity_hook_tokens: antigravity_hook_tokens.clone(),
+            model_allowlist: Some(Arc::new(crate::router::BillingModelAllowlistGate(billing.clone()))),
         });
 
         // Agent factory is now wired. Future extension/custom agents
@@ -335,6 +354,7 @@ impl AppServices {
 
         Ok(Self {
             database,
+            billing,
             jwt_service: Arc::new(JwtService::new(secret.clone())),
             antigravity_hook_tokens,
             user_repo,
