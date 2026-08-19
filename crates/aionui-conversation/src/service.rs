@@ -3684,7 +3684,7 @@ impl ConversationService {
         req: SendMessageRequest,
         task_manager: &Arc<dyn IWorkerTaskManager>,
     ) -> Result<SendMessageResponse, ConversationError> {
-        if req.content.trim().is_empty() {
+        if req.content.trim().is_empty() && req.files.is_empty() {
             return Err(ConversationError::BadRequest {
                 reason: "Message content must not be empty".into(),
             });

@@ -24,8 +24,8 @@ use aionui_api_types::{
     SetConfigOptionRequest, SetConfigOptionResponse,
 };
 use aionui_api_types::{
-    CloneConversationRequest, CreateConversationRequest, ListConversationsQuery, SearchMessagesQuery,
-    SendMessageRequest, UpdateConversationRequest, WebSocketMessage,
+    ChatFileRef, CloneConversationRequest, CreateConversationRequest, ListConversationsQuery, SearchMessagesQuery,
+    SendMessageRequest, TaggedChatFileRef, UpdateConversationRequest, WebSocketMessage,
 };
 use aionui_common::{
     AgentKillReason, AgentType, Confirmation, ConversationSource, ConversationStatus, PaginatedResult,
@@ -5742,6 +5742,29 @@ async fn send_message_empty_content_returns_bad_request() {
 
     let err = svc.send_message("user_1", &conv.id, req, &task_mgr).await.unwrap_err();
     assert!(matches!(err, ConversationError::BadRequest { .. }));
+}
+
+#[tokio::test]
+async fn send_message_accepts_attachment_without_text_past_content_validation() {
+    let (svc, _broadcaster, _repo, _task_mgr) = make_service();
+    let task_mgr: Arc<dyn IWorkerTaskManager> = Arc::new(MockTaskManager::new());
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    let attachment = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let req = SendMessageRequest {
+        content: String::new(),
+        files: vec![ChatFileRef::Tagged(TaggedChatFileRef::Local {
+            path: attachment.to_string_lossy().into_owned(),
+        })],
+        inject_skills: vec![],
+        hidden: false,
+    };
+
+    let error = svc.send_message("user_1", &conv.id, req, &task_mgr).await.unwrap_err();
+
+    assert!(
+        !error.to_string().contains("Message content must not be empty"),
+        "an attachment is valid message content: {error}"
+    );
 }
 
 #[tokio::test]

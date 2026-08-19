@@ -610,7 +610,7 @@ async fn resolve_agent_command_spec(
     let reporter = conversation_runtime_reporter(broadcaster, user_id.to_owned(), conversation_id.to_owned());
     let resolved = ensure_runtime_command_with_reporter(command, Some(reporter.as_ref()))
         .await
-        .map_err(|error| AgentError::bad_request(format!("Agent '{}' CLI unavailable: {error}", meta.name)))?;
+        .map_err(|error| map_runtime_command_resolution_error(&meta.name, command, error.to_string()))?;
 
     let mut args: Vec<String> = resolved
         .args_prefix
@@ -647,6 +647,14 @@ async fn resolve_agent_command_spec(
         env,
         cwd: Some(workspace.to_owned()),
     })
+}
+
+fn map_runtime_command_resolution_error(agent_name: &str, command: &str, detail: String) -> AgentError {
+    if detail.to_ascii_lowercase().contains("not found in path") {
+        AgentError::AgentCliNotInstalled(agent_name.to_owned(), command.to_owned())
+    } else {
+        AgentError::bad_request(format!("Agent '{agent_name}' CLI unavailable: {detail}"))
+    }
 }
 
 async fn resolve_builtin_managed_acp_command_spec(
@@ -1784,5 +1792,20 @@ mod tests {
         assert_eq!(route_for_backend(Some("gemini")), BackendRoute::AcpManager);
         assert_eq!(route_for_backend(Some("opencode")), BackendRoute::AcpManager);
         assert_eq!(route_for_backend(None), BackendRoute::AcpManager);
+    }
+
+    #[test]
+    fn missing_runtime_command_uses_the_typed_not_installed_error() {
+        let error = map_runtime_command_resolution_error(
+            "Gemini CLI",
+            "gemini",
+            "command 'gemini' not found in PATH".to_owned(),
+        );
+
+        assert!(matches!(
+            error,
+            AgentError::AgentCliNotInstalled(agent, command)
+                if agent == "Gemini CLI" && command == "gemini"
+        ));
     }
 }
