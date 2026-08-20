@@ -111,7 +111,7 @@ thiserror = "2"
 anyhow = "1"
 
 # LDAP (one-sso password login)
-ldap3 = { version = "0.11", default-features = false, features = ["tls-rustls"] }
+ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
 
 # Logging
 tracing = "0.1"
@@ -126,7 +126,11 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Auth / Crypto
-jsonwebtoken = "9"
+# rust_crypto: jsonwebtoken 10 dropped its implicit crypto-provider default and
+# now requires picking one explicitly. rust_crypto is pure-Rust (no cmake/NASM
+# toolchain like aws_lc_rs needs) and covers the HMAC (HS256) signing this
+# workspace uses.
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
 bcrypt = "0.17"
 aes-gcm = "0.10"
 

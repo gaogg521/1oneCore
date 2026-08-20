@@ -113,12 +113,14 @@ impl EnterpriseService {
         // "invited" card out of the Members tab now that they have a real one.
         let personal_external_id = personal_external_id.trim();
         if !personal_external_id.is_empty() {
-            sqlx::query("DELETE FROM one_enterprise_invites WHERE enterprise_id = ? AND provider = ? AND external_id = ?")
-                .bind(&enterprise_id)
-                .bind(provider)
-                .bind(personal_external_id)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(
+                "DELETE FROM one_enterprise_invites WHERE enterprise_id = ? AND provider = ? AND external_id = ?",
+            )
+            .bind(&enterprise_id)
+            .bind(provider)
+            .bind(personal_external_id)
+            .execute(&self.pool)
+            .await?;
         }
         tracing::info!(
             user_id,
@@ -756,7 +758,18 @@ impl EnterpriseService {
     }
 
     pub async fn list_invites(&self, enterprise_id: &str) -> Result<Vec<CompanyInviteDto>, EnterpriseError> {
-        let rows = sqlx::query_as::<_, (String, String, String, Option<String>, Option<String>, Option<String>, i64)>(
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                i64,
+            ),
+        >(
             "SELECT id, provider, external_id, display_name, department, job_title, created_at \
              FROM one_enterprise_invites WHERE enterprise_id = ? ORDER BY created_at DESC",
         )
@@ -933,7 +946,9 @@ mod tests {
         .unwrap();
 
         // First member creates the company; license it 'free'.
-        svc.sync_member("u1", "feishu", "co", "", None, None, None).await.unwrap();
+        svc.sync_member("u1", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
         let eid: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
             .fetch_one(&svc.pool)
             .await
@@ -949,9 +964,15 @@ mod tests {
         // (the old behavior) is exactly the bug this test now guards against:
         // no row means one-billing's `resolve_enterprise_id` finds nothing and
         // treats a company member as a personal user with zero governance.
-        svc.sync_member("u2", "feishu", "co", "", None, None, None).await.unwrap();
-        svc.sync_member("u3", "feishu", "co", "", None, None, None).await.unwrap();
-        svc.sync_member("u4", "feishu", "co", "", None, None, None).await.unwrap();
+        svc.sync_member("u2", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
+        svc.sync_member("u3", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
+        svc.sync_member("u4", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
         assert_eq!(seat_status_of(&svc, "u4").await, SEAT_STATUS_PENDING);
         assert_eq!(active_seat_count(&svc, &eid).await, 3);
 
@@ -972,7 +993,9 @@ mod tests {
         assert_eq!(seat_status_of(&svc, "u4").await, SEAT_STATUS_PENDING);
 
         // u4's NEXT login re-checks the cap and promotes them.
-        svc.sync_member("u4", "feishu", "co", "", None, None, None).await.unwrap();
+        svc.sync_member("u4", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
         assert_eq!(seat_status_of(&svc, "u4").await, SEAT_STATUS_ACTIVE);
     }
 
@@ -990,7 +1013,9 @@ mod tests {
         .execute(&svc.pool)
         .await
         .unwrap();
-        svc.sync_member("u1", "feishu", "co", "", None, None, None).await.unwrap();
+        svc.sync_member("u1", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
         let eid: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
             .fetch_one(&svc.pool)
             .await
@@ -1003,7 +1028,9 @@ mod tests {
         .await
         .unwrap();
 
-        svc.sync_member("u2", "feishu", "co", "", None, None, None).await.unwrap();
+        svc.sync_member("u2", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
 
         let row: Option<(String, String)> =
             sqlx::query_as("SELECT enterprise_id, seat_status FROM one_enterprise_members WHERE user_id = 'u2'")
@@ -1026,7 +1053,9 @@ mod tests {
         .execute(&svc.pool)
         .await
         .unwrap();
-        svc.sync_member("u1", "feishu", "co", "", None, None, None).await.unwrap();
+        svc.sync_member("u1", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
         let eid: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
             .fetch_one(&svc.pool)
             .await
@@ -1038,7 +1067,9 @@ mod tests {
         .execute(&svc.pool)
         .await
         .unwrap();
-        svc.sync_member("u2", "feishu", "co", "", None, None, None).await.unwrap();
+        svc.sync_member("u2", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
         assert_eq!(seat_status_of(&svc, "u2").await, SEAT_STATUS_ACTIVE);
 
         // Cap dropped to 1 — below the current headcount of 2.
@@ -1048,7 +1079,9 @@ mod tests {
             .await
             .unwrap();
 
-        svc.sync_member("u2", "feishu", "co", "", None, None, None).await.unwrap();
+        svc.sync_member("u2", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
         assert_eq!(
             seat_status_of(&svc, "u2").await,
             SEAT_STATUS_ACTIVE,
@@ -1287,7 +1320,10 @@ mod tests {
         // before calling this, but the service method itself must still
         // refuse an empty name — trusting a pre-validated caller here would
         // leave the service unsafe to call from anywhere else later.
-        let err = svc.rename_company("system_default_user", &enterprise_id, "   ").await.unwrap_err();
+        let err = svc
+            .rename_company("system_default_user", &enterprise_id, "   ")
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), "COMPANY_NAME_REQUIRED");
         // ...and the rejected empty-name call must not have touched the row.
         let overview = svc.company_overview("system_default_user").await.unwrap().unwrap();
@@ -1352,8 +1388,12 @@ mod tests {
         crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
         let svc = EnterpriseService::new(db.pool().clone()).with_session_revoker(revoker.clone());
 
-        svc.sync_member("u1", "feishu", "co", "", None, None, None).await.unwrap();
-        svc.sync_member("u2", "feishu", "co", "", None, None, None).await.unwrap();
+        svc.sync_member("u1", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
+        svc.sync_member("u2", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
         let ent: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
             .fetch_one(&svc.pool)
             .await
@@ -1372,7 +1412,9 @@ mod tests {
         crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
         let svc = EnterpriseService::new(db.pool().clone()).with_session_revoker(revoker.clone());
 
-        svc.sync_member("u1", "feishu", "co", "", None, None, None).await.unwrap();
+        svc.sync_member("u1", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
         let ent: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
             .fetch_one(&svc.pool)
             .await
@@ -1513,7 +1555,15 @@ mod tests {
         let svc = service_with_governance().await;
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let err = svc
-            .create_invite(&overview.company_id, "system_default_user", "feishu", "  ", None, None, None)
+            .create_invite(
+                &overview.company_id,
+                "system_default_user",
+                "feishu",
+                "  ",
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code(), "INVITE_EXTERNAL_ID_REQUIRED");
@@ -1525,9 +1575,17 @@ mod tests {
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
 
-        svc.create_invite(&ent, "system_default_user", "feishu", "ou_zhaogao", Some("赵高"), None, None)
-            .await
-            .unwrap();
+        svc.create_invite(
+            &ent,
+            "system_default_user",
+            "feishu",
+            "ou_zhaogao",
+            Some("赵高"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         svc.create_invite(
             &ent,
             "system_default_user",
@@ -1619,9 +1677,17 @@ mod tests {
         let svc = service_with_governance().await;
         svc.setup_company("system_default_user", "Acme").await.unwrap();
 
-        svc.sync_member("random_person", "feishu", "co", "ou_unrelated", Some("路人"), None, None)
-            .await
-            .unwrap();
+        svc.sync_member(
+            "random_person",
+            "feishu",
+            "co",
+            "ou_unrelated",
+            Some("路人"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let overview = svc.company_overview("system_default_user").await.unwrap().unwrap();
         assert_eq!(overview.member_count, 2, "uninvited login still joins the sole company");
