@@ -251,13 +251,22 @@ impl one_sso::EnterpriseSync for EnterpriseSyncAdapter {
         user_id: &str,
         provider: &str,
         external_id: &str,
+        personal_external_id: &str,
         display_name: Option<&str>,
         department: Option<&str>,
         job_title: Option<&str>,
     ) {
         if let Err(error) = self
             .0
-            .sync_member(user_id, provider, external_id, display_name, department, job_title)
+            .sync_member(
+                user_id,
+                provider,
+                external_id,
+                personal_external_id,
+                display_name,
+                department,
+                job_title,
+            )
             .await
         {
             tracing::warn!(%error, user_id, provider, "enterprise-org sync failed; login continues");

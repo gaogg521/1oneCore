@@ -87,14 +87,23 @@ pub trait EnterpriseSync: Send + Sync {
     /// (Feishu `tenant_key` etc.). Implementations upsert the SSO company and
     /// the user's membership in it (their own name / department / job title).
     ///
+    /// `external_id` is the **company's** IdP id (Feishu `tenant_key` etc,
+    /// same value for every employee of that company) — do not confuse it
+    /// with `personal_external_id`, the **individual's own** IdP id (Feishu
+    /// `open_id`/`union_id`, unique per person), used to reconcile a pending
+    /// company invite (see `EnterpriseService::create_invite`) against the
+    /// person who just logged in.
+    ///
     /// Best-effort and **must never fail the login**: a user who authenticated
     /// correctly should still get a session even if the sync can't complete.
     /// Implementations swallow their own errors.
+    #[allow(clippy::too_many_arguments)]
     async fn sync_member(
         &self,
         user_id: &str,
         provider: &str,
         external_id: &str,
+        personal_external_id: &str,
         display_name: Option<&str>,
         department: Option<&str>,
         job_title: Option<&str>,

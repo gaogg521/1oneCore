@@ -547,7 +547,7 @@ mod tests {
         assert!(!report.complete);
 
         bind_identity(&svc, "ou_b", "u_b").await;
-        svc.sync_member("u_b", "feishu", "ent-ext", None, None, None)
+        svc.sync_member("u_b", "feishu", "ent-ext", "", None, None, None)
             .await
             .unwrap();
         assert!(

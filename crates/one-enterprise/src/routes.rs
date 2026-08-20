@@ -13,7 +13,9 @@ use aionui_auth::CurrentUser;
 
 use crate::directory::{DepartedMemberDto, DirectoryPersonDto, DirectorySyncStateDto};
 use crate::error::EnterpriseError;
-use crate::models::{CompanyMemberDto, CompanyOverviewDto, DisbandCompanyResult, EnterpriseIdentityDto};
+use crate::models::{
+    CompanyInviteDto, CompanyMemberDto, CompanyOverviewDto, DisbandCompanyResult, EnterpriseIdentityDto,
+};
 use crate::rbac::RequireCompanyAdmin;
 use crate::state::OneEnterpriseRouterState;
 
@@ -22,13 +24,21 @@ pub fn one_enterprise_routes(state: OneEnterpriseRouterState) -> Router {
         .route("/api/one/enterprise/me", get(enterprise_me))
         .route(
             "/api/one/enterprise/company",
-            get(company_overview).delete(company_disband),
+            get(company_overview).delete(company_disband).put(company_rename),
         )
         .route("/api/one/enterprise/company/setup", post(company_setup))
         .route("/api/one/enterprise/company/members", get(company_members))
         .route(
             "/api/one/enterprise/company/members/{user_id}",
             delete(company_remove_member),
+        )
+        .route(
+            "/api/one/enterprise/company/invites",
+            get(company_list_invites).post(company_create_invite),
+        )
+        .route(
+            "/api/one/enterprise/company/invites/{invite_id}",
+            delete(company_revoke_invite),
         )
         .route(
             "/api/one/enterprise/company/members/{user_id}/role",
@@ -118,12 +128,83 @@ async fn company_setup(
     Ok(Json(ApiResponse::ok(overview)))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameCompanyBody {
+    name: String,
+}
+
+/// Renames the company. Gated the same as disband (company admin), not the
+/// stricter system_admin gate `company_setup` uses — setup is a one-time
+/// deployment-level action, renaming is ordinary admin housekeeping.
+async fn company_rename(
+    State(state): State<OneEnterpriseRouterState>,
+    admin: RequireCompanyAdmin,
+    Json(body): Json<RenameCompanyBody>,
+) -> Result<Json<ApiResponse<CompanyOverviewDto>>, EnterpriseError> {
+    let overview = state
+        .service
+        .rename_company(&admin.user_id, &admin.enterprise_id, &body.name)
+        .await?;
+    Ok(Json(ApiResponse::ok(overview)))
+}
+
 async fn company_members(
     State(state): State<OneEnterpriseRouterState>,
     admin: RequireCompanyAdmin,
 ) -> Result<Json<ApiResponse<Vec<CompanyMemberDto>>>, EnterpriseError> {
     let members = state.service.list_members(&admin.enterprise_id).await?;
     Ok(Json(ApiResponse::ok(members)))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateInviteBody {
+    provider: String,
+    external_id: String,
+    display_name: Option<String>,
+    department: Option<String>,
+    job_title: Option<String>,
+}
+
+/// Admin picks a person out of the synced directory (`GET
+/// /api/one/enterprise/directory/people`) and gets a shareable invite back.
+/// NOT an access gate — see `EnterpriseService::create_invite`'s doc comment.
+async fn company_create_invite(
+    State(state): State<OneEnterpriseRouterState>,
+    admin: RequireCompanyAdmin,
+    Json(body): Json<CreateInviteBody>,
+) -> Result<Json<ApiResponse<CompanyInviteDto>>, EnterpriseError> {
+    let invite = state
+        .service
+        .create_invite(
+            &admin.enterprise_id,
+            &admin.user_id,
+            &body.provider,
+            &body.external_id,
+            body.display_name.as_deref(),
+            body.department.as_deref(),
+            body.job_title.as_deref(),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(invite)))
+}
+
+async fn company_list_invites(
+    State(state): State<OneEnterpriseRouterState>,
+    admin: RequireCompanyAdmin,
+) -> Result<Json<ApiResponse<Vec<CompanyInviteDto>>>, EnterpriseError> {
+    let invites = state.service.list_invites(&admin.enterprise_id).await?;
+    Ok(Json(ApiResponse::ok(invites)))
+}
+
+async fn company_revoke_invite(
+    State(state): State<OneEnterpriseRouterState>,
+    admin: RequireCompanyAdmin,
+    Path(invite_id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, EnterpriseError> {
+    state.service.revoke_invite(&admin.enterprise_id, &invite_id).await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 #[derive(Debug, Deserialize)]

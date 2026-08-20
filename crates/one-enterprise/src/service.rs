@@ -6,8 +6,8 @@ use sqlx::SqlitePool;
 use crate::disband_cascade::{CompanyDisbandCascade, NoopCompanyDisbandCascade};
 use crate::error::EnterpriseError;
 use crate::models::{
-    CompanyMemberDto, CompanyOverviewDto, DisbandCompanyResult, EnterpriseIdentityDto, ROLE_COMPANY_ADMIN,
-    ROLE_COMPANY_MEMBER, SEAT_STATUS_ACTIVE, SEAT_STATUS_PENDING, is_company_admin_role,
+    CompanyInviteDto, CompanyMemberDto, CompanyOverviewDto, DisbandCompanyResult, EnterpriseIdentityDto,
+    ROLE_COMPANY_ADMIN, ROLE_COMPANY_MEMBER, SEAT_STATUS_ACTIVE, SEAT_STATUS_PENDING, is_company_admin_role,
 };
 use crate::session_revoker::{NoopSessionRevoker, SessionRevoker};
 
@@ -82,11 +82,13 @@ impl EnterpriseService {
     ///
     /// The membership upsert deliberately does NOT touch `role`, so an operator
     /// who is already `admin` is never downgraded to `member` by a later login.
+    #[allow(clippy::too_many_arguments)]
     pub async fn sync_member(
         &self,
         user_id: &str,
         provider: &str,
         external_id: &str,
+        personal_external_id: &str,
         display_name: Option<&str>,
         department: Option<&str>,
         job_title: Option<&str>,
@@ -105,6 +107,19 @@ impl EnterpriseService {
         let seat_status = self
             .resolve_seat_status_and_upsert(user_id, &enterprise_id, display_name, department, job_title, now)
             .await?;
+        // Reconcile a pending invite for this exact person, if an admin sent
+        // one — purely cleanup, never a gate: they already joined above
+        // (auto-join on any SSO login is unchanged), this just clears their
+        // "invited" card out of the Members tab now that they have a real one.
+        let personal_external_id = personal_external_id.trim();
+        if !personal_external_id.is_empty() {
+            sqlx::query("DELETE FROM one_enterprise_invites WHERE enterprise_id = ? AND provider = ? AND external_id = ?")
+                .bind(&enterprise_id)
+                .bind(provider)
+                .bind(personal_external_id)
+                .execute(&self.pool)
+                .await?;
+        }
         tracing::info!(
             user_id,
             provider,
@@ -481,6 +496,32 @@ impl EnterpriseService {
             .ok_or(EnterpriseError::CompanyNotFound)
     }
 
+    /// Renames the company. `enterprise_id` comes from `RequireCompanyAdmin`
+    /// (already role-checked), so this only validates the new name — same
+    /// non-empty/trim rule `setup_company` uses at creation time.
+    pub async fn rename_company(
+        &self,
+        user_id: &str,
+        enterprise_id: &str,
+        name_raw: &str,
+    ) -> Result<CompanyOverviewDto, EnterpriseError> {
+        let name = name_raw.trim();
+        if name.is_empty() {
+            return Err(EnterpriseError::NameRequired);
+        }
+        let now = now_ms() as i64;
+        sqlx::query("UPDATE one_enterprises SET display_name = ?, updated_at = ? WHERE id = ?")
+            .bind(name)
+            .bind(now)
+            .bind(enterprise_id)
+            .execute(&self.pool)
+            .await?;
+        tracing::info!(user_id, enterprise_id, "company renamed");
+        self.company_overview(user_id)
+            .await?
+            .ok_or(EnterpriseError::CompanyNotFound)
+    }
+
     /// The deployment's company as seen by `user_id` (their membership, else
     /// the deployment company), or `None` when no company exists.
     pub async fn company_overview(&self, user_id: &str) -> Result<Option<CompanyOverviewDto>, EnterpriseError> {
@@ -659,6 +700,97 @@ impl EnterpriseService {
         Ok(())
     }
 
+    /// Invite a directory person: an admin picked them out of the synced
+    /// Feishu directory. Purely a labelled placeholder + shareable link — it
+    /// does NOT gate `sync_member`, which still auto-joins any successful SSO
+    /// login regardless of whether an invite exists (2026-08-20 product
+    /// decision: invites are pre-registration, not an access control list).
+    /// Re-inviting the same `(provider, external_id)` replaces the row
+    /// (`ON CONFLICT` on the unique index from migration 005) rather than
+    /// erroring, so nudging someone a second time just refreshes their card.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_invite(
+        &self,
+        enterprise_id: &str,
+        created_by: &str,
+        provider: &str,
+        external_id: &str,
+        display_name: Option<&str>,
+        department: Option<&str>,
+        job_title: Option<&str>,
+    ) -> Result<CompanyInviteDto, EnterpriseError> {
+        let external_id = external_id.trim();
+        if external_id.is_empty() {
+            return Err(EnterpriseError::InviteExternalIdRequired);
+        }
+        let now = now_ms() as i64;
+        let id = uuid::Uuid::now_v7().simple().to_string();
+        sqlx::query(
+            "INSERT INTO one_enterprise_invites \
+             (id, enterprise_id, provider, external_id, display_name, department, job_title, created_by, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(enterprise_id, provider, external_id) DO UPDATE SET \
+                 id = excluded.id, display_name = excluded.display_name, department = excluded.department, \
+                 job_title = excluded.job_title, created_by = excluded.created_by, created_at = excluded.created_at",
+        )
+        .bind(&id)
+        .bind(enterprise_id)
+        .bind(provider)
+        .bind(external_id)
+        .bind(display_name)
+        .bind(department)
+        .bind(job_title)
+        .bind(created_by)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(CompanyInviteDto {
+            id,
+            provider: provider.to_string(),
+            external_id: external_id.to_string(),
+            display_name: display_name.map(str::to_string),
+            department: department.map(str::to_string),
+            job_title: job_title.map(str::to_string),
+            created_at: now,
+        })
+    }
+
+    pub async fn list_invites(&self, enterprise_id: &str) -> Result<Vec<CompanyInviteDto>, EnterpriseError> {
+        let rows = sqlx::query_as::<_, (String, String, String, Option<String>, Option<String>, Option<String>, i64)>(
+            "SELECT id, provider, external_id, display_name, department, job_title, created_at \
+             FROM one_enterprise_invites WHERE enterprise_id = ? ORDER BY created_at DESC",
+        )
+        .bind(enterprise_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, provider, external_id, display_name, department, job_title, created_at)| CompanyInviteDto {
+                    id,
+                    provider,
+                    external_id,
+                    display_name,
+                    department,
+                    job_title,
+                    created_at,
+                },
+            )
+            .collect())
+    }
+
+    pub async fn revoke_invite(&self, enterprise_id: &str, invite_id: &str) -> Result<(), EnterpriseError> {
+        let result = sqlx::query("DELETE FROM one_enterprise_invites WHERE id = ? AND enterprise_id = ?")
+            .bind(invite_id)
+            .bind(enterprise_id)
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(EnterpriseError::InviteNotFound);
+        }
+        Ok(())
+    }
+
     /// Permanently deletes the company: every project group it owns
     /// (one-org, via [`crate::disband_cascade`]), every enterprise-scoped
     /// billing/usage record (one-billing, same trait), every company
@@ -770,6 +902,7 @@ mod tests {
             "u1",
             "feishu",
             "tenant_huanle",
+            "",
             Some("赵高"),
             Some("研发中心"),
             Some("工程师"),
@@ -800,7 +933,7 @@ mod tests {
         .unwrap();
 
         // First member creates the company; license it 'free'.
-        svc.sync_member("u1", "feishu", "co", None, None, None).await.unwrap();
+        svc.sync_member("u1", "feishu", "co", "", None, None, None).await.unwrap();
         let eid: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
             .fetch_one(&svc.pool)
             .await
@@ -816,15 +949,15 @@ mod tests {
         // (the old behavior) is exactly the bug this test now guards against:
         // no row means one-billing's `resolve_enterprise_id` finds nothing and
         // treats a company member as a personal user with zero governance.
-        svc.sync_member("u2", "feishu", "co", None, None, None).await.unwrap();
-        svc.sync_member("u3", "feishu", "co", None, None, None).await.unwrap();
-        svc.sync_member("u4", "feishu", "co", None, None, None).await.unwrap();
+        svc.sync_member("u2", "feishu", "co", "", None, None, None).await.unwrap();
+        svc.sync_member("u3", "feishu", "co", "", None, None, None).await.unwrap();
+        svc.sync_member("u4", "feishu", "co", "", None, None, None).await.unwrap();
         assert_eq!(seat_status_of(&svc, "u4").await, SEAT_STATUS_PENDING);
         assert_eq!(active_seat_count(&svc, &eid).await, 3);
 
         // An existing ACTIVE member re-logging in is never blocked or
         // re-evaluated, even at the cap.
-        svc.sync_member("u1", "feishu", "co", Some("赵高"), None, None)
+        svc.sync_member("u1", "feishu", "co", "", Some("赵高"), None, None)
             .await
             .unwrap();
         assert_eq!(seat_status_of(&svc, "u1").await, SEAT_STATUS_ACTIVE);
@@ -839,7 +972,7 @@ mod tests {
         assert_eq!(seat_status_of(&svc, "u4").await, SEAT_STATUS_PENDING);
 
         // u4's NEXT login re-checks the cap and promotes them.
-        svc.sync_member("u4", "feishu", "co", None, None, None).await.unwrap();
+        svc.sync_member("u4", "feishu", "co", "", None, None, None).await.unwrap();
         assert_eq!(seat_status_of(&svc, "u4").await, SEAT_STATUS_ACTIVE);
     }
 
@@ -857,7 +990,7 @@ mod tests {
         .execute(&svc.pool)
         .await
         .unwrap();
-        svc.sync_member("u1", "feishu", "co", None, None, None).await.unwrap();
+        svc.sync_member("u1", "feishu", "co", "", None, None, None).await.unwrap();
         let eid: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
             .fetch_one(&svc.pool)
             .await
@@ -870,7 +1003,7 @@ mod tests {
         .await
         .unwrap();
 
-        svc.sync_member("u2", "feishu", "co", None, None, None).await.unwrap();
+        svc.sync_member("u2", "feishu", "co", "", None, None, None).await.unwrap();
 
         let row: Option<(String, String)> =
             sqlx::query_as("SELECT enterprise_id, seat_status FROM one_enterprise_members WHERE user_id = 'u2'")
@@ -893,7 +1026,7 @@ mod tests {
         .execute(&svc.pool)
         .await
         .unwrap();
-        svc.sync_member("u1", "feishu", "co", None, None, None).await.unwrap();
+        svc.sync_member("u1", "feishu", "co", "", None, None, None).await.unwrap();
         let eid: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
             .fetch_one(&svc.pool)
             .await
@@ -905,7 +1038,7 @@ mod tests {
         .execute(&svc.pool)
         .await
         .unwrap();
-        svc.sync_member("u2", "feishu", "co", None, None, None).await.unwrap();
+        svc.sync_member("u2", "feishu", "co", "", None, None, None).await.unwrap();
         assert_eq!(seat_status_of(&svc, "u2").await, SEAT_STATUS_ACTIVE);
 
         // Cap dropped to 1 — below the current headcount of 2.
@@ -915,7 +1048,7 @@ mod tests {
             .await
             .unwrap();
 
-        svc.sync_member("u2", "feishu", "co", None, None, None).await.unwrap();
+        svc.sync_member("u2", "feishu", "co", "", None, None, None).await.unwrap();
         assert_eq!(
             seat_status_of(&svc, "u2").await,
             SEAT_STATUS_ACTIVE,
@@ -988,10 +1121,10 @@ mod tests {
     #[tokio::test]
     async fn same_company_logins_converge_on_one_enterprise_row() {
         let svc = service().await;
-        svc.sync_member("u1", "feishu", "tenant_huanle", None, Some("研发"), None)
+        svc.sync_member("u1", "feishu", "tenant_huanle", "", None, Some("研发"), None)
             .await
             .unwrap();
-        svc.sync_member("u2", "feishu", "tenant_huanle", None, Some("产品"), None)
+        svc.sync_member("u2", "feishu", "tenant_huanle", "", None, Some("产品"), None)
             .await
             .unwrap();
 
@@ -1013,7 +1146,7 @@ mod tests {
     #[tokio::test]
     async fn empty_company_id_is_a_noop() {
         let svc = service().await;
-        svc.sync_member("u1", "feishu", "  ", Some("x"), None, None)
+        svc.sync_member("u1", "feishu", "  ", "", Some("x"), None, None)
             .await
             .unwrap();
         assert!(svc.identity_of("u1").await.unwrap().is_none());
@@ -1046,7 +1179,7 @@ mod tests {
         // the IdP returned NO company id (the tenant_key-missing scenario).
         let svc = service().await;
         insert_manual_company(&svc, "ent1", "Acme").await;
-        svc.sync_member("u1", "feishu", "", Some("赵高"), None, None)
+        svc.sync_member("u1", "feishu", "", "", Some("赵高"), None, None)
             .await
             .unwrap();
         assert_eq!(svc.company_of("u1").await.unwrap().as_deref(), Some("ent1"));
@@ -1067,7 +1200,7 @@ mod tests {
         svc.upsert_member_role("op", "ent1", ROLE_COMPANY_ADMIN, 1)
             .await
             .unwrap();
-        svc.sync_member("op", "feishu", "", Some("Op"), None, None)
+        svc.sync_member("op", "feishu", "", "", Some("Op"), None, None)
             .await
             .unwrap();
         assert!(svc.is_company_admin("op").await.unwrap());
@@ -1078,7 +1211,7 @@ mod tests {
         // Lock-in: no explicit company AND no tenant_key → nothing written. This
         // is the personal / standalone path (which never reaches SSO anyway).
         let svc = service().await;
-        svc.sync_member("u1", "feishu", "", Some("x"), None, None)
+        svc.sync_member("u1", "feishu", "", "", Some("x"), None, None)
             .await
             .unwrap();
         assert!(svc.identity_of("u1").await.unwrap().is_none());
@@ -1133,6 +1266,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rename_company_updates_display_name() {
+        let svc = service_with_governance().await;
+        svc.setup_company("system_default_user", "Acme").await.unwrap();
+        let enterprise_id = svc.company_of("system_default_user").await.unwrap().unwrap();
+
+        let overview = svc
+            .rename_company("system_default_user", &enterprise_id, "Acme Corp")
+            .await
+            .unwrap();
+
+        assert_eq!(overview.name.as_deref(), Some("Acme Corp"));
+        // Renaming must not disturb membership/role — regression guard for a
+        // rename that accidentally re-touches `one_enterprise_members`.
+        assert_eq!(overview.member_count, 1);
+        assert_eq!(overview.viewer_role.as_deref(), Some("admin"));
+        assert!(svc.is_company_admin("system_default_user").await.unwrap());
+
+        // The route layer resolves `enterprise_id` via `RequireCompanyAdmin`
+        // before calling this, but the service method itself must still
+        // refuse an empty name — trusting a pre-validated caller here would
+        // leave the service unsafe to call from anywhere else later.
+        let err = svc.rename_company("system_default_user", &enterprise_id, "   ").await.unwrap_err();
+        assert_eq!(err.code(), "COMPANY_NAME_REQUIRED");
+        // ...and the rejected empty-name call must not have touched the row.
+        let overview = svc.company_overview("system_default_user").await.unwrap().unwrap();
+        assert_eq!(overview.name.as_deref(), Some("Acme Corp"));
+    }
+
+    #[tokio::test]
     async fn second_company_rejected() {
         let svc = service_with_governance().await;
         svc.setup_company("system_default_user", "Acme").await.unwrap();
@@ -1146,7 +1308,7 @@ mod tests {
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
         // A second SSO member joins the (manual) company.
-        svc.sync_member("u2", "feishu", "", Some("Bob"), None, None)
+        svc.sync_member("u2", "feishu", "", "", Some("Bob"), None, None)
             .await
             .unwrap();
         let members = svc.list_members(&ent).await.unwrap();
@@ -1190,8 +1352,8 @@ mod tests {
         crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
         let svc = EnterpriseService::new(db.pool().clone()).with_session_revoker(revoker.clone());
 
-        svc.sync_member("u1", "feishu", "co", None, None, None).await.unwrap();
-        svc.sync_member("u2", "feishu", "co", None, None, None).await.unwrap();
+        svc.sync_member("u1", "feishu", "co", "", None, None, None).await.unwrap();
+        svc.sync_member("u2", "feishu", "co", "", None, None, None).await.unwrap();
         let ent: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
             .fetch_one(&svc.pool)
             .await
@@ -1210,7 +1372,7 @@ mod tests {
         crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
         let svc = EnterpriseService::new(db.pool().clone()).with_session_revoker(revoker.clone());
 
-        svc.sync_member("u1", "feishu", "co", None, None, None).await.unwrap();
+        svc.sync_member("u1", "feishu", "co", "", None, None, None).await.unwrap();
         let ent: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
             .fetch_one(&svc.pool)
             .await
@@ -1263,7 +1425,7 @@ mod tests {
 
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
-        svc.sync_member("u2", "feishu", "", Some("Bob"), None, None)
+        svc.sync_member("u2", "feishu", "", "", Some("Bob"), None, None)
             .await
             .unwrap();
         assert_eq!(svc.list_members(&ent).await.unwrap().len(), 2);
@@ -1308,7 +1470,7 @@ mod tests {
         let svc = service_with_governance().await.with_disband_cascade(cascade.clone());
         let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
         let ent = overview.company_id;
-        svc.sync_member("bob", "feishu", "", Some("Bob"), None, None)
+        svc.sync_member("bob", "feishu", "", "", Some("Bob"), None, None)
             .await
             .unwrap();
 
@@ -1319,5 +1481,149 @@ mod tests {
             "cascade must not run on a rejected disband"
         );
         assert!(svc.company_overview("system_default_user").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn create_invite_then_list_shows_it() {
+        let svc = service_with_governance().await;
+        let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
+        let ent = overview.company_id;
+
+        let invite = svc
+            .create_invite(
+                &ent,
+                "system_default_user",
+                "feishu",
+                "ou_zhaogao",
+                Some("赵高"),
+                Some("信息安全中心"),
+                Some("信息安全总监"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invite.display_name.as_deref(), Some("赵高"));
+
+        let invites = svc.list_invites(&ent).await.unwrap();
+        assert_eq!(invites.len(), 1);
+        assert_eq!(invites[0].external_id, "ou_zhaogao");
+    }
+
+    #[tokio::test]
+    async fn create_invite_rejects_empty_external_id() {
+        let svc = service_with_governance().await;
+        let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
+        let err = svc
+            .create_invite(&overview.company_id, "system_default_user", "feishu", "  ", None, None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "INVITE_EXTERNAL_ID_REQUIRED");
+    }
+
+    #[tokio::test]
+    async fn re_inviting_the_same_person_replaces_not_duplicates() {
+        let svc = service_with_governance().await;
+        let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
+        let ent = overview.company_id;
+
+        svc.create_invite(&ent, "system_default_user", "feishu", "ou_zhaogao", Some("赵高"), None, None)
+            .await
+            .unwrap();
+        svc.create_invite(
+            &ent,
+            "system_default_user",
+            "feishu",
+            "ou_zhaogao",
+            Some("赵高"),
+            Some("新部门"),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let invites = svc.list_invites(&ent).await.unwrap();
+        assert_eq!(invites.len(), 1, "re-inviting must replace, not duplicate");
+        assert_eq!(invites[0].department.as_deref(), Some("新部门"));
+    }
+
+    #[tokio::test]
+    async fn revoke_invite_removes_it_and_rejects_unknown_id() {
+        let svc = service_with_governance().await;
+        let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
+        let ent = overview.company_id;
+        let invite = svc
+            .create_invite(&ent, "system_default_user", "feishu", "ou_zhaogao", None, None, None)
+            .await
+            .unwrap();
+
+        svc.revoke_invite(&ent, &invite.id).await.unwrap();
+        assert!(svc.list_invites(&ent).await.unwrap().is_empty());
+
+        let err = svc.revoke_invite(&ent, &invite.id).await.unwrap_err();
+        assert_eq!(err.code(), "INVITE_NOT_FOUND");
+    }
+
+    /// The end-to-end point of this whole feature: an admin invites a
+    /// specific directory person, that person completes real SSO login, and
+    /// their "invited" card disappears from the pending list because they
+    /// now have a real membership row. Does NOT touch access — the invite
+    /// existing or not must have zero bearing on whether login succeeds
+    /// (2026-08-20 product decision), which the second half of this test
+    /// locks down with a negative case.
+    #[tokio::test]
+    async fn sso_login_consumes_the_matching_invite() {
+        let svc = service_with_governance().await;
+        let overview = svc.setup_company("system_default_user", "Acme").await.unwrap();
+        let ent = overview.company_id;
+        svc.create_invite(
+            &ent,
+            "system_default_user",
+            "feishu",
+            "ou_zhaogao",
+            Some("赵高"),
+            Some("信息安全中心"),
+            Some("信息安全总监"),
+        )
+        .await
+        .unwrap();
+
+        // 赵高 logs in for real: local user_id "u_zhaogao", their own IdP id
+        // "ou_zhaogao" matches the invite above.
+        svc.sync_member(
+            "u_zhaogao",
+            "feishu",
+            "co",
+            "ou_zhaogao",
+            Some("赵高"),
+            Some("信息安全中心"),
+            Some("信息安全总监"),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            svc.list_invites(&ent).await.unwrap().is_empty(),
+            "the consumed invite must be gone"
+        );
+        // ...and they are a real member regardless — the invite was never
+        // load-bearing for access.
+        assert!(!svc.is_company_admin("u_zhaogao").await.unwrap());
+        let members = svc.list_members(&ent).await.unwrap();
+        assert!(members.iter().any(|m| m.user_id == "u_zhaogao"));
+    }
+
+    #[tokio::test]
+    async fn sso_login_without_any_invite_still_joins() {
+        // Negative case for the product decision: a totally uninvited login
+        // still auto-joins (unchanged existing behavior) — invites are
+        // pre-registration, never a gate.
+        let svc = service_with_governance().await;
+        svc.setup_company("system_default_user", "Acme").await.unwrap();
+
+        svc.sync_member("random_person", "feishu", "co", "ou_unrelated", Some("路人"), None, None)
+            .await
+            .unwrap();
+
+        let overview = svc.company_overview("system_default_user").await.unwrap().unwrap();
+        assert_eq!(overview.member_count, 2, "uninvited login still joins the sole company");
     }
 }

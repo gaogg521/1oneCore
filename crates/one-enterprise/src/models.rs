@@ -108,3 +108,19 @@ pub struct CompanyMemberDto {
     /// roster.
     pub seat_status: String,
 }
+
+/// A pending invite: an admin picked someone from the synced directory and
+/// generated them a link, but they have not completed SSO login yet. Not an
+/// access gate — `sync_member` still auto-joins any successful login — this
+/// exists purely so the admin can see who they've reached out to.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanyInviteDto {
+    pub id: String,
+    pub provider: String,
+    pub external_id: String,
+    pub display_name: Option<String>,
+    pub department: Option<String>,
+    pub job_title: Option<String>,
+    pub created_at: i64,
+}

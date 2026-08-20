@@ -26,6 +26,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "enterprise_004_seat_status",
         include_str!("../migrations/enterprise_004_seat_status.sql"),
     ),
+    (
+        "enterprise_005_invites",
+        include_str!("../migrations/enterprise_005_invites.sql"),
+    ),
 ];
 
 /// Run all pending one-enterprise migrations. Idempotent; call once at startup
@@ -73,7 +77,7 @@ mod tests {
         run_one_enterprise_migrations(db.pool()).await.unwrap();
         run_one_enterprise_migrations(db.pool()).await.unwrap();
 
-        for table in ["one_enterprises", "one_enterprise_members"] {
+        for table in ["one_enterprises", "one_enterprise_members", "one_enterprise_invites"] {
             let exists: bool =
                 sqlx::query_scalar("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?")
                     .bind(table)

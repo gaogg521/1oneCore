@@ -24,6 +24,10 @@ pub enum EnterpriseError {
     InvalidRole(String),
     #[error("Cannot remove the last company administrator")]
     LastCompanyAdmin,
+    #[error("An identity to invite is required")]
+    InviteExternalIdRequired,
+    #[error("Invite not found")]
+    InviteNotFound,
 }
 
 impl EnterpriseError {
@@ -37,6 +41,8 @@ impl EnterpriseError {
             Self::MemberNotFound => "COMPANY_MEMBER_NOT_FOUND",
             Self::InvalidRole(_) => "INVALID_ROLE",
             Self::LastCompanyAdmin => "LAST_COMPANY_ADMIN",
+            Self::InviteExternalIdRequired => "INVITE_EXTERNAL_ID_REQUIRED",
+            Self::InviteNotFound => "INVITE_NOT_FOUND",
         }
     }
 
@@ -44,9 +50,9 @@ impl EnterpriseError {
         match self {
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
-            Self::NameRequired | Self::InvalidRole(_) => StatusCode::BAD_REQUEST,
+            Self::NameRequired | Self::InvalidRole(_) | Self::InviteExternalIdRequired => StatusCode::BAD_REQUEST,
             Self::CompanyExists | Self::LastCompanyAdmin => StatusCode::CONFLICT,
-            Self::CompanyNotFound | Self::MemberNotFound => StatusCode::NOT_FOUND,
+            Self::CompanyNotFound | Self::MemberNotFound | Self::InviteNotFound => StatusCode::NOT_FOUND,
         }
     }
 }

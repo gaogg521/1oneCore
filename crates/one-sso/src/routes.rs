@@ -307,6 +307,12 @@ async fn callback(
     let org_external_id = profile.org_external_id.clone();
     let org_unit_path = profile.org_unit_path.clone();
     let job_title = profile.job_title.clone();
+    // The individual's own IdP id (Feishu open_id/union_id) — distinct from
+    // org_external_id (the company's tenant_key, shared by every employee).
+    // Captured before `profile` is consumed below, so a pending company
+    // invite (admin picked this exact person from the synced directory) can
+    // be reconciled against the person who is actually logging in right now.
+    let personal_external_id = profile.external_id.clone();
     let (user_id, username, _created) = state.service.resolve_or_provision_user(provider, profile).await?;
 
     // Diagnostic: whether the IdP returned a company identifier (Feishu
@@ -336,6 +342,7 @@ async fn callback(
             &user_id,
             provider.as_str(),
             org_id,
+            &personal_external_id,
             Some(display_name.as_str()),
             org_unit_path.as_deref(),
             job_title.as_deref(),
