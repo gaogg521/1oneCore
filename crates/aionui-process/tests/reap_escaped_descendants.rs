@@ -1,15 +1,11 @@
+#![cfg(unix)]
+
 //! A child that leaves the process group must still be torn down.
 //!
 //! Measured motivation (agy 1.1.9): its tool subprocesses each become their own
 //! process-group leader, so the group SIGKILL that removes the CLI leaves the
 //! tool running, reparented to init. A `cargo build` or dev server started by a
 //! cancelled turn then had nothing left to stop it.
-//!
-//! Unix-only: the whole fixture is built out of `setsid`/`kill`/`SIGKILL` and
-//! process groups, none of which exist on Windows (where containment uses job
-//! objects instead). Without this gate the test target does not compile at all
-//! on Windows, which takes every other test in this crate down with it.
-#![cfg(unix)]
 
 use aionui_process::{Containment, ContainmentKillOutcome, ProcessGroupContainment};
 use std::process::{Command, Stdio};

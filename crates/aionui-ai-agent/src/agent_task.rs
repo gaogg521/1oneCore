@@ -21,7 +21,7 @@ use crate::manager::acp::{AcpAgentManager, RequiredFullAutoApplication};
 use crate::manager::aionrs::AionrsAgentManager;
 use crate::protocol::events::AgentStreamEvent;
 use crate::protocol::send_error::AgentSendError;
-use crate::types::SendMessageData;
+use crate::types::{PromptMediaCaps, SendMessageData};
 
 use aionui_api_types::{
     GetConfigOptionsResponse, GetModelInfoResponse, ModelInfoEntry, ModelInfoPayload, SetConfigOptionResponse,
@@ -67,6 +67,12 @@ pub trait IAgentTask: Send + Sync {
 
     /// Subscribe to the agent's stream event channel.
     fn subscribe(&self) -> broadcast::Receiver<AgentStreamEvent>;
+
+    /// Prompt media capabilities the agent declared. Defaults to none —
+    /// callers must then deliver attachments as file paths, not blocks.
+    fn prompt_media_caps(&self) -> PromptMediaCaps {
+        PromptMediaCaps::default()
+    }
 
     /// Whether a message sent right now reaches the agent without waiting for
     /// the current turn to end (task-1 brief: mid-turn interjection). Mirrors
@@ -119,6 +125,19 @@ pub trait IMockAgent: IAgentTask {
         _always_allow: bool,
     ) -> Result<(), AgentError> {
         Ok(())
+    }
+    /// Answer a structured question card (AskUserQuestion) — the DEDICATED
+    /// channel, separate from the permission confirm path (2026-08-05 ruling).
+    /// `answers: None` = the user dismissed the card (a deny on the wire).
+    /// Default: not a question-capable agent.
+    fn answer_ask(
+        &self,
+        _request_id: &str,
+        _answers: Option<Vec<aionui_api_types::AskQuestionAnswer>>,
+    ) -> Result<(), AgentError> {
+        Err(AgentError::BadRequest(
+            "answer_ask is not supported by this agent".into(),
+        ))
     }
     fn get_session_key(&self) -> Option<String> {
         None
@@ -347,6 +366,24 @@ impl AgentInstance {
         }
     }
 
+    /// Answer a structured question card via the dedicated channel.
+    pub fn answer_ask(
+        &self,
+        request_id: &str,
+        answers: Option<Vec<aionui_api_types::AskQuestionAnswer>>,
+    ) -> Result<(), AgentError> {
+        match self {
+            // Only the direct-CLI session path has a question channel today
+            // (claude AskUserQuestion); ACP/aionrs have none to answer on.
+            Self::Acp(_) | Self::Aionrs(_) => Err(AgentError::BadRequest(
+                "answer_ask is not supported by this agent".into(),
+            )),
+            Self::Session(m) => m.answer_ask(request_id, answers),
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Mock(m) => m.answer_ask(request_id, answers),
+        }
+    }
+
     /// Check whether an action is auto-approved in this session.
     pub fn check_approval(&self, action: &str, command_type: Option<&str>) -> bool {
         match self {
@@ -513,22 +550,22 @@ impl AgentInstance {
     }
 }
 
-/// Map the raw ACP SDK model state into the public API payload.
+/// Map the legacy ACP model state into the public API payload.
 ///
 /// Kept private to this module: the only caller is
 /// [`AgentInstance::get_model`]. Mirrors the helper formerly living in
 /// `services/agent.rs`; do not duplicate — if the shape of
 /// `ModelInfoPayload` changes, update it here.
-fn map_sdk_model_to_payload(m: agent_client_protocol::schema::SessionModelState) -> ModelInfoPayload {
+fn map_sdk_model_to_payload(m: crate::manager::acp::legacy_session_model::LegacySessionModelState) -> ModelInfoPayload {
     let available: Vec<ModelInfoEntry> = m
         .available_models
         .iter()
         .map(|am| ModelInfoEntry {
-            id: am.model_id.to_string(),
+            id: am.model_id.clone(),
             label: am.name.clone(),
         })
         .collect();
-    let current_id = m.current_model_id.to_string();
+    let current_id = m.current_model_id;
     let current_label = available
         .iter()
         .find(|e| e.id == current_id)

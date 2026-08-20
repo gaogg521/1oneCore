@@ -126,13 +126,6 @@ fn platform_extra_bins_at(home: Option<&Path>) -> Vec<PathBuf> {
             push_if_dir(PathBuf::from(&local).join("Microsoft").join("WinGet").join("Links"));
             // Yarn classic global bin.
             push_if_dir(PathBuf::from(&local).join("Yarn").join("bin"));
-            // officecli's own install.ps1 drops the binary here and adds it to
-            // the User PATH registry value — but that registry change never
-            // reaches this already-running process, so agent shell commands
-            // would otherwise never see a freshly-installed officecli until
-            // the backend restarts. Checking the directory directly (not via
-            // PATH) sidesteps that.
-            push_if_dir(PathBuf::from(&local).join("OfficeCLI"));
             // omp's Windows installer writes `omp.exe` straight into this
             // directory (`install.ps1`: `$InstallDir = "$env:LOCALAPPDATA\omp"`).
             // It matters more here than the Unix vendor dirs do, because there

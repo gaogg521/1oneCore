@@ -1,5 +1,258 @@
 # Changelog
 
+## [0.1.70](https://github.com/iOfficeAI/AionCore/compare/v0.1.69...v0.1.70) (2026-08-19)
+
+
+### Features
+
+* **monitor:** add fs/createFile command ([#891](https://github.com/iOfficeAI/AionCore/issues/891)) ([19c7837](https://github.com/iOfficeAI/AionCore/commit/19c7837ba5c5ce6dffa022478d5322275805097c))
+* **monitor:** back explorer drag-transfer with fs/copy and fs/move ([#877](https://github.com/iOfficeAI/AionCore/issues/877)) ([85670aa](https://github.com/iOfficeAI/AionCore/commit/85670aa2ebd7bdda180e89bec07f6158d101f7ef))
+* **session:** distinguish Task subagents from background tasks ([#890](https://github.com/iOfficeAI/AionCore/issues/890)) ([a978cf7](https://github.com/iOfficeAI/AionCore/commit/a978cf71a932842d2c83b7598de002c85a7dd95c))
+
+
+### Bug Fixes
+
+* **agent:** pair native media blocks with a link to the same file ([#876](https://github.com/iOfficeAI/AionCore/issues/876)) ([da91f82](https://github.com/iOfficeAI/AionCore/commit/da91f826bbfdde21e415e9f6080a53075479f729))
+* **antigravity:** collapse agy's U+FFFD runs at text_delta joins ([#888](https://github.com/iOfficeAI/AionCore/issues/888)) ([0324fa9](https://github.com/iOfficeAI/AionCore/commit/0324fa93660beaf53337bb12b18d6056a5132953))
+* **antigravity:** route Team over the CLI, which is what agy was already using ([#881](https://github.com/iOfficeAI/AionCore/issues/881)) ([70781cc](https://github.com/iOfficeAI/AionCore/commit/70781ccb890ef1aa0d60f11ad29d3f852eb20715))
+* **app:** bound the graceful-shutdown tail so the data-dir instance lock is released ([#884](https://github.com/iOfficeAI/AionCore/issues/884)) ([1e20ab4](https://github.com/iOfficeAI/AionCore/commit/1e20ab46f56d92237f6548a67fbd05abdef20726))
+* **app:** harden the shutdown watchdog force-exit path ([679f34d](https://github.com/iOfficeAI/AionCore/commit/679f34dfd535ccd4e016f0ae4abc028406ef76b3))
+* **app:** harden the shutdown watchdog force-exit path ([d94b574](https://github.com/iOfficeAI/AionCore/commit/d94b5741aa32e69642155f951ad8c14ea7af28bf))
+* **app:** keep backend_binary_path cmd.exe-launchable on Windows ([#887](https://github.com/iOfficeAI/AionCore/issues/887)) ([c8bbde6](https://github.com/iOfficeAI/AionCore/commit/c8bbde61179012a4c07b341107b665759407f092))
+* **app:** reuse the app-level ConversationService in build_cron_state ([#885](https://github.com/iOfficeAI/AionCore/issues/885)) ([9182eaa](https://github.com/iOfficeAI/AionCore/commit/9182eaaf1f9a1f9fe024676dbb1ba876b40ccf93))
+
+## [0.1.69](https://github.com/iOfficeAI/AionCore/compare/v0.1.68...v0.1.69) (2026-08-18)
+
+
+### Features
+
+* **claude:** label tool steps by what they do ([#870](https://github.com/iOfficeAI/AionCore/issues/870)) ([6757d0f](https://github.com/iOfficeAI/AionCore/commit/6757d0fdd2aec726e2be65b210176712972f56cb))
+* **team:** team mode reliability improvements, model switch persistence and runtime restart ([#787](https://github.com/iOfficeAI/AionCore/issues/787)) ([e9b6f13](https://github.com/iOfficeAI/AionCore/commit/e9b6f13983cc787bbc329b0e2d98cd89e157b76a))
+
+
+### Bug Fixes
+
+* **claude:** three follow-ups to the tool-step labels ([#872](https://github.com/iOfficeAI/AionCore/issues/872)) ([f8f7174](https://github.com/iOfficeAI/AionCore/commit/f8f7174f6c768c3653e2f57843b161fa23758266))
+
+## [0.1.68](https://github.com/iOfficeAI/AionCore/compare/v0.1.67...v0.1.68) (2026-08-17)
+
+
+### Features
+
+* **codex:** auto-name sessions and label command steps ([#868](https://github.com/iOfficeAI/AionCore/issues/868)) ([7aedbbd](https://github.com/iOfficeAI/AionCore/commit/7aedbbdcaf2835f8675db8cea87381aed4a91f10))
+* **conversation:** mid-turn interjection — deliver messages while a turn is in flight ([#836](https://github.com/iOfficeAI/AionCore/issues/836)) ([484327d](https://github.com/iOfficeAI/AionCore/commit/484327dbbcd44ca8752c133dfe2fe04c901bafbb))
+
+
+### Bug Fixes
+
+* **acp:** give a first-run npx agent room to install before initialize times out ([#854](https://github.com/iOfficeAI/AionCore/issues/854)) ([f6131a4](https://github.com/iOfficeAI/AionCore/commit/f6131a4ace14c90946de009ec8315f1c37f44e0f))
+* **acp:** stop collapsing agent failures into an opaque -32603 ([#869](https://github.com/iOfficeAI/AionCore/issues/869)) ([27fc006](https://github.com/iOfficeAI/AionCore/commit/27fc006a9811bdb55153741cfb549ad1b42c3751))
+* **agents:** launch omp through its local CLI instead of the npx bridge ([#855](https://github.com/iOfficeAI/AionCore/issues/855)) ([13b5dd4](https://github.com/iOfficeAI/AionCore/commit/13b5dd42f941e9dd8a9f3ff06498a3df4449452f))
+* **antigravity:** read the HTTP status before parsing the hook decision ([#867](https://github.com/iOfficeAI/AionCore/issues/867)) ([60bab79](https://github.com/iOfficeAI/AionCore/commit/60bab79d4a10844fb2dc4397cd89c2da09a6548d))
+* **auth:** stop CSRF rejecting agy's PreToolUse callback ([#860](https://github.com/iOfficeAI/AionCore/issues/860)) ([1d91312](https://github.com/iOfficeAI/AionCore/commit/1d913129d71b2a253f42d9c644d844c3c3213fe7))
+* **runtime:** find agent CLIs installed by bun and by vendor installers ([#856](https://github.com/iOfficeAI/AionCore/issues/856)) ([8881980](https://github.com/iOfficeAI/AionCore/commit/8881980401da402eaa6ecf73e884c104635b34ff))
+
+## [0.1.67](https://github.com/iOfficeAI/AionCore/compare/v0.1.66...v0.1.67) (2026-08-14)
+
+
+### Features
+
+* **session:** report a deferred mode switch as pending instead of observed ([#846](https://github.com/iOfficeAI/AionCore/issues/846)) ([9700f88](https://github.com/iOfficeAI/AionCore/commit/9700f88306aa9c2d51d257e865866253db002bd6))
+
+
+### Bug Fixes
+
+* restore direct CLI Team MCP capabilities ([#853](https://github.com/iOfficeAI/AionCore/issues/853)) ([fe99ff6](https://github.com/iOfficeAI/AionCore/commit/fe99ff6051cf5d0a766332e56ffa66e9d8c61234))
+
+## [0.1.66](https://github.com/iOfficeAI/AionCore/compare/v0.1.65...v0.1.66) (2026-08-13)
+
+
+### Features
+
+* **conversation:** support forking aionrs conversations ([6e04e74](https://github.com/iOfficeAI/AionCore/commit/6e04e741c42425072a8296fdacd95e5d1261d4d7))
+* **conversation:** support forking aionrs conversations ([4b09341](https://github.com/iOfficeAI/AionCore/commit/4b0934145b46f208d75f63e14dfb190dd4fb06b8))
+
+
+### Bug Fixes
+
+* **session:** retry claude session-title generation with timeout and observability ([#843](https://github.com/iOfficeAI/AionCore/issues/843)) ([c59e937](https://github.com/iOfficeAI/AionCore/commit/c59e937a0cc49327a6756c32fb77213e1abe2224))
+
+## [0.1.65](https://github.com/iOfficeAI/AionCore/compare/v0.1.64...v0.1.65) (2026-08-12)
+
+
+### Features
+
+* **db:** dedicated startup stage for database created by a newer app (downgrade) ([#834](https://github.com/iOfficeAI/AionCore/issues/834)) ([db7ce9a](https://github.com/iOfficeAI/AionCore/commit/db7ce9ae2fe25081bd2485aae53bae665eb7ca10))
+
+
+### Bug Fixes
+
+* **antigravity:** parse TSV output from `agy models` ([#797](https://github.com/iOfficeAI/AionCore/issues/797)) ([240e7f4](https://github.com/iOfficeAI/AionCore/commit/240e7f45f91584474f818e306f3d2186e74aced1))
+* **conversation:** tell the client when a turn is cancelled before its agent exists ([#827](https://github.com/iOfficeAI/AionCore/issues/827)) ([86eff2f](https://github.com/iOfficeAI/AionCore/commit/86eff2fa1dff988860aece3d5879bc10618dbb3a))
+
+## [0.1.64](https://github.com/iOfficeAI/AionCore/compare/v0.1.63...v0.1.64) (2026-08-11)
+
+
+### Features
+
+* **channel:** add Discord Gateway plugin ([#813](https://github.com/iOfficeAI/AionCore/issues/813)) ([f711607](https://github.com/iOfficeAI/AionCore/commit/f71160760266f8f5507ff355e484b9f11bc336b0))
+* **sidebar:** add user_order ordering base and sidebar grouping API ([#820](https://github.com/iOfficeAI/AionCore/issues/820)) ([d2f9f8c](https://github.com/iOfficeAI/AionCore/commit/d2f9f8ce9e8793a350835fdf36f2973f3cc95b3d))
+
+
+### Bug Fixes
+
+* **cli-version:** deliver the version-drift notice, and stop it reading as an error ([#817](https://github.com/iOfficeAI/AionCore/issues/817)) ([c0e9e9d](https://github.com/iOfficeAI/AionCore/commit/c0e9e9d44572a588e3ad79b6ac435fbe53f71b99))
+
+## [0.1.63](https://github.com/iOfficeAI/AionCore/compare/v0.1.62...v0.1.63) (2026-08-10)
+
+
+### Features
+
+* **channel:** add Slack Socket Mode plugin ([#806](https://github.com/iOfficeAI/AionCore/issues/806)) ([ff887f1](https://github.com/iOfficeAI/AionCore/commit/ff887f1fd6ff787d59448a8353e4ac1d98f73081))
+* **fs:** add copy-absolute-path endpoint that writes the clipboard server-side ([#803](https://github.com/iOfficeAI/AionCore/issues/803)) ([a621ed8](https://github.com/iOfficeAI/AionCore/commit/a621ed888c662bce2deaf16b30a9ccf8ab588804))
+* **scm:** one-level repository discovery for workspace roots ([#800](https://github.com/iOfficeAI/AionCore/issues/800)) ([3d0e276](https://github.com/iOfficeAI/AionCore/commit/3d0e276078fe95180c9267bdbde548096459becb))
+
+
+### Bug Fixes
+
+* **agent:** stop the idle scanner from killing agents with live background tasks ([#811](https://github.com/iOfficeAI/AionCore/issues/811)) ([50b6570](https://github.com/iOfficeAI/AionCore/commit/50b6570b95b69564037ee89901c8709f889f60b7))
+* **project:** emit real-case absolute path to agents, not folded canonical ([#809](https://github.com/iOfficeAI/AionCore/issues/809)) ([f0f4fbd](https://github.com/iOfficeAI/AionCore/commit/f0f4fbd1234a039861f2b3e857cd821337c37672))
+
+
+### Code Refactoring
+
+* **session:** run the user's own claude/codex, with one shared version-drift path ([#799](https://github.com/iOfficeAI/AionCore/issues/799)) ([ae817e3](https://github.com/iOfficeAI/AionCore/commit/ae817e32d7f7f24246fcb0001e334a344d59f351))
+
+## [0.1.62](https://github.com/iOfficeAI/AionCore/compare/v0.1.61...v0.1.62) (2026-08-06)
+
+
+### Features
+
+* **scm:** live repository-set changes + pe_name ([#790](https://github.com/iOfficeAI/AionCore/issues/790)) ([81ef258](https://github.com/iOfficeAI/AionCore/commit/81ef258913e6ac5076a86d4adcc7edcc0f8f21ef))
+
+
+### Documentation
+
+* refresh architecture crate catalog ([#791](https://github.com/iOfficeAI/AionCore/issues/791)) ([4d59a21](https://github.com/iOfficeAI/AionCore/commit/4d59a21aaa0b4ff8210e04cea41872920a2f8a65))
+
+## [0.1.61](https://github.com/iOfficeAI/AionCore/compare/v0.1.60...v0.1.61) (2026-08-06)
+
+
+### Bug Fixes
+
+* **adoption:** move legacy root assistant-rules to the adopter ([#788](https://github.com/iOfficeAI/AionCore/issues/788)) ([0b678e8](https://github.com/iOfficeAI/AionCore/commit/0b678e8a6812bd9c734a8c825fb2c6fca6079661))
+
+## [0.1.60](https://github.com/iOfficeAI/AionCore/compare/v0.1.59...v0.1.60) (2026-08-06)
+
+
+### Features
+
+* **acp:** client-hosted terminals — declare clientCapabilities.terminal and serve terminal/* ([#779](https://github.com/iOfficeAI/AionCore/issues/779)) ([c5fef5f](https://github.com/iOfficeAI/AionCore/commit/c5fef5f7ede02690c99bb97a7019a1b075cf939b))
+* **preview:** backend half of preview v2 — office refresh, overflow marker, content-change signal ([#780](https://github.com/iOfficeAI/AionCore/issues/780)) ([eb4bd7f](https://github.com/iOfficeAI/AionCore/commit/eb4bd7f78219fcb0bc50c52affb456a19b04bed1))
+* **session:** AskUserQuestion as a first-class capability (own event, command, counter and endpoint) ([#778](https://github.com/iOfficeAI/AionCore/issues/778)) ([f9cf506](https://github.com/iOfficeAI/AionCore/commit/f9cf506d5755d0ae8d6a4e9e28fea5cdd3880bce))
+
+
+### Bug Fixes
+
+* **ai-agent:** degrade corrupt process registry, atomic writes, and startup-failure child cleanup ([#784](https://github.com/iOfficeAI/AionCore/issues/784)) ([812af0b](https://github.com/iOfficeAI/AionCore/commit/812af0b96143f0afb80f9d638033467b05c5b2ff))
+* **antigravity:** drop the 'default' UI placeholder model while discovery is empty ([#785](https://github.com/iOfficeAI/AionCore/issues/785)) ([18617b3](https://github.com/iOfficeAI/AionCore/commit/18617b387c8797eaefa2b9438344442b8ff8e66e))
+* **engine:** update rust crate getrandom-6f8ce4dd05d13bba to 0.4 ([#212](https://github.com/iOfficeAI/AionCore/issues/212)) ([0cf059b](https://github.com/iOfficeAI/AionCore/commit/0cf059b283fcd7d795b0bd6505da7fce3d655a2f))
+* **session:** stop reporting still-running codex commands as cancelled ([#783](https://github.com/iOfficeAI/AionCore/issues/783)) ([a326fb2](https://github.com/iOfficeAI/AionCore/commit/a326fb260905c82961ca9730461f872068ccb255))
+
+## [0.1.59](https://github.com/iOfficeAI/AionCore/compare/v0.1.58...v0.1.59) (2026-08-05)
+
+
+### Features
+
+* **agent:** multimodal prompt — native image/audio content blocks gated by promptCapabilities ([#774](https://github.com/iOfficeAI/AionCore/issues/774)) ([5a78a0b](https://github.com/iOfficeAI/AionCore/commit/5a78a0b2722edcce9f979d3f06c4461577f9e574))
+* **team:** add read-only mailbox/task activity API and real-time events ([#740](https://github.com/iOfficeAI/AionCore/issues/740)) ([f86c053](https://github.com/iOfficeAI/AionCore/commit/f86c053eded3e04f5139dadeb3bdb9bae94c9c3b))
+
+## [0.1.58](https://github.com/iOfficeAI/AionCore/compare/v0.1.57...v0.1.58) (2026-08-04)
+
+
+### Features
+
+* **conversation:** agent-driven session auto-naming (ACP session_info_update + claude generate_session_title) ([#768](https://github.com/iOfficeAI/AionCore/issues/768)) ([c551c66](https://github.com/iOfficeAI/AionCore/commit/c551c6614270ba6bf045627a1598e71bbf77d63d))
+* **conversation:** fork a conversation into a new one at a chosen message ([#772](https://github.com/iOfficeAI/AionCore/issues/772)) ([bb7c14e](https://github.com/iOfficeAI/AionCore/commit/bb7c14ef26f5af1157946841d12c5027c486cc21))
+* **fs:** add ChatFileRef content endpoints ([#757](https://github.com/iOfficeAI/AionCore/issues/757)) ([e8b6f4c](https://github.com/iOfficeAI/AionCore/commit/e8b6f4c825e04bc2c454ac75005d6f7f7642926d))
+* **fs:** pdf stream endpoint + office ChatFileRef resolve + retire fs/resolve & WS fs/read ([#762](https://github.com/iOfficeAI/AionCore/issues/762)) ([e4e991a](https://github.com/iOfficeAI/AionCore/commit/e4e991afed637346e57578a3da48b6a3c62ce960))
+
+
+### Bug Fixes
+
+* **agent:** keep the thought-level picker on a resumed conversation ([#763](https://github.com/iOfficeAI/AionCore/issues/763)) ([dcf015e](https://github.com/iOfficeAI/AionCore/commit/dcf015eda00a1a5fe3952fc7eaa1c3236a5b8e9b))
+* **runtime:** add bounded retry to managed node version probe ([#771](https://github.com/iOfficeAI/AionCore/issues/771)) ([1dee9f1](https://github.com/iOfficeAI/AionCore/commit/1dee9f1e961a529f7aae701f97ddb1deeab64655))
+* **session:** keep claude session cost cumulative across process respawns ([#767](https://github.com/iOfficeAI/AionCore/issues/767)) ([f498e9d](https://github.com/iOfficeAI/AionCore/commit/f498e9d2deb57d3491d5a107b622d24d5c8df7df))
+* **session:** settle cards through teardown and resume so no stored row spins forever ([#766](https://github.com/iOfficeAI/AionCore/issues/766)) ([3f61cc4](https://github.com/iOfficeAI/AionCore/commit/3f61cc490ec589f6602eeeb30487443cd9d1061e))
+
+## [0.1.57](https://github.com/iOfficeAI/AionCore/compare/v0.1.56...v0.1.57) (2026-08-03)
+
+
+### Features
+
+* **agent:** add Antigravity (agy CLI) as a direct-CLI agent ([#741](https://github.com/iOfficeAI/AionCore/issues/741)) ([ddfd76b](https://github.com/iOfficeAI/AionCore/commit/ddfd76b9aa0e1192d02918f79490f1c4d06d343e))
+* **fs:** add /api/fs/reveal endpoint (resolve pe-ref + show in folder) ([#754](https://github.com/iOfficeAI/AionCore/issues/754)) ([f6977c7](https://github.com/iOfficeAI/AionCore/commit/f6977c784a7b508a5fc75f4c79977fd43ce22b4e))
+* **session:** make background work visible — live progress cards and out-of-turn delivery ([#758](https://github.com/iOfficeAI/AionCore/issues/758)) ([f0422ca](https://github.com/iOfficeAI/AionCore/commit/f0422ca28b08b3e16e8e8e2dd1778e816694095e))
+
+
+### Bug Fixes
+
+* **conversation:** apply a cancel that arrives while the agent is still building ([#747](https://github.com/iOfficeAI/AionCore/issues/747)) ([42fc44b](https://github.com/iOfficeAI/AionCore/commit/42fc44b51867c525759fd89d4efd7713f0c7f445))
+* **db:** widen migration-030 pre-repair gate to any pre-030 start point ([#756](https://github.com/iOfficeAI/AionCore/issues/756)) ([6e2b33d](https://github.com/iOfficeAI/AionCore/commit/6e2b33d75bfa0b5c504514fc25d1f09d6db7b3f7))
+* **file-watch:** degrade gracefully when watcher init fails instead of killing backend ([#751](https://github.com/iOfficeAI/AionCore/issues/751)) ([bdb6d61](https://github.com/iOfficeAI/AionCore/commit/bdb6d619c62cd5294bb09248b86b10fc5cd9ba1f))
+* **file:** strip verbatim \\?\ prefix from non-browse path outputs ([#736](https://github.com/iOfficeAI/AionCore/issues/736)) ([782ddd0](https://github.com/iOfficeAI/AionCore/commit/782ddd083074bec1857a3a9b5bc64852ae525c4f))
+* **process:** reap tool subprocesses that left the process group ([#753](https://github.com/iOfficeAI/AionCore/issues/753)) ([7bc0260](https://github.com/iOfficeAI/AionCore/commit/7bc026006c55a7f38d94f86a44af6d36105284b3))
+* **runtime:** retry transient bundled-node activation copy and reclassify persistent I/O failures ([#760](https://github.com/iOfficeAI/AionCore/issues/760)) ([23d2ec6](https://github.com/iOfficeAI/AionCore/commit/23d2ec658dd3dfda89156f7119945ac3c7141611))
+* **server:** emit AIONCORE_READY marker once serving begins ([#761](https://github.com/iOfficeAI/AionCore/issues/761)) ([8b08130](https://github.com/iOfficeAI/AionCore/commit/8b08130365ec7c883736c0b4aabcef471002dd7b))
+
+## [0.1.56](https://github.com/iOfficeAI/AionCore/compare/v0.1.55...v0.1.56) (2026-07-31)
+
+
+### Features
+
+* **project:** hide OS-junk and VCS-internal noise from listings ([#727](https://github.com/iOfficeAI/AionCore/issues/727)) ([6197117](https://github.com/iOfficeAI/AionCore/commit/6197117ef09bc0797f5656d3d6c3ec2e40161c09))
+
+
+### Bug Fixes
+
+* **agents:** persist the catalog the availability probe already fetched ([#735](https://github.com/iOfficeAI/AionCore/issues/735)) ([2438095](https://github.com/iOfficeAI/AionCore/commit/24380952e133b38b2f0192d2be09bda1f5306d5a))
+* **ai-agent:** token usage for the direct-CLI backends (claude / codex) ([#733](https://github.com/iOfficeAI/AionCore/issues/733)) ([93a24f4](https://github.com/iOfficeAI/AionCore/commit/93a24f43fcd0f1ecc4528b690d34ba83153f4834))
+* **conversation:** request plaintext thinking from claude, drop blank thought cards ([#731](https://github.com/iOfficeAI/AionCore/issues/731)) ([9cd4fb9](https://github.com/iOfficeAI/AionCore/commit/9cd4fb99648c7d624fa3f897b6291fea51b7c034))
+* **project/monitor:** attribute watched-subdir events to parent so tree reflects dir delete/rename ([#734](https://github.com/iOfficeAI/AionCore/issues/734)) ([8494a1f](https://github.com/iOfficeAI/AionCore/commit/8494a1f95f7c8c08f85b1d30d2d39c99770325a5))
+* **session:** settle cancelled workflows and stop per-turn pump state leaking across turns ([#732](https://github.com/iOfficeAI/AionCore/issues/732)) ([b8a4a88](https://github.com/iOfficeAI/AionCore/commit/b8a4a882f50838d2e26211a2f3f8713a0eded1b9))
+* **team:** derive team capability from probed MCP transports, not a stored veto ([#725](https://github.com/iOfficeAI/AionCore/issues/725)) ([d60fc62](https://github.com/iOfficeAI/AionCore/commit/d60fc6297c3477658f4cdc635f6de7540230d28f))
+
+## [0.1.55](https://github.com/iOfficeAI/AionCore/compare/v0.1.54...v0.1.55) (2026-07-30)
+
+
+### Features
+
+* **agents:** add omp (Oh My Pi) builtin ACP agent ([#717](https://github.com/iOfficeAI/AionCore/issues/717)) ([91f375d](https://github.com/iOfficeAI/AionCore/commit/91f375db0ba355c011309484382f4d5ab90ccbb2))
+* **project:** fs/search filename search vertical ([#720](https://github.com/iOfficeAI/AionCore/issues/720)) ([b64ab4f](https://github.com/iOfficeAI/AionCore/commit/b64ab4fd6eef74812360d2a901aa39d8c946c033))
+
+
+### Bug Fixes
+
+* **auth:** make AionUi-&gt;AionPro data adoption a one-shot event ([#716](https://github.com/iOfficeAI/AionCore/issues/716)) ([c9f6f79](https://github.com/iOfficeAI/AionCore/commit/c9f6f79fa1a15df177e15a8ff990dcb571d2fe4c))
+* **db:** pre-migration repair for migration-030 startup-blocking CHECK failures ([#724](https://github.com/iOfficeAI/AionCore/issues/724)) ([859ed7e](https://github.com/iOfficeAI/AionCore/commit/859ed7e5bdd2da5664b0f1d2df4e2b9cd92aaf3b))
+* prevent silent encryption-key rotation on migration upgrade (ELECTRON-3T0) ([#722](https://github.com/iOfficeAI/AionCore/issues/722)) ([4993fe8](https://github.com/iOfficeAI/AionCore/commit/4993fe858c531f6b2ca471ad59612d46e97d9de9))
+* **project:** add temporary fs/resolve command for preview file paths ([#723](https://github.com/iOfficeAI/AionCore/issues/723)) ([575feac](https://github.com/iOfficeAI/AionCore/commit/575feacd9e5aef7b7948a882bdb9ce27050e2829))
+* **session:** carry tool input on permission events so the approval card shows what is being approved ([#715](https://github.com/iOfficeAI/AionCore/issues/715)) ([bdbb11c](https://github.com/iOfficeAI/AionCore/commit/bdbb11c7f32547996fe6e33b0a4d8b833cb7279b))
+
+## [0.1.54](https://github.com/iOfficeAI/AionCore/compare/v0.1.53...v0.1.54) (2026-07-29)
+
+
+### Features
+
+* multi-account user scope isolation ([#669](https://github.com/iOfficeAI/AionCore/issues/669)) ([7f8ed6c](https://github.com/iOfficeAI/AionCore/commit/7f8ed6c5d5a899984e23b1ae130640bdeaffd6dc))
+* **project:** Project Explorer backend (runtime, WS monitor, HTTP) ([#701](https://github.com/iOfficeAI/AionCore/issues/701)) ([0a79100](https://github.com/iOfficeAI/AionCore/commit/0a791002b0b43f0ac883a4b58b76336830041da0))
+* **scripts:** carry aionrs changelog into the bump PR ([#703](https://github.com/iOfficeAI/AionCore/issues/703)) ([f34cfb6](https://github.com/iOfficeAI/AionCore/commit/f34cfb61ba58266dfe8100cebc678925c9d67806))
+
+
+### Code Refactoring
+
+* **acp:** upgrade agent-client-protocol SDK 0.11.1 -&gt; 2.0.0 ([#708](https://github.com/iOfficeAI/AionCore/issues/708)) ([9e185f0](https://github.com/iOfficeAI/AionCore/commit/9e185f0b196e6945b4d716553968150cb162c7ba))
+
 ## [0.1.53](https://github.com/iOfficeAI/AionCore/compare/v0.1.52...v0.1.53) (2026-07-28)
 
 

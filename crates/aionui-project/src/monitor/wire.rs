@@ -200,16 +200,50 @@ impl WireEntry {
 
 /// Build the `fs/snapshot` params for one target from a canonical-domain
 /// [`Snapshot`]. The `target` is the subscriber's pe-relative identity.
+///
+/// Used for the `fs/subscribe` reply, where a snapshot is simply the caller's
+/// first view of a directory. The push that follows an overflow rescan carries an
+/// extra marker and goes through [`overflow_snapshot_params`].
 pub fn snapshot_params(snapshot: &Snapshot, target: &ResourceRef) -> Value {
-    let entries: Vec<WireEntry> = snapshot
+    json!({
+        "target": target,
+        "entries": wire_entries(snapshot),
+    })
+}
+
+/// Build the `fs/snapshot` params for an overflow rescan, tagged so the receiver
+/// can tell it apart from a first listing.
+///
+/// The two are indistinguishable on the wire otherwise, and they mean opposite
+/// things: a subscribe reply says "here is what this directory holds", whereas an
+/// overflow push says "the kernel dropped events, so anything here may have
+/// changed — including file contents, which a listing cannot show".
+///
+/// A receiver that treats the second as the first silently loses every change in
+/// that window. Overflow supersedes buffered per-child events during debounce
+/// (`runtime::actor`), so it does not merely lack deltas — it replaces the deltas
+/// that would otherwise have been sent. The marker is what lets a receiver
+/// respond conservatively (re-read what it is showing) instead of assuming
+/// nothing happened.
+///
+/// `reason` is an added optional field, so this needs no protocol version bump:
+/// receivers that do not know it ignore it and behave exactly as before, which is
+/// the same compatibility argument the `modified` op relies on.
+pub fn overflow_snapshot_params(snapshot: &Snapshot, target: &ResourceRef) -> Value {
+    json!({
+        "target": target,
+        "entries": wire_entries(snapshot),
+        "reason": "overflow",
+    })
+}
+
+/// Project a canonical-domain snapshot's entries to their outward form.
+fn wire_entries(snapshot: &Snapshot) -> Vec<WireEntry> {
+    snapshot
         .entries
         .iter()
         .map(|(name, fact)| WireEntry::from_fact(name, fact))
-        .collect();
-    json!({
-        "target": target,
-        "entries": entries,
-    })
+        .collect()
 }
 
 /// Build the `fs/delta` params for one target from a canonical-domain
@@ -222,7 +256,8 @@ pub fn delta_params(delta: &DeltaBatch, target: &ResourceRef) -> Value {
     })
 }
 
-/// One reconciled change → tagged wire object (`op` = added/removed/renamed).
+/// One reconciled change → tagged wire object (`op` = added/removed/renamed/
+/// modified).
 fn change_to_wire(change: &Change) -> Value {
     match change {
         Change::Added { name, kind } => json!({
@@ -238,6 +273,13 @@ fn change_to_wire(change: &Change) -> Value {
             "op": "renamed",
             "from": from,
             "to": to,
+        }),
+        // No mtime on the wire, by design — see `Change::Modified`. Adding one op
+        // is a backward-compatible extension: clients ignore ops they do not know,
+        // so this needs no protocol version bump and no lockstep release.
+        Change::Modified { name } => json!({
+            "op": "modified",
+            "name": name,
         }),
     }
 }
@@ -310,6 +352,27 @@ pub fn fs_error_to_rpc(err: &FsError) -> (i64, &'static str) {
         | FsError::PermissionDenied { .. }
         | FsError::NotADirectory { .. }
         | FsError::Io { .. } => (CODE_PROVIDER_UNAVAILABLE, "provider_unavailable"),
+    }
+}
+
+/// The underlying provider failure detail behind an [`FsError`], for logs only.
+///
+/// [`fs_error_to_rpc`] deliberately collapses several variants onto one stable
+/// protocol name (`provider_unavailable`), which drops the real cause — notably
+/// the `notify` message behind [`FsError::Io`] (e.g. an exhausted inotify watch
+/// limit). Logging this next to the protocol code keeps the wire contract
+/// unchanged while making the failure diagnosable. The absolute `uri` is
+/// intentionally left out: callers log the pe-relative identity instead.
+pub fn fs_error_detail(err: &FsError) -> &str {
+    match err {
+        FsError::Io { message, .. } => message,
+        FsError::UnsupportedScheme { scheme } => scheme,
+        // The remaining variants carry nothing beyond their protocol code and
+        // the uri, so the static text is the whole detail.
+        FsError::NotFound { .. } => "resource not found",
+        FsError::AlreadyExists { .. } => "resource already exists",
+        FsError::PermissionDenied { .. } => "permission denied",
+        FsError::NotADirectory { .. } => "not a directory",
     }
 }
 

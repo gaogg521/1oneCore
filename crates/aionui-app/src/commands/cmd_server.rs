@@ -370,14 +370,7 @@ pub(crate) async fn run_server(
     // between us and process exit.
     let drain_started = shutdown_tx.subscribe();
 
-    // ConnectInfo<SocketAddr> lets the auth middleware learn the direct TCP
-    // peer for IP-allowlist enforcement. It is meaningful for a standalone
-    // server binding directly to a remote interface; for the desktop's
-    // co-located backend behind the WebUI reverse proxy, every connection is
-    // spliced over loopback and this always resolves to 127.0.0.1 — the
-    // middleware falls back to the proxy's own forwarded-IP header in that
-    // case (see `aionui_auth::middleware::is_webui_proxied`).
-    let serve_future = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
+    let serve_future = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             let signal_result = shutdown_signal(parent_exit).await;
             // From here on the process must exit in bounded time so the
@@ -496,18 +489,6 @@ pub(crate) async fn run_server(
             SHUTDOWN_IDLE_SCANNER_JOIN_TIMEOUT,
             "idle scanner join timed out; abandoning scanner task",
         ),
-    }
-
-    // Same contract as the scanner above: it wakes on the shutdown watch. Both
-    // must be joined before the pool closes, or a sync mid-write would find the
-    // database gone.
-    if let Err(e) = directory_sync_handle.await {
-        warn!(
-            code = "BOOTSTRAP_DEGRADED_DIRECTORY_SYNC",
-            stage = "directory_sync.join",
-            error = %e,
-            "directory sync scheduler join failed"
-        );
     }
 
     // `sqlx::Pool::close()` waits for all checked-out connections to be

@@ -1,4 +1,4 @@
-use agent_client_protocol::schema::Meta as SdkMeta;
+use agent_client_protocol::schema::v1::Meta as SdkMeta;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -22,6 +22,14 @@ pub struct ToolCallEventData {
     pub output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The `call_id` of the Task/Agent call this call runs INSIDE (claude's
+    /// frame-level `parent_tool_use_id`); `None` = the main agent's own call.
+    /// Lets the frontend group/indent a subagent's internal steps under its
+    /// launching Task row. Skipped when `None` (merge-patch: the terminal
+    /// ToolResult frame legitimately repeats the call without it, and a null
+    /// would DELETE the stored attribution).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

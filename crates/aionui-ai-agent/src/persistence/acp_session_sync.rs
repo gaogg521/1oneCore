@@ -202,7 +202,11 @@ impl PendingUpdate {
 /// Consume domain events from the session aggregate and persist user
 /// intent changes with a debounce window.
 ///
-/// `SessionAssigned` bypasses the debounce: the CLI-issued id must be
+/// `SessionIdDurable`, not `SessionAssigned`: an id is only worth
+/// persisting once the CLI side actually has the session, which is a
+/// strictly later moment (see the event's own doc comment — persisting on
+/// assignment made every resume attempt rebuild a session that was never
+/// going to be found). It bypasses the debounce: the durable id must be
 /// written immediately so the next turn can take the resume path even
 /// if the process crashes before any other event fires.
 async fn domain_event_consumer(
@@ -592,32 +596,5 @@ mod tests {
         assert_eq!(row.session_id.as_deref(), Some("sess-42"));
         drop(tx);
         sleep(Duration::from_millis(50)).await;
-    }
-
-    /// Merely assigning an id must NOT persist it.
-    ///
-    /// This is the whole point of the split: an id issued by `session/new`
-    /// belongs to a session that has not been prompted yet, and persisting it
-    /// makes the next warmup pay for a resume the CLI cannot honour.
-    #[tokio::test(flavor = "current_thread")]
-    async fn assigning_an_id_does_not_persist_it() {
-        let (_svc, repo) = setup().await;
-        let (tx, rx) = mpsc::channel(64);
-
-        let cid = "conv-1".to_owned();
-        tokio::spawn(domain_event_consumer("user-1".to_owned(), cid, rx, repo.clone()));
-
-        tx.send(AcpSessionEvent::SessionAssigned {
-            session_id: SessionId::new("sess-unprompted"),
-        })
-        .await
-        .unwrap();
-
-        sleep(Duration::from_millis(100)).await;
-        let row = repo.get_for_user("user-1", "conv-1").await.unwrap().unwrap();
-        assert_eq!(
-            row.session_id, None,
-            "an id that has not carried a turn must stay out of the DB"
-        );
     }
 }

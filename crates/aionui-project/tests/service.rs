@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aionui_api_types::{ChatFileRef, TaggedChatFileRef};
+use aionui_api_types::ChatFileRef;
 use aionui_db::{Database, IProjectStore, SqliteProjectStore, init_database_memory};
 use aionui_project::ProjectService;
 use aionui_project::canonical::{canonicalize, to_file_uri};
@@ -523,8 +523,8 @@ async fn cross_user_remove_and_rename_entry_are_not_found() {
 
 // ── resolve_chat_file_ref: the Project variant ─────────────────────────
 //
-// This is the arm that the preview content endpoints depend on when the
-// frontend has only explorer identity — the Explorer payload deliberately
+// This is the arm that `/api/fs/open-system` (and the content endpoints) depend on
+// when the frontend has only explorer identity — the Explorer payload deliberately
 // carries no absolute path, so `{pe_id, relative_path}` is all the client holds.
 // The variant had no coverage before, which left "does an identity-only ref
 // actually resolve to something openable?" resting on inspection rather than a test.
@@ -545,10 +545,10 @@ async fn resolve_chat_file_ref_project_variant_yields_the_absolute_path() {
     let abs = svc
         .resolve_chat_file_ref(
             "system_default_user",
-            &ChatFileRef::Tagged(TaggedChatFileRef::Project {
+            &ChatFileRef::Project {
                 pe_id: created.project_explorer.pe_id.clone(),
                 relative_path: "docs/report.xlsx".to_owned(),
-            }),
+            },
             &std::env::temp_dir(),
             FileOp::Read,
         )
@@ -594,10 +594,10 @@ async fn resolve_chat_file_ref_project_variant_works_for_attached_folders() {
     let abs = svc
         .resolve_chat_file_ref(
             "system_default_user",
-            &ChatFileRef::Tagged(TaggedChatFileRef::Project {
+            &ChatFileRef::Project {
                 pe_id: entry.pe_id.clone(),
                 relative_path: "sheet.xlsx".to_owned(),
-            }),
+            },
             &std::env::temp_dir(),
             FileOp::Read,
         )
@@ -625,10 +625,10 @@ async fn resolve_chat_file_ref_project_variant_rejects_missing_and_escaping_path
     let err = svc
         .resolve_chat_file_ref(
             "system_default_user",
-            &ChatFileRef::Tagged(TaggedChatFileRef::Project {
+            &ChatFileRef::Project {
                 pe_id: pe_id.clone(),
                 relative_path: "nope.xlsx".to_owned(),
-            }),
+            },
             &std::env::temp_dir(),
             FileOp::Read,
         )
@@ -641,10 +641,10 @@ async fn resolve_chat_file_ref_project_variant_rejects_missing_and_escaping_path
     let err = svc
         .resolve_chat_file_ref(
             "system_default_user",
-            &ChatFileRef::Tagged(TaggedChatFileRef::Project {
+            &ChatFileRef::Project {
                 pe_id,
                 relative_path: "../../etc/passwd".to_owned(),
-            }),
+            },
             &std::env::temp_dir(),
             FileOp::Read,
         )

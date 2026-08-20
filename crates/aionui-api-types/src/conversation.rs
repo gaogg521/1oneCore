@@ -5,6 +5,7 @@ use aionui_common::{
 use serde::{Deserialize, Serialize};
 
 use crate::acp::AcpConfigOptionDto;
+use crate::agent_build_extra::SessionMcpServer;
 use crate::chat_file::ChatFileRef;
 
 /// Per-MCP snapshot status stored in `conversation.extra`.
@@ -24,6 +25,26 @@ pub struct ConversationMcpStatus {
     pub status: ConversationMcpStatusKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// Typed runtime MCP snapshot for a conversation, persisted in
+/// `conversation.extra` as the four fields `mcp_server_ids` /
+/// `session_mcp_servers` / `mcp_servers` / `mcp_statuses`.
+///
+/// Shared by `aionui-conversation` (which builds it), `aionui-team` (which
+/// refreshes it on attach) and `aionui-app` (which wires the two), so the team
+/// refresh path never has to reason about raw JSON or raw DB rows.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct McpRuntimeSnapshot {
+    /// Selected non-builtin MCP row ids (the `mcp_server_ids` extra field).
+    pub mcp_server_ids: Vec<String>,
+    /// Selected builtin MCP servers in neutral form (the `session_mcp_servers`
+    /// extra field); stdio launch commands are already resolved.
+    pub session_mcp_servers: Vec<SessionMcpServer>,
+    /// Merged display names, deduped by name (the `mcp_servers` extra field).
+    pub mcp_servers: Vec<String>,
+    /// Per-server load status classification (the `mcp_statuses` extra field).
+    pub mcp_statuses: Vec<ConversationMcpStatus>,
 }
 
 // ── Request types ──────────────────────────────────────────────────
@@ -86,9 +107,25 @@ pub struct ForkConversationRequest {
     pub name: Option<String>,
 }
 
+/// Prompt media capability projection for one conversation, sourced from
+/// the effective `prompt_capabilities` projection (ACP handshake or constructed
+/// backend descriptor). `None` =
+/// unknown/unsupported — the UI then hints that media attachments are sent
+/// as file paths. Filled only on the single-conversation detail path (list
+/// responses omit it — no N+1).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptCapabilityView {
+    /// Agent takes native image content blocks.
+    #[serde(default)]
+    pub image: bool,
+    /// Agent takes native audio content blocks.
+    #[serde(default)]
+    pub audio: bool,
+}
+
 /// Session-fork capability projection for one conversation, sourced from
-/// `agent_metadata.agent_capabilities.session_capabilities.fork` (ACP agents:
-/// handshake-persisted; claude/codex: migration-constructed). `Some` = the fork
+/// the effective `session_capabilities.fork` projection (ACP handshake or
+/// constructed backend descriptor). `Some` = the fork
 /// entry point may be shown; `None` = hidden. Filled only on the single-
 /// conversation detail path (list responses omit it — no N+1).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -107,6 +144,13 @@ pub struct ForkCapabilityView {
 #[derive(Debug, Deserialize)]
 pub struct UpdateConversationRequest {
     pub name: Option<String>,
+    /// Intent of a `name` change: `"user"` = explicit rename (agent titles
+    /// will never overwrite it afterwards), `"auto"` = frontend-derived
+    /// default title (keeps the name overwritable by agent titles).
+    /// Absent defaults to `"user"` so old clients' renames stay protected.
+    /// Ignored when `name` is absent.
+    #[serde(default)]
+    pub name_source: Option<String>,
     pub pinned: Option<bool>,
     pub model: Option<ProviderWithModel>,
     pub extra: Option<serde_json::Value>,
@@ -169,6 +213,7 @@ pub enum ConversationRuntimeStateKind {
     Starting,
     Running,
     Cancelling,
+    Restarting,
     WaitingConfirmation,
 }
 
@@ -259,6 +304,11 @@ pub struct SearchMessagesQuery {
 pub struct ConversationResponse {
     pub id: String,
     pub name: String,
+    /// Origin of the current `name`: `"user"` (explicit rename, protected),
+    /// `"agent"` (agent-generated title), or absent for a default/placeholder
+    /// name that agents may replace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_source: Option<String>,
     pub r#type: AgentType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<ProviderWithModel>,
@@ -280,6 +330,10 @@ pub struct ConversationResponse {
     /// `None` on list responses. See [`ForkCapabilityView`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_capability: Option<ForkCapabilityView>,
+    /// Service-layer post-fill on the DETAIL path only (like `runtime`);
+    /// `None` on list responses. See [`PromptCapabilityView`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_capability: Option<PromptCapabilityView>,
     pub created_at: TimestampMs,
     pub modified_at: TimestampMs,
     pub extra: serde_json::Value,
@@ -521,9 +575,31 @@ mod tests {
         let raw = json!({ "name": "New Name" });
         let req: UpdateConversationRequest = serde_json::from_value(raw).unwrap();
         assert_eq!(req.name.as_deref(), Some("New Name"));
+        // Absent name_source deserializes as None (the service treats a
+        // name change without it as an explicit user rename).
+        assert!(req.name_source.is_none());
         assert!(req.pinned.is_none());
         assert!(req.model.is_none());
         assert!(req.extra.is_none());
+    }
+
+    #[test]
+    fn deserialize_update_request_name_source_auto() {
+        let raw = json!({ "name": "Derived title", "name_source": "auto" });
+        let req: UpdateConversationRequest = serde_json::from_value(raw).unwrap();
+        assert_eq!(req.name_source.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn conversation_name_updated_payload_round_trip() {
+        let payload = ConversationNameUpdatedPayload {
+            conversation_id: "conv_1".into(),
+            name: "Fix login bug".into(),
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(value, json!({ "conversation_id": "conv_1", "name": "Fix login bug" }));
+        let back: ConversationNameUpdatedPayload = serde_json::from_value(value).unwrap();
+        assert_eq!(back, payload);
     }
 
     #[test]
@@ -655,6 +731,7 @@ mod tests {
         let resp = ConversationResponse {
             id: "conv_1".into(),
             name: "Test".into(),
+            name_source: None,
             r#type: AgentType::Acp,
             model: Some(ProviderWithModel {
                 provider_id: "p1".into(),
@@ -673,6 +750,7 @@ mod tests {
             modified_at: 1712345678000,
             extra: json!({ "workspace": "/project" }),
             fork_capability: None,
+            prompt_capability: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["id"], "conv_1");
@@ -699,6 +777,7 @@ mod tests {
         let resp = ConversationResponse {
             id: "conv_none".into(),
             name: "Test".into(),
+            name_source: None,
             r#type: AgentType::Acp,
             model: None,
             status: ConversationStatus::Pending,
@@ -713,6 +792,7 @@ mod tests {
             modified_at: 1,
             extra: json!({}),
             fork_capability: None,
+            prompt_capability: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json.get("model").is_none(), "model None should be omitted");
@@ -733,6 +813,7 @@ mod tests {
         let resp = ConversationResponse {
             id: "conv_2".into(),
             name: "Round".into(),
+            name_source: None,
             r#type: AgentType::Acp,
             model: None,
             status: ConversationStatus::Running,
@@ -747,6 +828,7 @@ mod tests {
             modified_at: 2000,
             extra: json!({}),
             fork_capability: None,
+            prompt_capability: None,
         };
         let serialized = serde_json::to_string(&resp).unwrap();
         let deserialized: ConversationResponse = serde_json::from_str(&serialized).unwrap();
@@ -821,6 +903,7 @@ mod tests {
             conversation: ConversationResponse {
                 id: "conv_1".into(),
                 name: "Code Review".into(),
+                name_source: None,
                 r#type: AgentType::Acp,
                 model: None,
                 status: ConversationStatus::Finished,
@@ -835,6 +918,7 @@ mod tests {
                 modified_at: 1712345678000,
                 extra: json!({}),
                 fork_capability: None,
+                prompt_capability: None,
             },
         };
         let json = serde_json::to_value(&item).unwrap();
@@ -860,6 +944,7 @@ mod tests {
             conversation: ConversationResponse {
                 id: "conv_x".into(),
                 name: "Search Test".into(),
+                name_source: None,
                 r#type: AgentType::Acp,
                 model: None,
                 status: ConversationStatus::Finished,
@@ -874,6 +959,7 @@ mod tests {
                 modified_at: 9000,
                 extra: json!({}),
                 fork_capability: None,
+                prompt_capability: None,
             },
         };
         let serialized = serde_json::to_string(&item).unwrap();
@@ -900,15 +986,21 @@ mod tests {
         });
         let req: SendMessageRequest = serde_json::from_value(raw).unwrap();
         assert_eq!(req.content, "Review this code");
-        // `files` became a two-shape enum so the tagged refs the desktop client
-        // sends stop being rejected; a bare path still deserializes as before.
-        // `project` refs have no direct path (they resolve via the project
-        // store), so only the upload/local entries show up here.
         assert_eq!(
-            req.files.iter().filter_map(|f| f.direct_path()).collect::<Vec<_>>(),
-            vec!["/tmp/a.rs", "/Users/me/notes.txt"]
+            req.files,
+            vec![
+                ChatFileRef::Project {
+                    pe_id: "pe1".into(),
+                    relative_path: "src/a.rs".into()
+                },
+                ChatFileRef::Upload {
+                    path: "/tmp/a.rs".into()
+                },
+                ChatFileRef::Local {
+                    path: "/Users/me/notes.txt".into()
+                },
+            ]
         );
-        assert_eq!(req.files[0].project_ref(), Some(("pe1", "src/a.rs")));
         assert_eq!(req.inject_skills, vec!["security-review"]);
         assert!(req.hidden);
     }
@@ -945,6 +1037,7 @@ mod tests {
             items: vec![ConversationResponse {
                 id: "conv_1".into(),
                 name: "Test".into(),
+                name_source: None,
                 r#type: AgentType::Acp,
                 model: None,
                 status: ConversationStatus::Pending,
@@ -959,6 +1052,7 @@ mod tests {
                 modified_at: 1000,
                 extra: json!({}),
                 fork_capability: None,
+                prompt_capability: None,
             }],
             total: 1,
             has_more: false,
@@ -999,6 +1093,7 @@ mod tests {
                 conversation: ConversationResponse {
                     id: "c1".into(),
                     name: "Conv".into(),
+                    name_source: None,
                     r#type: AgentType::Acp,
                     model: None,
                     status: ConversationStatus::Finished,
@@ -1013,6 +1108,7 @@ mod tests {
                     modified_at: 5000,
                     extra: json!({}),
                     fork_capability: None,
+                    prompt_capability: None,
                 },
             }],
             total: 1,
@@ -1047,37 +1143,6 @@ mod tests {
         assert_eq!(raw["kind"], "skill_suggest");
         assert_eq!(raw["status"], "active");
         assert_eq!(raw["payload"]["name"], "daily-report");
-    }
-
-    /// The whole point of the untagged enum: both client generations must
-    /// deserialize. Before this, the tagged shape the desktop client actually
-    /// sends made every attachment fail with `400 Invalid JSON request body`.
-    #[test]
-    fn send_message_accepts_bare_paths_and_tagged_refs() {
-        let bare: SendMessageRequest = serde_json::from_str(r#"{"content":"hi","files":["/ws/a.png"]}"#).unwrap();
-        assert_eq!(bare.files.len(), 1);
-        assert_eq!(bare.files[0].direct_path(), Some("/ws/a.png"));
-
-        let tagged: SendMessageRequest = serde_json::from_str(
-            r#"{"content":"hi","files":[{"kind":"upload","path":"/tmp/u.png"},{"kind":"local","path":"/tmp/l.png"}]}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            tagged.files.iter().filter_map(|f| f.direct_path()).collect::<Vec<_>>(),
-            vec!["/tmp/u.png", "/tmp/l.png"]
-        );
-    }
-
-    /// A project ref carries identity, not a path — it has to be resolved
-    /// against the project store, so it must NOT masquerade as a direct path.
-    #[test]
-    fn project_ref_has_no_direct_path_and_exposes_its_identity() {
-        let req: SendMessageRequest = serde_json::from_str(
-            r#"{"content":"hi","files":[{"kind":"project","pe_id":"pe-1","relative_path":"docs/a.md"}]}"#,
-        )
-        .unwrap();
-        assert_eq!(req.files[0].direct_path(), None);
-        assert_eq!(req.files[0].project_ref(), Some(("pe-1", "docs/a.md")));
     }
 
     #[test]

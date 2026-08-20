@@ -63,6 +63,7 @@ async fn setup_repo() -> (Arc<SqliteConversationRepository>, aionui_db::Database
         updated_at: now,
         project_id: None,
         folder_id: None,
+        name_source: None,
     })
     .await
     .unwrap();
@@ -94,6 +95,7 @@ async fn run_tool_call_with_empty_call_id_is_not_persisted() {
         input: Some(json!({"pattern": "*.rs"})),
         output: None,
         description: None,
+        parent_call_id: None,
     }))
     .unwrap();
     tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -142,6 +144,7 @@ async fn run_tool_call_late_running_event_does_not_regress_completed_message() {
         input: None,
         output: Some("src/main.rs".into()),
         description: None,
+        parent_call_id: None,
     }))
     .unwrap();
     tx.send(AgentStreamEvent::ToolCall(ToolCallEventData {
@@ -152,6 +155,7 @@ async fn run_tool_call_late_running_event_does_not_regress_completed_message() {
         input: Some(json!({"pattern": "*.rs"})),
         output: None,
         description: Some("search files".into()),
+        parent_call_id: None,
     }))
     .unwrap();
     tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -207,6 +211,7 @@ async fn run_tool_call_canceled_status_persists_as_terminal_finish() {
         input: Some(json!({"command": "sleep 60"})),
         output: None,
         description: None,
+        parent_call_id: None,
     }))
     .unwrap();
     // The turn was interrupted: the fold layer closes the still-open call as
@@ -219,6 +224,7 @@ async fn run_tool_call_canceled_status_persists_as_terminal_finish() {
         input: None,
         output: None,
         description: None,
+        parent_call_id: None,
     }))
     .unwrap();
     tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -299,6 +305,7 @@ impl IAgentTask for ToolCallAgent {
             input: Some(json!({"pattern": "*.rs"})),
             output: None,
             description: None,
+            parent_call_id: None,
         }));
         let _ = self.event_tx.send(AgentStreamEvent::Finish(FinishEventData::default()));
         Ok(())

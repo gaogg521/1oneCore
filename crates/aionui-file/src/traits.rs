@@ -129,8 +129,7 @@ pub trait IFileService: Send + Sync {
     ///
     /// When `conversation_id` is provided, the file is placed under a
     /// per-conversation sub-directory (`<tmp>/aionui/<conversation_id>/`);
-    /// otherwise the shared `<tmp>/aionui/` directory is used (same as
-    /// [`create_temp_file`](Self::create_temp_file)).
+    /// otherwise the shared `<tmp>/aionui/` directory is used.
     ///
     /// `file_name` must not contain path separators or traversal patterns.
     async fn create_upload_file(
@@ -322,9 +321,30 @@ pub trait IItemRevealer: Send + Sync {
 /// Convenience alias for an Arc-wrapped item revealer.
 pub type ItemRevealerRef = Arc<dyn IItemRevealer>;
 
+/// Open an absolute filesystem path with the OS default application (the
+/// "open in system editor" escape hatch preview offers for files it cannot
+/// render itself — oversized or unsupported formats). Sibling port to
+/// [`IItemRevealer`], which reveals the enclosing folder instead of opening the
+/// file; the composition layer supplies an adapter over the shell service so
+/// this crate needs no shell dependency.
+#[async_trait::async_trait]
+pub trait ISystemFileOpener: Send + Sync {
+    /// Open `absolute_path` with the OS default application. The path is the
+    /// resolved, contained absolute path from `resolve_chat_file_ref` — never
+    /// client input.
+    ///
+    /// **INV-OPEN**: implementations must not put the path (nor any string
+    /// derived from it) into the returned error. See the `/api/fs/open-system`
+    /// handler for the full invariant.
+    async fn open(&self, absolute_path: &str) -> Result<(), FileError>;
+}
+
+/// Convenience alias for an Arc-wrapped system file opener.
+pub type SystemFileOpenerRef = Arc<dyn ISystemFileOpener>;
+
 /// Write text to the OS clipboard. The `/api/fs/copy-absolute-path` route
 /// resolves the path server-side and writes it here, so — exactly like
-/// [`IItemRevealer`] — the backend performs the OS action
+/// [`IItemRevealer`] / [`ISystemFileOpener`] — the backend performs the OS action
 /// itself and the resolved absolute path is never returned to the client. The
 /// composition layer supplies an adapter over the shell service, so this crate
 /// needs no shell dependency.

@@ -4,23 +4,25 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Extension, Json, Path, State};
+use axum::extract::{Extension, Json, Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 
 use aionui_ai_agent::ActiveLeaseRegistry;
 use aionui_api_types::{
     AddAgentRequest, ApiResponse, CancelTeamChildTurnRequest, CancelTeamRunRequest, CreateTeamRequest,
-    GetConfigOptionsResponse, PauseTeamSlotRequest, RenameAgentRequest, RenameTeamRequest, SendAgentMessageRequest,
-    SendTeamMessageRequest, SetModeRequest, TeamAgentResponse, TeamListResponse, TeamResponse, TeamRunAckResponse,
-    TeamRunStateResponse,
+    GetConfigOptionsResponse, InterruptTeamAgentRequest, PauseTeamSlotRequest, RenameAgentRequest, RenameTeamRequest,
+    SendAgentMessageRequest, SendTeamMessageRequest, SetConfigOptionRequest, SetConfigOptionResponse, SetModeRequest,
+    SetModelRequest, TeamActivityPageResponse, TeamAgentResponse, TeamContextResetAvailability,
+    TeamContextResetResponse, TeamInterruptAgentResponse, TeamListResponse, TeamMailboxMessageResponse, TeamResponse,
+    TeamRunAckResponse, TeamRunStateResponse, TeamTaskResponse,
 };
 use aionui_auth::CurrentUser;
 use aionui_common::ApiError;
-use aionui_db::DbError;
+use aionui_db::{ActivityCursor, DbError, PageDirection};
 
 use crate::error::{TeamError, classify_public_error};
-use crate::service::TeamSessionService;
+use crate::service::{ActivityKind, DEFAULT_ACTIVITY_LIMIT, TeamSessionService};
 
 #[derive(Clone)]
 pub struct TeamRouterState {
@@ -79,6 +81,93 @@ impl From<TeamError> for ApiError {
                     "reason": public_reason,
                 })),
             ),
+            TeamError::MemberBusy {
+                team_id,
+                slot_id,
+                conversation_id,
+            } => ApiError::coded(
+                StatusCode::CONFLICT,
+                "TEAM_MEMBER_BUSY",
+                "Team member is busy",
+                Some(serde_json::json!({
+                    "team_id": team_id,
+                    "slot_id": slot_id,
+                    "conversation_id": conversation_id,
+                })),
+            ),
+            TeamError::MemberRuntimeStarting {
+                team_id,
+                slot_id,
+                conversation_id,
+            } => ApiError::coded(
+                StatusCode::CONFLICT,
+                "TEAM_MEMBER_RUNTIME_STARTING",
+                "Team member runtime is starting",
+                Some(serde_json::json!({
+                    "team_id": team_id,
+                    "slot_id": slot_id,
+                    "conversation_id": conversation_id,
+                })),
+            ),
+            TeamError::MemberUnsupported {
+                team_id,
+                slot_id,
+                conversation_id,
+                backend,
+            } => ApiError::coded(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "TEAM_MEMBER_UNSUPPORTED",
+                "Team member does not support context reset",
+                Some(serde_json::json!({
+                    "team_id": team_id,
+                    "slot_id": slot_id,
+                    "conversation_id": conversation_id,
+                    "backend": backend,
+                })),
+            ),
+            TeamError::ContextResetLeaderNotTargetable {
+                team_id,
+                slot_id,
+                conversation_id,
+            } => ApiError::coded(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "TEAM_CONTEXT_RESET_LEADER_NOT_TARGETABLE",
+                "Team leaders cannot be context-reset targets",
+                Some(serde_json::json!({
+                    "team_id": team_id,
+                    "slot_id": slot_id,
+                    "conversation_id": conversation_id,
+                })),
+            ),
+            TeamError::ContextResetUnavailable {
+                team_id,
+                slot_id,
+                conversation_id,
+                availability,
+            } => {
+                let code = match availability {
+                    TeamContextResetAvailability::Initializing => "TEAM_MEMBER_RUNTIME_STARTING",
+                    TeamContextResetAvailability::Busy => "TEAM_MEMBER_BUSY",
+                    TeamContextResetAvailability::Dormant => "TEAM_MEMBER_DORMANT",
+                    TeamContextResetAvailability::Failed => "TEAM_MEMBER_RUNTIME_FAILED",
+                    TeamContextResetAvailability::Removing => "TEAM_MEMBER_REMOVING",
+                    TeamContextResetAvailability::SessionStopped => "TEAM_SESSION_STOPPED",
+                    TeamContextResetAvailability::Unsupported => "TEAM_MEMBER_UNSUPPORTED",
+                    TeamContextResetAvailability::LeaderNotTargetable => "TEAM_CONTEXT_RESET_LEADER_NOT_TARGETABLE",
+                    TeamContextResetAvailability::Ready => "TEAM_CONTEXT_RESET_UNAVAILABLE",
+                };
+                ApiError::coded(
+                    StatusCode::CONFLICT,
+                    code,
+                    "Team member context reset is unavailable",
+                    Some(serde_json::json!({
+                        "team_id": team_id,
+                        "slot_id": slot_id,
+                        "conversation_id": conversation_id,
+                        "availability": availability,
+                    })),
+                )
+            }
             TeamError::WorkspacePathUnavailable(path) => ApiError::WorkspacePathUnavailable(path),
             TeamError::WorkspacePathRuntimeUnavailable(path) => ApiError::WorkspacePathRuntimeUnavailable(path),
             TeamError::Database(db_err) => db_error_to_api_error(db_err),
@@ -92,6 +181,9 @@ pub fn team_routes(state: TeamRouterState) -> Router {
         .route("/api/teams", post(create_team).get(list_teams))
         .route("/api/teams/{id}", get(get_team).delete(remove_team))
         .route("/api/teams/{id}/run-state", get(get_run_state))
+        .route("/api/teams/{id}/mailbox", get(list_mailbox))
+        .route("/api/teams/{id}/tasks", get(list_tasks))
+        .route("/api/teams/{id}/activity", get(list_activity))
         .route("/api/teams/{id}/name", axum::routing::patch(rename_team))
         .route("/api/teams/{id}/agents", post(add_agent))
         .route("/api/teams/{id}/agents/{slot_id}", axum::routing::delete(remove_agent))
@@ -99,12 +191,29 @@ pub fn team_routes(state: TeamRouterState) -> Router {
             "/api/teams/{id}/agents/{slot_id}/name",
             axum::routing::patch(rename_agent),
         )
+        .route(
+            "/api/teams/{id}/agents/{slot_id}/model",
+            axum::routing::patch(update_agent_model),
+        )
         .route("/api/teams/{id}/messages", post(send_message))
         .route("/api/teams/{id}/agents/{slot_id}/messages", post(send_message_to_agent))
+        .route("/api/teams/{id}/agents/{slot_id}/interrupt", post(interrupt_agent))
         .route("/api/teams/{id}/agents/{slot_id}/attach", post(attach_agent))
+        .route(
+            "/api/teams/{id}/agents/{slot_id}/runtime/restart",
+            post(restart_agent_runtime),
+        )
+        .route(
+            "/api/teams/{id}/agents/{slot_id}/context/reset",
+            post(reset_agent_context),
+        )
         .route(
             "/api/teams/{id}/conversations/{conversation_id}/config-options",
             get(get_conversation_config_options),
+        )
+        .route(
+            "/api/teams/{id}/conversations/{conversation_id}/config-options/{option_id}",
+            put(set_conversation_config_option),
         )
         .route("/api/teams/{id}/runs/{team_run_id}/cancel", post(cancel_run))
         .route(
@@ -164,6 +273,113 @@ async fn remove_team(
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     state.service.remove_team(&user.id, &id).await?;
     Ok(Json(ApiResponse::success()))
+}
+
+/// Query parameters for the read-only team activity endpoints. `limit` is
+/// optional (defaults to `DEFAULT_ACTIVITY_LIMIT`) and clamped in the service.
+#[derive(serde::Deserialize)]
+struct ActivityQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+    /// Comma-separated task ids. When present, `list_tasks` returns exactly
+    /// those tasks (dependency resolution) instead of the newest `limit`.
+    #[serde(default)]
+    ids: Option<String>,
+}
+
+/// Splits a comma-separated `ids` query value into trimmed, non-empty ids.
+fn parse_ids(raw: Option<&str>) -> Vec<String> {
+    raw.map(|s| {
+        s.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+async fn list_mailbox(
+    State(state): State<TeamRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Query(query): Query<ActivityQuery>,
+) -> Result<Json<ApiResponse<Vec<TeamMailboxMessageResponse>>>, ApiError> {
+    let limit = query.limit.unwrap_or(DEFAULT_ACTIVITY_LIMIT);
+    let messages = state.service.list_team_mailbox(&user.id, &id, limit).await?;
+    Ok(Json(ApiResponse::ok(messages)))
+}
+
+async fn list_tasks(
+    State(state): State<TeamRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Query(query): Query<ActivityQuery>,
+) -> Result<Json<ApiResponse<Vec<TeamTaskResponse>>>, ApiError> {
+    let ids = parse_ids(query.ids.as_deref());
+    let tasks = if ids.is_empty() {
+        let limit = query.limit.unwrap_or(DEFAULT_ACTIVITY_LIMIT);
+        state.service.list_team_tasks(&user.id, &id, limit).await?
+    } else {
+        state.service.list_team_tasks_by_ids(&user.id, &id, &ids).await?
+    };
+    Ok(Json(ApiResponse::ok(tasks)))
+}
+
+/// Query parameters for the unified activity feed. `direction`/`kind` fall back
+/// to their defaults on absent or unrecognized values; `cursor_ts`/`cursor_id`
+/// only take effect together (either alone is ignored, treated as first page).
+#[derive(serde::Deserialize)]
+struct ActivityFeedQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    cursor_ts: Option<i64>,
+    #[serde(default)]
+    cursor_id: Option<String>,
+    #[serde(default)]
+    direction: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+fn parse_direction(s: Option<&str>) -> PageDirection {
+    match s {
+        Some("asc") => PageDirection::Asc,
+        _ => PageDirection::Desc,
+    }
+}
+
+fn parse_kind(s: Option<&str>) -> ActivityKind {
+    match s {
+        Some("message") => ActivityKind::Message,
+        Some("task") => ActivityKind::Task,
+        _ => ActivityKind::All,
+    }
+}
+
+fn build_cursor(ts: Option<i64>, id: Option<String>) -> Option<ActivityCursor> {
+    match (ts, id) {
+        (Some(created_at), Some(id)) => Some(ActivityCursor { created_at, id }),
+        _ => None,
+    }
+}
+
+async fn list_activity(
+    State(state): State<TeamRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Query(query): Query<ActivityFeedQuery>,
+) -> Result<Json<ApiResponse<TeamActivityPageResponse>>, ApiError> {
+    let limit = query.limit.unwrap_or(DEFAULT_ACTIVITY_LIMIT);
+    let direction = parse_direction(query.direction.as_deref());
+    let kind = parse_kind(query.kind.as_deref());
+    let cursor = build_cursor(query.cursor_ts, query.cursor_id.clone());
+    let page = state
+        .service
+        .list_team_activity(&user.id, &id, cursor, direction, kind, limit)
+        .await?;
+    Ok(Json(ApiResponse::ok(page)))
 }
 
 async fn rename_team(
@@ -233,6 +449,20 @@ async fn rename_agent(
     Ok(Json(ApiResponse::success()))
 }
 
+async fn update_agent_model(
+    State(state): State<TeamRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(params): Path<AgentPathParams>,
+    body: Result<Json<SetModelRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    state
+        .service
+        .update_agent_model(&user.id, &params.id, &params.slot_id, &req.model_id)
+        .await?;
+    Ok(Json(ApiResponse::success()))
+}
+
 /// Directed retry/wakeup of a single member runtime (dormant or failed).
 /// Backs the send-box "retry start" entry. State-changing → auth + CSRF apply
 /// via the team router middleware layer, same as add/remove/send.
@@ -246,6 +476,30 @@ async fn attach_agent(
         .attach_agent_runtime(&user.id, &params.id, &params.slot_id)
         .await?;
     Ok(Json(ApiResponse::success()))
+}
+
+async fn restart_agent_runtime(
+    State(state): State<TeamRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(params): Path<AgentPathParams>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    state
+        .service
+        .restart_agent_runtime(&user.id, &params.id, &params.slot_id)
+        .await?;
+    Ok(Json(ApiResponse::success()))
+}
+
+async fn reset_agent_context(
+    State(state): State<TeamRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(params): Path<AgentPathParams>,
+) -> Result<Json<ApiResponse<TeamContextResetResponse>>, ApiError> {
+    let outcome = state
+        .service
+        .clear_agent_context(&user.id, &params.id, &params.slot_id)
+        .await?;
+    Ok(Json(ApiResponse::ok(outcome)))
 }
 
 async fn send_message(
@@ -274,6 +528,20 @@ async fn send_message_to_agent(
         .send_message_to_agent(&user.id, &params.id, &params.slot_id, &req.content, req.files)
         .await?;
     Ok(Json(ApiResponse::ok(ack)))
+}
+
+async fn interrupt_agent(
+    State(state): State<TeamRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(params): Path<AgentPathParams>,
+    body: Result<Json<InterruptTeamAgentRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<TeamInterruptAgentResponse>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let response = state
+        .service
+        .interrupt_agent(&user.id, &params.id, &params.slot_id, req)
+        .await?;
+    Ok(Json(ApiResponse::ok(response)))
 }
 
 async fn cancel_run(
@@ -369,6 +637,21 @@ async fn get_conversation_config_options(
     )))
 }
 
+async fn set_conversation_config_option(
+    State(state): State<TeamRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path((id, conversation_id, option_id)): Path<(String, String, String)>,
+    body: Result<Json<SetConfigOptionRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<SetConfigOptionResponse>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .set_conversation_config_option(&user.id, &id, &conversation_id, &option_id, req)
+            .await?,
+    )))
+}
+
 async fn stop_session(
     State(state): State<TeamRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -387,6 +670,30 @@ mod tests {
     fn team_router_state_is_clone() {
         fn assert_clone<T: Clone>() {}
         assert_clone::<TeamRouterState>();
+    }
+
+    #[test]
+    fn parse_activity_query_maps_direction_and_kind_with_fallback() {
+        assert_eq!(parse_direction(Some("asc")), PageDirection::Asc);
+        assert_eq!(parse_direction(Some("weird")), PageDirection::Desc); // fallback
+        assert_eq!(parse_direction(None), PageDirection::Desc);
+        assert!(matches!(parse_kind(Some("task")), ActivityKind::Task));
+        assert!(matches!(parse_kind(Some("message")), ActivityKind::Message));
+        assert!(matches!(parse_kind(Some("nope")), ActivityKind::All)); // fallback
+        // Cursor is only valid when both parts are present.
+        assert!(build_cursor(Some(1000), Some("x".into())).is_some());
+        assert!(build_cursor(Some(1000), None).is_none());
+        assert!(build_cursor(None, Some("x".into())).is_none());
+    }
+
+    #[test]
+    fn parse_ids_splits_and_trims_nonempty() {
+        assert_eq!(parse_ids(None), Vec::<String>::new());
+        assert_eq!(parse_ids(Some("")), Vec::<String>::new());
+        assert_eq!(
+            parse_ids(Some("a, b ,,c")),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
     }
 
     #[test]
@@ -507,6 +814,115 @@ mod tests {
             }))
         );
         assert!(!format!("{err:?}").contains("provider-secret"));
+    }
+
+    #[test]
+    fn member_busy_maps_to_coded_conflict() {
+        let err: ApiError = TeamError::MemberBusy {
+            team_id: "team-1".into(),
+            slot_id: "slot-2".into(),
+            conversation_id: "conv-2".into(),
+        }
+        .into();
+        assert_eq!(err.status_code(), StatusCode::CONFLICT);
+        assert_eq!(err.error_code(), "TEAM_MEMBER_BUSY");
+        assert_eq!(
+            err.error_details(),
+            Some(json!({
+                "team_id": "team-1",
+                "slot_id": "slot-2",
+                "conversation_id": "conv-2",
+            }))
+        );
+    }
+
+    #[test]
+    fn member_runtime_starting_maps_to_coded_conflict() {
+        let err: ApiError = TeamError::MemberRuntimeStarting {
+            team_id: "team-1".into(),
+            slot_id: "slot-2".into(),
+            conversation_id: "conv-2".into(),
+        }
+        .into();
+        assert_eq!(err.status_code(), StatusCode::CONFLICT);
+        assert_eq!(err.error_code(), "TEAM_MEMBER_RUNTIME_STARTING");
+        assert_eq!(
+            err.error_details(),
+            Some(json!({
+                "team_id": "team-1",
+                "slot_id": "slot-2",
+                "conversation_id": "conv-2",
+            }))
+        );
+    }
+
+    #[test]
+    fn member_unsupported_maps_to_coded_unprocessable_entity() {
+        let err: ApiError = TeamError::MemberUnsupported {
+            team_id: "team-1".into(),
+            slot_id: "slot-2".into(),
+            conversation_id: "conv-2".into(),
+            backend: "aionrs".into(),
+        }
+        .into();
+        assert_eq!(err.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(err.error_code(), "TEAM_MEMBER_UNSUPPORTED");
+        assert_eq!(
+            err.error_details(),
+            Some(json!({
+                "team_id": "team-1",
+                "slot_id": "slot-2",
+                "conversation_id": "conv-2",
+                "backend": "aionrs",
+            }))
+        );
+    }
+
+    #[test]
+    fn context_reset_leader_rejection_maps_to_coded_unprocessable_entity() {
+        let err: ApiError = TeamError::ContextResetLeaderNotTargetable {
+            team_id: "team-1".into(),
+            slot_id: "slot-1".into(),
+            conversation_id: "conv-1".into(),
+        }
+        .into();
+        assert_eq!(err.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(err.error_code(), "TEAM_CONTEXT_RESET_LEADER_NOT_TARGETABLE");
+        assert_eq!(
+            err.error_details(),
+            Some(json!({
+                "team_id": "team-1",
+                "slot_id": "slot-1",
+                "conversation_id": "conv-1",
+            }))
+        );
+    }
+
+    #[test]
+    fn context_reset_unavailable_maps_runtime_state_to_specific_code() {
+        let cases = [
+            (
+                TeamContextResetAvailability::Initializing,
+                "TEAM_MEMBER_RUNTIME_STARTING",
+            ),
+            (TeamContextResetAvailability::Busy, "TEAM_MEMBER_BUSY"),
+            (TeamContextResetAvailability::Dormant, "TEAM_MEMBER_DORMANT"),
+            (TeamContextResetAvailability::Failed, "TEAM_MEMBER_RUNTIME_FAILED"),
+            (TeamContextResetAvailability::Removing, "TEAM_MEMBER_REMOVING"),
+            (TeamContextResetAvailability::SessionStopped, "TEAM_SESSION_STOPPED"),
+        ];
+        for (availability, expected_code) in cases {
+            let err: ApiError = TeamError::ContextResetUnavailable {
+                team_id: "team-1".into(),
+                slot_id: "slot-2".into(),
+                conversation_id: "conv-2".into(),
+                availability,
+            }
+            .into();
+            assert_eq!(err.status_code(), StatusCode::CONFLICT);
+            assert_eq!(err.error_code(), expected_code);
+            assert_eq!(err.error_details().unwrap()["availability"], json!(availability));
+        }
     }
 
     #[test]

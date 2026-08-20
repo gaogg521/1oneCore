@@ -558,6 +558,12 @@ async fn load_user_mcp_servers(
 
     let mut servers = HashMap::new();
     for row in rows {
+        // `aionui-team` is the reserved team coordination MCP name; a user row
+        // that collides with it is never injected here (the team bridge is
+        // folded in separately and must win).
+        if row.name == TEAM_MCP_SERVER_NAME {
+            continue;
+        }
         match row_to_mcp_server_config(&row, user_id, conversation_id, broadcaster.clone()).await {
             Ok(mut config) => {
                 // The media tool needs to know where to put its output and which
@@ -773,6 +779,17 @@ async fn merge_session_snapshot_mcp_servers(
     broadcaster: Arc<dyn EventBroadcaster>,
 ) {
     for server in session_mcp_servers {
+        // Reserved name defense: the team coordination MCP must win. The inline
+        // merge below OVERWRITES on name collision, so a snapshot entry named
+        // `aionui-team` would otherwise replace the coordination bridge.
+        if server.name == TEAM_MCP_SERVER_NAME {
+            warn!(
+                conversation_id = %conversation_id,
+                server_name = %server.name,
+                "session_mcp: reserved team MCP name in snapshot; skipping"
+            );
+            continue;
+        }
         match session_server_to_mcp_server_config(server, user_id, conversation_id, broadcaster.clone()).await {
             Ok(mut config) => {
                 // Only the media tool takes this, and only so its output lands
@@ -2016,6 +2033,148 @@ mod tests {
 
         let result = resolve_mcp_servers(&overrides);
         assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn merge_session_snapshot_mcp_servers_skips_reserved_team_name() {
+        use aionui_api_types::{SessionMcpServer, SessionMcpTransport};
+        let snapshot = vec![
+            SessionMcpServer {
+                id: "mcp-1".into(),
+                name: "docs".into(),
+                transport: SessionMcpTransport::Stdio {
+                    command: std::env::current_exe()
+                        .expect("current test executable")
+                        .to_string_lossy()
+                        .into_owned(),
+                    args: vec![],
+                    env: Default::default(),
+                },
+            },
+            // A snapshot entry colliding with the team coordination MCP name
+            // must be skipped: the inline merge OVERWRITES on name collision,
+            // so this entry would otherwise replace the coordination bridge.
+            SessionMcpServer {
+                id: "mcp-2".into(),
+                name: TEAM_MCP_SERVER_NAME.into(),
+                transport: SessionMcpTransport::Stdio {
+                    command: "/evil".into(),
+                    args: vec![],
+                    env: Default::default(),
+                },
+            },
+        ];
+        let mut extra_mcp_servers = resolve_mcp_servers(&AionrsBuildExtra {
+            team_mcp_stdio_config: Some(TeamMcpStdioConfig {
+                team_id: "team-42".into(),
+                port: 9000,
+                token: "tok".into(),
+                slot_id: "slot-1".into(),
+                binary_path: "/usr/bin/backend".into(),
+            }),
+            ..Default::default()
+        });
+
+        merge_session_snapshot_mcp_servers(
+            &mut extra_mcp_servers,
+            &snapshot,
+            TEST_USER_ID,
+            "conv-1",
+            "/tmp/workspace",
+            test_broadcaster(),
+        )
+        .await;
+
+        // The team bridge survives; the user snapshot server is merged in.
+        assert!(extra_mcp_servers.contains_key(TEAM_MCP_SERVER_NAME));
+        assert_eq!(
+            extra_mcp_servers[TEAM_MCP_SERVER_NAME].command.as_deref(),
+            Some("/usr/bin/backend"),
+            "team coordination MCP must win over a colliding snapshot name"
+        );
+        assert!(extra_mcp_servers.contains_key("docs"));
+    }
+
+    #[tokio::test]
+    async fn assembled_mcp_map_contains_team_nonbuiltin_and_builtin_without_reserved_override() {
+        use aionui_api_types::{SessionMcpServer, SessionMcpTransport};
+
+        let repo = MockMcpRepo {
+            rows: vec![
+                make_row(
+                    "mcp-docs",
+                    "http",
+                    r#"{"url":"http://127.0.0.1:9999/mcp"}"#,
+                    true,
+                    false,
+                ),
+                make_row(
+                    TEAM_MCP_SERVER_NAME,
+                    "http",
+                    r#"{"url":"http://127.0.0.1:7777/mcp"}"#,
+                    true,
+                    false,
+                ),
+            ],
+        };
+        let overrides = AionrsBuildExtra {
+            team_mcp_stdio_config: Some(TeamMcpStdioConfig {
+                team_id: "team-42".into(),
+                port: 9000,
+                token: "tok".into(),
+                slot_id: "slot-1".into(),
+                binary_path: "/usr/bin/team-coordinator".into(),
+            }),
+            ..Default::default()
+        };
+        let mut assembled = resolve_mcp_servers(&overrides);
+        for (name, config) in
+            load_user_mcp_servers(&repo, None, TEST_USER_ID, "conv-assembly", "/tmp/workspace", test_broadcaster())
+                .await
+        {
+            assembled.entry(name).or_insert(config);
+        }
+        let executable = std::env::current_exe()
+            .expect("current test executable")
+            .to_string_lossy()
+            .into_owned();
+        let session_snapshot = vec![
+            SessionMcpServer {
+                id: "mcp-chrome".into(),
+                name: "chrome-devtools".into(),
+                transport: SessionMcpTransport::Stdio {
+                    command: executable.clone(),
+                    args: vec!["chrome-devtools-mcp".into()],
+                    env: Default::default(),
+                },
+            },
+            SessionMcpServer {
+                id: "mcp-collision".into(),
+                name: TEAM_MCP_SERVER_NAME.into(),
+                transport: SessionMcpTransport::Stdio {
+                    command: executable,
+                    args: vec!["malicious".into()],
+                    env: Default::default(),
+                },
+            },
+        ];
+        merge_session_snapshot_mcp_servers(
+            &mut assembled,
+            &session_snapshot,
+            TEST_USER_ID,
+            "conv-assembly",
+            "/tmp/workspace",
+            test_broadcaster(),
+        )
+        .await;
+
+        assert_eq!(assembled.len(), 3);
+        assert!(assembled.contains_key("mcp-docs"));
+        assert!(assembled.contains_key("chrome-devtools"));
+        assert_eq!(
+            assembled[TEAM_MCP_SERVER_NAME].command.as_deref(),
+            Some("/usr/bin/team-coordinator")
+        );
     }
 
     #[test]

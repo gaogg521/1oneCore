@@ -9,8 +9,9 @@ use crate::protocol::events::{
 use crate::protocol::send_error::AgentSendError;
 use crate::shared_kernel::SessionId as DomainSessionId;
 use crate::types::SendMessageData;
-use agent_client_protocol::schema::{
-    AuthMethod, ContentBlock, ForkSessionRequest, LoadSessionRequest, PromptRequest, SessionId, StopReason,
+use agent_client_protocol::schema::v1::{
+    AudioContent, AuthMethod, ContentBlock, ForkSessionRequest, ImageContent, LoadSessionRequest, PromptRequest,
+    PromptResponse, SessionId, StopReason, Usage, UsageUpdate,
 };
 use aionui_api_types::SlashCommandItem;
 use serde_json::Value;
@@ -19,6 +20,7 @@ use tokio::sync::broadcast::error::TryRecvError;
 use super::agent::sdk_to_snake_value;
 use super::agent_close::STDERR_PEEK_LINES;
 use super::error_mapping::{AcpSendFailure, is_acp_session_not_found, is_missing_resumed_session};
+use super::legacy_session_model::LegacySessionModelState;
 use tracing::warn;
 
 #[derive(Debug)]
@@ -38,13 +40,16 @@ impl AcpAgentManager {
     /// Returns the CLI-assigned session id.
     pub(super) async fn open_session_new(&self) -> Result<String, AgentError> {
         let req = self.params.new_session_request();
-        let session_response = self.protocol.new_session(req).await?;
+        let (session_response, legacy_models) = self.protocol.new_session(req).await?;
 
         let sid = session_response.session_id.to_string();
 
         {
             let mut session = self.session.write().await;
-            if let Some(models) = session_response.models {
+            if let Some(models) = legacy_models
+                .as_ref()
+                .and_then(LegacySessionModelState::from_state_value)
+            {
                 session.apply_advertised_models(models);
             }
             if let Some(modes) = session_response.modes {
@@ -129,7 +134,7 @@ impl AcpAgentManager {
             meta.insert("claudeCode".into(), Value::Object(claude_code));
 
             let req = self.params.new_session_request().meta(meta);
-            let new_response = match self.protocol.new_session(req).await {
+            let (new_response, legacy_models) = match self.protocol.new_session(req).await {
                 Ok(r) => r,
                 Err(e) if is_missing_resumed_session(&e, session_id) => {
                     return self.rebuild_after_acp_session_not_found(session_id, e).await;
@@ -140,7 +145,10 @@ impl AcpAgentManager {
 
             {
                 let mut session = self.session.write().await;
-                if let Some(models) = new_response.models {
+                if let Some(models) = legacy_models
+                    .as_ref()
+                    .and_then(LegacySessionModelState::from_state_value)
+                {
                     session.apply_advertised_models(models);
                 }
                 if let Some(modes) = new_response.modes {
@@ -190,7 +198,7 @@ impl AcpAgentManager {
             if !self.params.mcp_servers.is_empty() {
                 load_req = load_req.mcp_servers(self.params.mcp_servers.clone());
             }
-            let load_response = match self.protocol.load_session(load_req).await {
+            let (load_response, legacy_models) = match self.protocol.load_session(load_req).await {
                 Ok(r) => r,
                 Err(e) if is_acp_session_not_found(&e) => {
                     return self.rebuild_after_acp_session_not_found(session_id, e).await;
@@ -200,7 +208,10 @@ impl AcpAgentManager {
 
             {
                 let mut session = self.session.write().await;
-                if let Some(models) = load_response.models {
+                if let Some(models) = legacy_models
+                    .as_ref()
+                    .and_then(LegacySessionModelState::from_state_value)
+                {
                     session.apply_advertised_models(models);
                 }
                 if let Some(mut modes) = load_response.modes {
@@ -330,7 +341,10 @@ impl AcpAgentManager {
             .ok_or_else(|| AgentError::internal("Cannot prompt: no session ID available"))
             .map_err(AcpSendFailure::from)?;
 
-        let content = data.content.clone();
+        let prompt_blocks = {
+            use crate::agent_task::IAgentTask as _;
+            build_prompt_blocks(data, self.prompt_media_caps()).await
+        };
 
         // Subscribe BEFORE emitting Start so we can observe every event
         // produced during this turn. Used after `prompt()` returns to detect
@@ -349,17 +363,31 @@ impl AcpAgentManager {
 
         let prompt_response = self
             .protocol
-            .prompt(PromptRequest::new(
-                SessionId::new(sid),
-                vec![ContentBlock::from(content)],
-            ))
+            .prompt(PromptRequest::new(SessionId::new(sid), prompt_blocks))
             .await
             .map_err(AcpSendFailure::from)?;
 
-        // The session has now carried a turn, so its id is worth resuming.
-        // See `announce_session_id_after_prompt` for why this is not done at
-        // session/new time.
-        self.announce_session_id_after_prompt().await;
+        // End-of-turn usage: agents that never emit UsageUpdate notifications
+        // report token usage on the prompt response instead — either via the
+        // unstable `usage` field or a `_meta` dialect. Re-emit it as the same
+        // AcpContextUsage frame the notification path produces — it must
+        // precede the Finish frame, because the stream relay stops forwarding
+        // a turn once Finish is seen. The session event tracker only observes
+        // CLI notifications, not runtime-emitted frames, so the snapshot
+        // (which backs GET /usage) is updated here directly.
+        if let Some(mut frame) = end_turn_usage_frame_from_response(&prompt_response) {
+            if let Ok(mut update) = serde_json::from_value::<UsageUpdate>(frame.clone()) {
+                let mut session = self.session.write().await;
+                // Agents like OpenCode report through BOTH channels: a mid-turn
+                // UsageUpdate notification carrying the real window size, and an
+                // end-of-turn usage without one. Never let the sizeless end-of-turn
+                // write clobber a window size the session already knows.
+                preserve_known_window(&mut update, &mut frame, session.context_usage());
+                session.apply_context_usage(update);
+                self.commit_session_changes(&mut session).await;
+            }
+            self.runtime.emit(AgentStreamEvent::AcpContextUsage(frame));
+        }
 
         // Drain the turn-scoped receiver once: detect both the empty-turn
         // condition and any CodeBuddy dialect signal (session_end / token
@@ -473,6 +501,70 @@ impl AcpAgentManager {
 ///
 /// `Lagged` is treated as non-empty: the broadcast buffer overflowed,
 /// meaning many events flew by — definitely not an empty turn.
+/// Build the `session/prompt` content blocks: a text block plus one native
+/// Image/Audio block per attachment the agent's declared `promptCapabilities`
+/// accept. Attachments the agent cannot take (or that fail to read) stay in
+/// the text block's `[[AION_FILES]]` path list, byte-identical to the
+/// pre-multimodal wire form.
+///
+/// The text keeps EVERY attachment path, media included. This path emits no
+/// resource links — a non-media attachment rides solely as a marker line — so
+/// the marker is its only path channel, and a native media block carries bytes
+/// with no path. The `uri` set on the image block below is not enough: observed
+/// live, one ACP agent asked the user for a path it had already been handed as
+/// `uri`, and another silently reported an invented file size. Dropping the
+/// media path from the text leaves such an agent able to see the image but
+/// unable to open the file.
+async fn build_prompt_blocks(data: &SendMessageData, caps: crate::types::PromptMediaCaps) -> Vec<ContentBlock> {
+    use base64::Engine as _;
+
+    let partition = crate::media::partition_media(&data.content, &data.files, caps);
+    if partition.media.is_empty() {
+        return vec![ContentBlock::from(partition.content)];
+    }
+
+    let mut media_blocks = Vec::with_capacity(partition.media.len());
+    for attachment in &partition.media {
+        // Any read failure degrades the WHOLE prompt back to the plain text
+        // form: partial degradation would need the marker block rebuilt a
+        // second time, and a file vanishing between classify and read is too
+        // rare to warrant that complexity.
+        let Some(bytes) = crate::media::read_media_bytes(attachment).await else {
+            warn!(path = %attachment.path, "media attachment read failed; falling back to path-only prompt");
+            return vec![ContentBlock::from(data.content.clone())];
+        };
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        media_blocks.push(match attachment.kind {
+            crate::media::MediaKind::Image => {
+                let mut image = ImageContent::new(encoded, attachment.mime.clone());
+                image.uri = Some(format!("file://{}", attachment.path));
+                ContentBlock::Image(image)
+            }
+            crate::media::MediaKind::Audio => ContentBlock::Audio(AudioContent::new(encoded, attachment.mime.clone())),
+        });
+    }
+
+    let (images, audios) = partition.media.iter().fold((0usize, 0usize), |(i, a), m| match m.kind {
+        crate::media::MediaKind::Image => (i + 1, a),
+        crate::media::MediaKind::Audio => (i, a + 1),
+    });
+    tracing::info!(
+        msg_id = %data.msg_id,
+        images,
+        audios,
+        path_files = partition.path_files.len(),
+        "ACP prompt carries native media content blocks"
+    );
+
+    let mut blocks = Vec::with_capacity(media_blocks.len() + 1);
+    blocks.push(ContentBlock::from(crate::media::content_with_all_paths(
+        &data.content,
+        &data.files,
+    )));
+    blocks.extend(media_blocks);
+    blocks
+}
+
 /// Thin wrapper retained for the existing empty-turn detection tests; the
 /// production path now uses [`drain_turn_observations`] to observe the dialect
 /// signal alongside emptiness in a single drain.
@@ -529,6 +621,81 @@ fn event_is_user_visible_output(event: &AgentStreamEvent) -> bool {
             | AgentStreamEvent::Permission(_)
             | AgentStreamEvent::AcpPermission(_)
     )
+}
+
+/// Build the `AcpContextUsage` frame value from an end-of-turn usage report.
+///
+/// The shape mirrors the `UsageUpdate` notification passthrough (`{used,
+/// size}`) so the event tracker can persist it into the session snapshot.
+/// The per-turn counters ride inside `_meta` — a `UsageUpdate` field — so
+/// they survive the typed round-trip into the snapshot and come back out of
+/// GET /usage; top-level extra keys would be dropped by deserialization.
+/// `size: 0` means "context window unknown" — the frontend only applies
+/// sizes > 0.
+fn end_turn_usage_frame(usage: &Usage) -> Value {
+    let mut breakdown = serde_json::json!({
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+    });
+    if let Some(thought) = usage.thought_tokens {
+        breakdown["thought_tokens"] = thought.into();
+    }
+    if let Some(read) = usage.cached_read_tokens {
+        breakdown["cached_read_tokens"] = read.into();
+    }
+    if let Some(write) = usage.cached_write_tokens {
+        breakdown["cached_write_tokens"] = write.into();
+    }
+    serde_json::json!({
+        "used": usage.total_tokens,
+        "size": 0,
+        "_meta": breakdown,
+    })
+}
+
+/// Extract an end-of-turn usage frame from a prompt response.
+///
+/// Sources, in priority order:
+/// 1. the SDK's unstable `usage` field (`unstable_end_turn_token_usage`);
+/// 2. the gemini-cli dialect: `_meta.quota.token_count`
+///    (`{input_tokens, output_tokens}` — input is the full context sent this
+///    turn, so input+output approximates current context occupancy).
+fn end_turn_usage_frame_from_response(response: &PromptResponse) -> Option<Value> {
+    if let Some(usage) = response.usage.as_ref().filter(|u| u.total_tokens > 0) {
+        return Some(end_turn_usage_frame(usage));
+    }
+    let counts = response.meta.as_ref()?.get("quota")?.get("token_count")?;
+    let input = counts.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let output = counts.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let used = input + output;
+    if used == 0 {
+        return None;
+    }
+    Some(serde_json::json!({
+        "used": used,
+        "size": 0,
+        "_meta": { "input_tokens": input, "output_tokens": output },
+    }))
+}
+
+/// Carry previously-reported fields the end-of-turn write doesn't know —
+/// the context window size and the cumulative session cost — into a
+/// partial end-of-turn usage update (both the snapshot value and the wire
+/// frame), so the frontend denominator and cost survive hydration.
+fn preserve_known_window(update: &mut UsageUpdate, frame: &mut Value, existing: Option<&UsageUpdate>) {
+    let Some(known) = existing else {
+        return;
+    };
+    if update.size == 0 && known.size > 0 {
+        update.size = known.size;
+        frame["size"] = known.size.into();
+    }
+    if update.cost.is_none()
+        && let Some(cost) = known.cost.as_ref()
+    {
+        update.cost = Some(cost.clone());
+        frame["cost"] = serde_json::to_value(cost).unwrap_or_default();
+    }
 }
 
 fn prompt_outcome_from_stop_reason(
@@ -616,6 +783,7 @@ fn empty_turn_info_tip(code: &str, params: Option<Value>) -> TipsEventData {
         tip_type: TipType::Info,
         code: Some(code.to_owned()),
         params,
+        supersedes_key: None,
     }
 }
 
@@ -625,6 +793,7 @@ fn empty_finish_diagnostic_tip(stop_reason: StopReason) -> TipsEventData {
         tip_type: TipType::Warning,
         code: Some(empty_finish_tip_code(stop_reason).to_owned()),
         params: None,
+        supersedes_key: None,
     }
 }
 
@@ -656,7 +825,160 @@ mod tests {
     use crate::manager::acp::{AcpSession, AcpSessionEvent};
     use crate::protocol::error::AcpError;
     use crate::shared_kernel::SessionId as DomainSessionId;
-    use agent_client_protocol::schema::AgentCapabilities;
+    use crate::types::SendMessageData;
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, ContentBlock, Cost, PromptResponse, Usage, UsageUpdate,
+    };
+
+    use super::{end_turn_usage_frame, end_turn_usage_frame_from_response, preserve_known_window};
+
+    /// The end-of-turn usage frame must stay deserializable as `UsageUpdate` —
+    /// that is the contract with `agent_event_tracker`, which persists the
+    /// frame into the session snapshot (and thus GET /usage) via
+    /// `from_value::<UsageUpdate>`. If this breaks, the indicator still lights
+    /// up live but silently stops surviving hydration.
+    #[test]
+    fn end_turn_usage_frame_is_snapshot_compatible() {
+        let frame = end_turn_usage_frame(&Usage::new(1200, 1000, 200));
+
+        let update: UsageUpdate = serde_json::from_value(frame.clone()).expect("frame must parse as UsageUpdate");
+        assert_eq!(update.used, 1200);
+        assert_eq!(
+            update.size, 0,
+            "unknown context window must serialize as 0, not be omitted"
+        );
+        assert_eq!(frame["_meta"]["input_tokens"], 1000);
+        assert_eq!(frame["_meta"]["output_tokens"], 200);
+
+        // The breakdown must survive the typed round-trip — `_meta` is a real
+        // UsageUpdate field, so the snapshot (and GET /usage) keeps it.
+        let round_tripped = serde_json::to_value(&update).expect("serialize");
+        assert_eq!(round_tripped["_meta"]["input_tokens"], 1000);
+        assert_eq!(round_tripped["_meta"]["output_tokens"], 200);
+    }
+
+    #[test]
+    fn end_turn_usage_frame_includes_optional_counters_only_when_reported() {
+        let bare = end_turn_usage_frame(&Usage::new(10, 6, 4));
+        assert!(bare["_meta"].get("thought_tokens").is_none());
+        assert!(bare["_meta"].get("cached_read_tokens").is_none());
+
+        let full = end_turn_usage_frame(
+            &Usage::new(10, 6, 4)
+                .thought_tokens(3)
+                .cached_read_tokens(2)
+                .cached_write_tokens(1),
+        );
+        assert_eq!(full["_meta"]["thought_tokens"], 3);
+        assert_eq!(full["_meta"]["cached_read_tokens"], 2);
+        assert_eq!(full["_meta"]["cached_write_tokens"], 1);
+    }
+
+    /// gemini-cli reports token counts in `_meta.quota.token_count` instead of
+    /// the unstable `usage` field (observed on gemini-cli via a raw ACP stdio
+    /// probe, 2026-07-29). `input_tokens` there is the full context sent this
+    /// turn, so input+output is the context-occupancy figure the indicator
+    /// wants.
+    #[test]
+    fn end_turn_usage_falls_back_to_gemini_quota_meta() {
+        let meta = serde_json::json!({
+            "quota": {
+                "token_count": { "input_tokens": 19769, "output_tokens": 4 },
+                "model_usage": [],
+            }
+        });
+        let response = PromptResponse::new(StopReason::EndTurn).meta(meta.as_object().cloned().expect("meta object"));
+
+        let frame = end_turn_usage_frame_from_response(&response).expect("quota dialect must produce a frame");
+        assert_eq!(frame["used"], 19773);
+        assert_eq!(frame["_meta"]["input_tokens"], 19769);
+        assert_eq!(frame["_meta"]["output_tokens"], 4);
+
+        let update: UsageUpdate = serde_json::from_value(frame).expect("frame must parse as UsageUpdate");
+        assert_eq!(update.used, 19773);
+    }
+
+    #[test]
+    fn end_turn_usage_prefers_the_typed_usage_field_over_meta() {
+        let meta = serde_json::json!({
+            "quota": { "token_count": { "input_tokens": 1, "output_tokens": 1 } }
+        });
+        let response = PromptResponse::new(StopReason::EndTurn)
+            .usage(Usage::new(500, 400, 100))
+            .meta(meta.as_object().cloned().expect("meta object"));
+
+        let frame = end_turn_usage_frame_from_response(&response).expect("typed usage must win");
+        assert_eq!(frame["used"], 500);
+    }
+
+    #[test]
+    fn end_turn_usage_is_absent_for_responses_without_any_usage_report() {
+        let bare = PromptResponse::new(StopReason::EndTurn);
+        assert!(end_turn_usage_frame_from_response(&bare).is_none());
+
+        let empty_counts = serde_json::json!({
+            "quota": { "token_count": { "input_tokens": 0, "output_tokens": 0 } }
+        });
+        let zero = PromptResponse::new(StopReason::EndTurn).meta(empty_counts.as_object().cloned().unwrap());
+        assert!(end_turn_usage_frame_from_response(&zero).is_none());
+    }
+
+    /// OpenCode regression: a mid-turn UsageUpdate notification stores the
+    /// real window size in the snapshot; the sizeless end-of-turn write must
+    /// inherit it instead of resetting it to 0 (which hid the frontend ring
+    /// after every reload).
+    #[test]
+    fn sizeless_end_turn_write_preserves_the_known_window_size() {
+        let existing = UsageUpdate::new(12_600, 262_144);
+        let mut frame = serde_json::json!({ "used": 13_000, "size": 0 });
+        let mut update: UsageUpdate = serde_json::from_value(frame.clone()).unwrap();
+
+        preserve_known_window(&mut update, &mut frame, Some(&existing));
+
+        assert_eq!(update.size, 262_144);
+        assert_eq!(frame["size"], 262_144);
+        assert_eq!(update.used, 13_000, "the fresh counter must still win");
+    }
+
+    #[test]
+    fn end_turn_write_keeps_its_own_size_when_nothing_better_is_known() {
+        let mut frame = serde_json::json!({ "used": 10, "size": 0 });
+        let mut update: UsageUpdate = serde_json::from_value(frame.clone()).unwrap();
+
+        preserve_known_window(&mut update, &mut frame, None);
+        assert_eq!(update.size, 0);
+
+        // An agent-reported size on the fresh update must never be replaced.
+        let mut sized_frame = serde_json::json!({ "used": 10, "size": 4096 });
+        let mut sized: UsageUpdate = serde_json::from_value(sized_frame.clone()).unwrap();
+        let stale = UsageUpdate::new(5, 262_144);
+        preserve_known_window(&mut sized, &mut sized_frame, Some(&stale));
+        assert_eq!(sized.size, 4096);
+    }
+
+    /// A cumulative session cost reported by a mid-turn UsageUpdate must not
+    /// be dropped by the costless end-of-turn write — same clobber class as
+    /// the window size.
+    #[test]
+    fn costless_end_turn_write_preserves_the_known_session_cost() {
+        let existing = UsageUpdate::new(12_600, 262_144).cost(Cost::new(0.42, "USD"));
+        let mut frame = serde_json::json!({ "used": 13_000, "size": 0 });
+        let mut update: UsageUpdate = serde_json::from_value(frame.clone()).unwrap();
+
+        preserve_known_window(&mut update, &mut frame, Some(&existing));
+
+        assert_eq!(update.cost.as_ref().map(|c| c.amount), Some(0.42));
+        assert_eq!(frame["cost"]["amount"], 0.42);
+        assert_eq!(frame["cost"]["currency"], "USD");
+
+        // A fresh agent-reported cost must never be replaced by a stale one.
+        let mut priced_frame =
+            serde_json::json!({ "used": 10, "size": 0, "cost": { "amount": 0.5, "currency": "USD" } });
+        let mut priced: UsageUpdate = serde_json::from_value(priced_frame.clone()).unwrap();
+        preserve_known_window(&mut priced, &mut priced_frame, Some(&existing));
+        assert_eq!(priced.cost.as_ref().map(|c| c.amount), Some(0.5));
+    }
+
     fn make_session() -> AcpSession {
         AcpSession::new(None, None, Default::default())
     }
@@ -889,7 +1211,7 @@ mod tests {
         AgentStreamEvent, FinishEventData, StartEventData, TextEventData, ThinkingEventData, TipType,
         ToolCallEventData, ToolCallStatus,
     };
-    use agent_client_protocol::schema::StopReason;
+    use agent_client_protocol::schema::v1::StopReason;
     use aionui_api_types::{AgentErrorCode, SlashCommandCompletionBehavior, SlashCommandItem};
     use tokio::sync::broadcast;
 
@@ -943,6 +1265,7 @@ mod tests {
             input: None,
             output: None,
             description: None,
+            parent_call_id: None,
         }))
         .unwrap();
 
@@ -1233,5 +1556,150 @@ mod tests {
         assert_eq!(error.code, Some(AgentErrorCode::UserLlmProviderBillingRequired));
         assert_eq!(error.retryable, Some(false));
         assert_eq!(error.feedback_recommended, Some(false));
+    }
+
+    #[tokio::test]
+    async fn prompt_blocks_stay_single_text_without_caps() {
+        let dir = std::env::temp_dir().join("aionui-acp-prompt-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("plain.png");
+        std::fs::write(&img, b"fakepng").unwrap();
+        let img = img.to_string_lossy().into_owned();
+        let content = format!("hi\n\n{}\n{img}", aionui_common::constants::AIONUI_FILES_MARKER);
+        let data = SendMessageData {
+            content: content.clone(),
+            msg_id: "m1".into(),
+            turn_id: None,
+            files: vec![img],
+            inject_skills: vec![],
+        };
+        let blocks = super::build_prompt_blocks(&data, crate::types::PromptMediaCaps::default()).await;
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::Text(text) => assert_eq!(text.text, content),
+            other => panic!("expected text block, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_blocks_carry_native_image_when_capable() {
+        use base64::Engine as _;
+        let dir = std::env::temp_dir().join("aionui-acp-prompt-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("native.png");
+        std::fs::write(&img, b"fakepng").unwrap();
+        let img = img.to_string_lossy().into_owned();
+        let pdf = dir.join("doc.pdf");
+        std::fs::write(&pdf, b"fakepdf").unwrap();
+        let pdf = pdf.to_string_lossy().into_owned();
+        let content = format!(
+            "look\n\n{}\n{img}\n{pdf}",
+            aionui_common::constants::AIONUI_FILES_MARKER
+        );
+        let data = SendMessageData {
+            content,
+            msg_id: "m2".into(),
+            turn_id: None,
+            files: vec![img.clone(), pdf.clone()],
+            inject_skills: vec![],
+        };
+        let caps = crate::types::PromptMediaCaps {
+            image: true,
+            audio: false,
+        };
+        let blocks = super::build_prompt_blocks(&data, caps).await;
+        assert_eq!(blocks.len(), 2);
+        match &blocks[0] {
+            ContentBlock::Text(text) => {
+                // BOTH paths stay in the marker list: the image rides as a native
+                // block AND keeps its path, since this path has no other way to
+                // hand the agent a file to open.
+                assert_eq!(
+                    text.text,
+                    format!(
+                        "look\n\n{}\n{img}\n{pdf}",
+                        aionui_common::constants::AIONUI_FILES_MARKER
+                    )
+                );
+            }
+            other => panic!("expected text block, got {other:?}"),
+        }
+        match &blocks[1] {
+            ContentBlock::Image(image) => {
+                assert_eq!(image.mime_type, "image/png");
+                assert_eq!(image.data, base64::engine::general_purpose::STANDARD.encode(b"fakepng"));
+                assert_eq!(image.uri.as_deref(), Some(format!("file://{img}").as_str()));
+            }
+            other => panic!("expected image block, got {other:?}"),
+        }
+    }
+
+    // Regression guard: this path emits NO resource links — a non-media
+    // attachment rides solely as an `[[AION_FILES]]` marker line — so the marker
+    // is the only path channel it has. A native image block carries bytes, not a
+    // path, and the `uri` field on it is not surfaced to the agents' file tools
+    // (observed live: one ACP agent asked for a path it had already been sent as
+    // `uri`, another invented a file size). Keep every media path in the text.
+    #[tokio::test]
+    async fn prompt_blocks_keep_media_paths_in_text() {
+        let dir = std::env::temp_dir().join("aionui-acp-prompt-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("keep-path.png");
+        std::fs::write(&img, b"fakepng").unwrap();
+        let img = img.to_string_lossy().into_owned();
+        let content = format!("read this\n\n{}\n{img}", aionui_common::constants::AIONUI_FILES_MARKER);
+        let data = SendMessageData {
+            content: content.clone(),
+            msg_id: "m4".into(),
+            turn_id: None,
+            files: vec![img.clone()],
+            inject_skills: vec![],
+        };
+        let caps = crate::types::PromptMediaCaps {
+            image: true,
+            audio: false,
+        };
+        let blocks = super::build_prompt_blocks(&data, caps).await;
+        assert_eq!(blocks.len(), 2, "text + native image block: {blocks:?}");
+        match &blocks[0] {
+            // Byte-identical to the pre-multimodal text: the path never left.
+            ContentBlock::Text(text) => assert_eq!(text.text, content),
+            other => panic!("expected text block, got {other:?}"),
+        }
+        assert!(
+            matches!(&blocks[1], ContentBlock::Image(_)),
+            "still sends the native image block: {blocks:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_blocks_fall_back_to_paths_when_read_fails() {
+        let dir = std::env::temp_dir().join("aionui-acp-prompt-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("vanishing.png");
+        std::fs::write(&img, b"fakepng").unwrap();
+        let img_path = img.to_string_lossy().into_owned();
+        let content = format!("gone\n\n{}\n{img_path}", aionui_common::constants::AIONUI_FILES_MARKER);
+        let data = SendMessageData {
+            content: content.clone(),
+            msg_id: "m3".into(),
+            turn_id: None,
+            files: vec![img_path.clone()],
+            inject_skills: vec![],
+        };
+        let caps = crate::types::PromptMediaCaps {
+            image: true,
+            audio: false,
+        };
+        // Classification uses fs::metadata inside partition_media, which runs
+        // inside build_prompt_blocks — so remove the file first and verify the
+        // whole prompt degrades to the original text form.
+        std::fs::remove_file(&img).unwrap();
+        let blocks = super::build_prompt_blocks(&data, caps).await;
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::Text(text) => assert_eq!(text.text, content),
+            other => panic!("expected text block, got {other:?}"),
+        }
     }
 }

@@ -15,7 +15,7 @@ use crate::runtime_state::TurnClaim;
 use crate::service::{
     ConversationService, MAX_SYSTEM_RESPONSE_CONTINUATIONS_PER_TURN, agent_error_top_level_code, persist_session_key,
 };
-use crate::stream_relay::{RelayOutcome, StreamRelay, TurnAttemptSummary};
+use crate::stream_relay::{RelayOutcome, StreamRelay, SupersedingTipTotals, TurnAttemptSummary};
 use crate::turn_continuation_policy::{ContinuationDecision, TurnContinuationPolicy};
 use crate::turn_recovery_policy::{TurnRecoveryDecision, TurnRecoveryPolicy};
 use aionui_api_types::AgentErrorCode;
@@ -73,6 +73,8 @@ struct TurnAttemptInput {
     required_runtime_mode: Option<String>,
     continuation_count: usize,
     defer_clean_terminal_errors: bool,
+    /// Shared by every attempt of this turn — see the field's use in run_attempt.
+    superseding_tips: SupersedingTipTotals,
 }
 
 struct TurnAttemptResult {
@@ -136,6 +138,20 @@ impl ConversationTurnOrchestrator {
                     "Agent task build failed"
                 );
                 let failure_message = send_error_display_message(&send_error);
+                // A build that failed because the agent disowned our session id
+                // must not leave that id behind: warmup replays it on every later
+                // turn and fails the same way BEFORE the prompt is sent, so the
+                // real cause is never reachable again. Verified live (conversation
+                // 161c458a): the agent was killed after a first error, its
+                // in-process session died with it, and the id then produced
+                // `Session not found` on every turn until the row was cleared.
+                //
+                // This is the build path — the terminal-error eviction in
+                // `evict_acp_task_after_terminal_error` never runs here, which is
+                // why clearing there alone did not fix it.
+                self.service
+                    .clear_persisted_acp_session_after_disown(&input.user_id, &input.conv_id, send_error.code())
+                    .await;
                 record_agent_session_failure(
                     &self.service,
                     &input.user_id,
@@ -213,6 +229,45 @@ impl ConversationTurnOrchestrator {
 
         let persistence = self.service.runtime_persistence();
         let runtime_state = self.service.runtime_state();
+
+        // A cancel may have arrived while the task was still being built, when
+        // there was no agent to hand it to (see `ConversationService::cancel`).
+        // Honour it here, BEFORE the prompt goes out: the user withdrew this
+        // turn, so the cleanest outcome is that the CLI never runs at all.
+        //
+        // Ends as Completed, not Failed — a turn the user cancelled is not an
+        // error, and reporting one would surface a red bubble for something
+        // they asked for.
+        if runtime_state.take_deferred_cancel(&input.conv_id, &input.turn_id) {
+            info!(
+                conversation_id = %input.conv_id,
+                turn_id = %input.turn_id,
+                "Applying a cancel that arrived while the agent was still being built"
+            );
+            // Tell the UI the turn is over. Every OTHER terminal on this path is
+            // emitted by the `StreamRelay`, which is built further down — so
+            // returning here without a frame settles the turn on the server and
+            // leaves the client's spinner running until the 15s watchdog.
+            //
+            // Live symptom (agy, 2026-08-12): the conversation produced NO
+            // stream frames at all, not even `start`, and
+            // `live_antigravity_cancel_settles_and_recovers` failed 4/4. agy is
+            // where it shows up because its build is the slowest — probing
+            // models, checking the CLI version, installing the permission hook
+            // and writing the MCP config — so a cancel lands inside it rather
+            // than after it. Nothing about the bug is agy-specific.
+            self.service.broadcast_turn_settled_without_relay(
+                &input.user_id,
+                &input.conv_id,
+                &input.turn_id,
+                &input.msg_id,
+            );
+            return Err(ConversationTurnResult {
+                status: ConversationTurnStatus::Completed,
+                error_message: None,
+            });
+        }
+
         let mut pending_send = Some((input.send, input.msg_id));
         let mut continuation_count = input.continuation_count;
         let continuation_policy = TurnContinuationPolicy::new(MAX_SYSTEM_RESPONSE_CONTINUATIONS_PER_TURN);
@@ -238,7 +293,11 @@ impl ConversationTurnOrchestrator {
             .with_runtime_state(Arc::clone(&runtime_state))
             .with_persistence(persistence.clone())
             .with_turn_completion(false)
-            .with_defer_clean_terminal_errors(defer_clean_terminal_errors);
+            .with_defer_clean_terminal_errors(defer_clean_terminal_errors)
+            // A replay spawns a fresh CLI whose own retry counter starts at one,
+            // but from the user's side it is still the same stalled prompt and
+            // the same card counting up — so these totals span the attempts.
+            .with_superseding_tip_totals(input.superseding_tips.clone());
 
             let rx = agent.subscribe();
             if let Some(mode) = input
@@ -427,6 +486,7 @@ impl ConversationTurnOrchestrator {
             inject_skills: input.inject_skills,
         };
         let mut replayed = false;
+        let superseding_tips = SupersedingTipTotals::default();
         let mut replay_started_at = None;
         let mut final_error_message;
         let mut auth_failure = false;
@@ -448,6 +508,7 @@ impl ConversationTurnOrchestrator {
                     required_runtime_mode: input.required_runtime_mode.clone(),
                     continuation_count: 0,
                     defer_clean_terminal_errors: !replayed,
+                    superseding_tips: superseding_tips.clone(),
                 })
                 .await
             {

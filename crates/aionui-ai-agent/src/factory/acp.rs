@@ -15,8 +15,10 @@ use crate::factory::session_mcp::load_session_mcp_rows;
 use crate::manager::acp::{AcpAgentManager, CatalogForwarder};
 use crate::registry::AgentRegistry;
 use crate::session_context::AcpSessionBuildContext;
-use agent_client_protocol::schema::{EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio};
-use aionui_api_types::{AgentMetadata, SessionMcpServer, SessionMcpTransport};
+use agent_client_protocol::schema::v1::{
+    EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio,
+};
+use aionui_api_types::{AgentMetadata, SessionMcpServer, SessionMcpTransport, TEAM_MCP_SERVER_NAME};
 use aionui_common::CommandSpec;
 use aionui_db::IMcpServerRepository;
 use aionui_db::models::McpServerRow;
@@ -371,9 +373,10 @@ pub(super) async fn build(
         config.backend.clone_from(&meta.backend);
     }
 
-    // PARTIALLY adopted (2026-08-14). Antigravity genuinely has no ACP surface
-    // — `agy` does not speak the protocol at all — so it must take the
-    // direct-CLI route or it cannot run. It is dispatched below.
+    // PARTIALLY adopted (2026-08-14, reconfirmed 2026-08-20 upstream sync).
+    // Antigravity genuinely has no ACP surface — `agy` does not speak the
+    // protocol at all — so it must take the direct-CLI route or it cannot
+    // run. It is dispatched below.
     //
     // claude/codex are the opposite case and deliberately do NOT follow: the
     // `BackendRoute::DirectCli` arm upstream added here routes them around the
@@ -479,6 +482,15 @@ pub(super) async fn build(
     };
     let mut session_mcp_servers = user_mcp_servers;
     for server in &config.session_mcp_servers {
+        // Reserved name defense: the team coordination MCP must win.
+        if server.name == TEAM_MCP_SERVER_NAME {
+            warn!(
+                ctx.conversation_id,
+                server_name = %server.name,
+                "session_mcp: reserved team MCP name in snapshot; skipping"
+            );
+            continue;
+        }
         if !session_server_supported_by_capabilities(server, &mcp_capabilities) {
             warn!(
                 ctx.conversation_id,
@@ -736,6 +748,12 @@ async fn load_user_mcp_servers(
 
     let mut servers = Vec::with_capacity(rows.len());
     for row in rows {
+        // `aionui-team` is the reserved team coordination MCP name; a user row
+        // that collides with it is never injected here (the team bridge is
+        // folded in separately and must win).
+        if row.name == TEAM_MCP_SERVER_NAME {
+            continue;
+        }
         if !row_supported_by_capabilities(&row, capabilities) {
             warn!(
                 conversation_id,
@@ -1659,6 +1677,31 @@ mod tests {
                     true,
                     true,
                 ),
+            ],
+            fail: false,
+        });
+        let servers = load_user_mcp_servers(repo.as_ref(), None, TEST_USER_ID, "conv-1", "/tmp/ws", &caps).await;
+        assert_eq!(servers.len(), 1);
+        match &servers[0] {
+            McpServer::Stdio(s) => assert_eq!(s.name, "user-enabled"),
+            _ => panic!("expected stdio"),
+        }
+    }
+
+    #[tokio::test]
+    async fn load_user_mcp_servers_skips_reserved_team_name() {
+        let stdio_config = stdio_config_for_existing_command();
+        let caps = AcpMcpCapabilities {
+            stdio: true,
+            http: true,
+            sse: true,
+        };
+        let repo: Arc<dyn IMcpServerRepository> = Arc::new(MockRepo {
+            rows: vec![
+                make_row("user-enabled", "stdio", &stdio_config, true, false),
+                // A user row colliding with the team coordination MCP name must
+                // never be injected: the team bridge must win.
+                make_row(TEAM_MCP_SERVER_NAME, "stdio", &stdio_config, true, false),
             ],
             fail: false,
         });

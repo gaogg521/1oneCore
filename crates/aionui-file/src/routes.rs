@@ -15,11 +15,11 @@ use aionui_api_types::{
     ApiResponse, BrowseDirectoryQuery, BrowseDirectoryResponse, CancelZipRequest, ContentMetadataRequest,
     CopyFilesRequest, CopyFilesResponse, CreateTempFileRequest, DirOrFileResponse, FetchRemoteImageRequest,
     FileChangeInfoResponse, FileMetadataResponse, FileWatchRequest, GetFileMetadataRequest, GetFilesByDirRequest,
-    GetImageBase64Request, ListWorkspaceFilesRequest, ReadContentRequest, ReadFileBufferRequest, ReadFileRequest,
-    RemoveEntryRequest, RenameRequest, RenameResponse, RevealItemRequest, SnapshotBaselineRequest,
-    SnapshotCompareResponse, SnapshotDiscardRequest, SnapshotInfoResponse, SnapshotStageRequest,
-    SnapshotWorkspaceRequest, StreamQuery, WorkspaceFlatFileResponse, WorkspaceOfficeWatchRequest, WriteContentRequest,
-    WriteFileRequest, ZipRequest,
+    GetImageBase64Request, ListWorkspaceFilesRequest, OpenSystemFileRequest, ReadContentRequest,
+    ReadFileBufferRequest, ReadFileRequest, RemoveEntryRequest, RenameRequest, RenameResponse, RevealItemRequest,
+    SnapshotBaselineRequest, SnapshotCompareResponse, SnapshotDiscardRequest, SnapshotInfoResponse,
+    SnapshotStageRequest, SnapshotWorkspaceRequest, StreamQuery, WorkspaceFlatFileResponse,
+    WorkspaceOfficeWatchRequest, WriteContentRequest, WriteFileRequest, ZipRequest,
 };
 use aionui_auth::CurrentUser;
 use aionui_common::ApiError;
@@ -27,7 +27,9 @@ use aionui_common::constants::UPLOAD_MAX_SIZE;
 
 use crate::browse;
 use crate::error::FileError;
-use crate::traits::{ClipboardWriterRef, FileServiceRef, FileWatchServiceRef, ItemRevealerRef, SnapshotServiceRef};
+use crate::traits::{
+    ClipboardWriterRef, FileServiceRef, FileWatchServiceRef, ItemRevealerRef, SnapshotServiceRef, SystemFileOpenerRef,
+};
 
 /// Request-body cap for `PUT /api/fs/content`, aligned with the 256 MB read cap
 /// so large files can be saved (the 10 MB global limit would otherwise 413).
@@ -52,6 +54,14 @@ impl From<FileError> for ApiError {
                 operation,
             },
             FileError::NotFound(message) => ApiError::NotFound(message),
+            // Identity-addressed not-found: a stable code and a path-free message,
+            // since the resolved absolute path is server-side only.
+            FileError::TargetNotFound => ApiError::coded(
+                axum::http::StatusCode::NOT_FOUND,
+                "FILE_NOT_FOUND",
+                "The requested file no longer exists.",
+                None::<serde_json::Value>,
+            ),
             FileError::Internal(message) => ApiError::Internal(message),
             FileError::WatchUnavailable { errno } => ApiError::coded(
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -121,6 +131,9 @@ pub struct FileRouterState {
     /// Reveals a resolved absolute path in the OS file manager
     /// (`/api/fs/reveal`). Injected by composition over the shell service.
     pub revealer: ItemRevealerRef,
+    /// Opens a resolved absolute path with the OS default application
+    /// (`/api/fs/open-system`). Injected by composition over the shell service.
+    pub system_opener: SystemFileOpenerRef,
     /// Writes a resolved absolute path to the OS clipboard
     /// (`/api/fs/copy-absolute-path`). Injected by composition over the shell
     /// service; the path is written server-side and never returned to the client.
@@ -177,6 +190,7 @@ pub fn file_routes(state: FileRouterState) -> Router {
         .route("/api/fs/write", post(write_file))
         .route("/api/fs/copy", post(copy_files))
         .route("/api/fs/reveal", post(reveal_item))
+        .route("/api/fs/open-system", post(open_system_file))
         .route("/api/fs/remove", post(remove_entry))
         .route("/api/fs/rename", post(rename_entry))
         .route("/api/fs/temp", post(create_temp_file))
@@ -433,6 +447,78 @@ async fn copy_absolute_path_resolved(
 ) -> Result<(), FileError> {
     let abs = absolute_path.ok_or_else(|| FileError::BadRequest("copy target is not a local path".to_owned()))?;
     clipboard.write_text(&abs).await
+}
+
+/// Maps a `ChatFileRef` resolution failure to a client response for the
+/// identity-addressed handlers below (`open_system_file`).
+///
+/// These callers address files by identity, so the absolute path is resolved
+/// server-side and the client has never seen it; disclosing it in an error would be
+/// telling the client something it had no way to know. Endpoints keyed on
+/// client-supplied paths are a different case (echoing back what the caller sent
+/// reveals nothing) and keep using the shared mapping.
+///
+/// Resolution failures collapse to one code deliberately: from the client's side
+/// "we could not resolve what you named" is a single outcome, and splitting it
+/// further would start signalling *why* — which is where path detail creeps back
+/// in. Internal failures stay `INTERNAL_ERROR`, whose public message is already
+/// fixed.
+fn chat_file_resolve_error(err: aionui_project::ProjectError) -> ApiError {
+    let code = err.code();
+    tracing::warn!(target: "chat_file", error = %err, code, "could not resolve chat file reference");
+    match err {
+        aionui_project::ProjectError::Database(_) => ApiError::Internal("failed to resolve target".to_owned()),
+        _ => ApiError::coded(
+            axum::http::StatusCode::NOT_FOUND,
+            "FILE_NOT_FOUND",
+            "The requested file no longer exists.",
+            None::<serde_json::Value>,
+        ),
+    }
+}
+
+/// `POST /api/fs/open-system` — open a `ChatFileRef`-addressed file with the OS
+/// default application ("open in system editor"). Preview surfaces this as the
+/// escape hatch for files it declines to render (oversized or unsupported
+/// formats), so it accepts all three preview sources rather than only project
+/// files the way `/api/fs/reveal` does.
+///
+/// # INV-OPEN (invariant — do not weaken)
+///
+/// This endpoint's sole effect is invoking the system opener **on the backend
+/// host**. It must never return the resolved absolute path to the client in any
+/// form:
+///
+/// - success → empty body;
+/// - failure → a stable error code plus a message that says nothing about the
+///   path (no `message`, no `details`, no code carrying a path fragment).
+///
+/// The client addressed this by identity and has no absolute path of its own; the
+/// one resolved here is server-side knowledge. Both failure sources are therefore
+/// narrowed on purpose: [`chat_file_resolve_error`] discards the resolver's
+/// path-bearing context, and the opener adapter logs its cause instead of
+/// returning it ([`FileError::TargetNotFound`] has no payload to fill). The
+/// earlier reveal implementation threaded a shell error's path through
+/// `NotFound(String)` into the response body; leaving nothing to forward is what
+/// stops that recurring.
+async fn open_system_file(
+    State(state): State<FileRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    body: Result<Json<OpenSystemFileRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let abs = state
+        .project
+        .resolve_chat_file_ref(
+            &user.id,
+            &req.file,
+            &content_upload_root(),
+            aionui_project::FileOp::Read,
+        )
+        .await
+        .map_err(chat_file_resolve_error)?;
+    state.system_opener.open(&abs).await?;
+    Ok(Json(ApiResponse::success()))
 }
 
 async fn remove_entry(
@@ -1106,6 +1192,19 @@ mod tests {
         let api_err = ApiError::from(FileError::RevealFailed("gdbus not available".into()));
         assert_eq!(api_err.error_code(), "REVEAL_FAILED");
         assert_eq!(api_err.status_code(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// INV-OPEN at the HTTP boundary: an identity-addressed target that is gone
+    /// yields a stable code and a path-free message. `TargetNotFound` is
+    /// payload-free by construction, so this pins the code/status/message contract
+    /// the frontend keys off.
+    #[test]
+    fn target_not_found_maps_to_path_free_stable_code() {
+        let api_err = ApiError::from(FileError::TargetNotFound);
+        assert_eq!(api_err.error_code(), "FILE_NOT_FOUND");
+        assert_eq!(api_err.status_code(), axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(api_err.public_message(), "The requested file no longer exists.");
+        assert!(api_err.error_details().is_none(), "details must not carry path context");
     }
 
     // -- reveal_resolved: resolve → reveal wiring (mock revealer seam) ---------

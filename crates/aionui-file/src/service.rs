@@ -566,20 +566,50 @@ fn get_image_base64_sync(path: &Path) -> Result<String, FileError> {
 /// Encode a file's content for the `/api/fs/content` endpoint per `encoding`.
 /// `Utf8` → text (errors on non-UTF-8); `Base64` → raw bytes base64 (no prefix);
 /// `DataUrl` → `data:<mime>;base64,<...>`. The 256 MB read cap applies to all.
+///
+/// Reached only from `read_resolved_content`, whose path was resolved from a
+/// `ChatFileRef` — server-side knowledge the client never saw. Errors here are
+/// therefore path-free (`TargetNotFound` / a fixed `Internal` message) with the
+/// detail going to the log instead, unlike the sibling helpers that serve
+/// client-supplied paths and may echo them back.
 fn read_resolved_content_sync(path: &Path, encoding: ContentEncoding) -> Result<String, FileError> {
     match encoding {
-        ContentEncoding::Utf8 => {
-            read_file_sync(path)?.ok_or_else(|| FileError::NotFound(format!("file not found: {}", path.display())))
-        }
+        ContentEncoding::Utf8 => read_file_sync(path)
+            .map_err(|err| resolved_read_error(path, err))?
+            .ok_or(FileError::TargetNotFound),
         ContentEncoding::Base64 => {
-            if validate_file_for_read(path)?.is_none() {
-                return Err(FileError::NotFound(format!("file not found: {}", path.display())));
+            if validate_file_for_read(path)
+                .map_err(|err| resolved_read_error(path, err))?
+                .is_none()
+            {
+                return Err(FileError::TargetNotFound);
             }
-            let bytes = std::fs::read(path)
-                .map_err(|e| FileError::Internal(format!("cannot read file '{}': {e}", path.display())))?;
+            let bytes = std::fs::read(path).map_err(|e| {
+                tracing::error!(target: "chat_file", path = %path.display(), error = %e, "cannot read resolved file");
+                FileError::Internal("cannot read file".to_owned())
+            })?;
             Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
         }
-        ContentEncoding::DataUrl => get_image_base64_sync(path),
+        ContentEncoding::DataUrl => get_image_base64_sync(path).map_err(|err| resolved_read_error(path, err)),
+    }
+}
+
+/// Strip path detail from an error raised while reading an identity-addressed
+/// file, logging it instead. Helpers shared with the client-supplied-path routes
+/// embed the path in their messages, which must not reach these callers.
+fn resolved_read_error(path: &Path, err: FileError) -> FileError {
+    match err {
+        FileError::NotFound(cause) => {
+            tracing::warn!(target: "chat_file", path = %path.display(), error = %cause, "resolved read target unavailable");
+            FileError::TargetNotFound
+        }
+        FileError::Internal(cause) => {
+            tracing::error!(target: "chat_file", path = %path.display(), error = %cause, "resolved read failed");
+            FileError::Internal("cannot read file".to_owned())
+        }
+        // BadRequest / PathOutsideSandbox carry validation context, not a resolved
+        // path, and their messages are already client-safe.
+        other => other,
     }
 }
 
@@ -727,9 +757,20 @@ impl crate::traits::IFileService for FileService {
     async fn write_resolved_content(&self, absolute_path: &Path, data: &[u8]) -> Result<(), FileError> {
         let path = absolute_path.to_path_buf();
         let data = data.to_vec();
+        let log_path = absolute_path.to_path_buf();
         tokio::task::spawn_blocking(move || write_file_sync(&path, &data))
             .await
-            .map_err(|e| FileError::Internal(format!("write content task failed: {e}")))??;
+            .map_err(|e| FileError::Internal(format!("write content task failed: {e}")))?
+            // Same reasoning as `resolved_metadata`: `write_file_sync` embeds the
+            // path in its message for the client-supplied-path callers, but this
+            // path was resolved from a `ChatFileRef`.
+            .map_err(|err| match err {
+                FileError::Internal(cause) => {
+                    tracing::error!(target: "chat_file", path = %log_path.display(), error = %cause, "resolved write failed");
+                    FileError::Internal("cannot write file".to_owned())
+                }
+                other => other,
+            })?;
         Ok(())
     }
 
@@ -738,6 +779,19 @@ impl crate::traits::IFileService for FileService {
         tokio::task::spawn_blocking(move || get_file_metadata_sync(&path))
             .await
             .map_err(|e| FileError::Internal(format!("metadata task failed: {e}")))?
+            // The caller resolved this path from a `ChatFileRef`, so it is
+            // server-side knowledge the client never saw. `get_file_metadata_sync`
+            // embeds the path in its `NotFound` message — fine for the
+            // client-supplied-path caller (`get_file_metadata`), which is only
+            // echoing back what the request contained, but a disclosure here. Swap
+            // in the payload-free variant; the path stays in the log.
+            .map_err(|err| match err {
+                FileError::NotFound(cause) => {
+                    tracing::warn!(target: "chat_file", error = %cause, "resolved metadata target is unreadable");
+                    FileError::TargetNotFound
+                }
+                other => other,
+            })
     }
 
     async fn get_files_by_dir(&self, dir: &str, root: &str) -> Result<Vec<DirOrFile>, FileError> {

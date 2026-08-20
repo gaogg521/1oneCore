@@ -98,16 +98,6 @@ impl McpAgentAdapter for CodexAdapter {
         is_cli_installed(CLI_NAME).await
     }
 
-    /// Read the operator's **real** Codex CLI configuration.
-    ///
-    /// Deliberately not isolated: this feeds the one-click import feature,
-    /// whose purpose is to let the user import MCP servers they already set
-    /// up in their own Codex CLI. Safe because `mcp list` is strictly
-    /// read-only. All mutations go to the isolated home instead (see struct
-    /// docs).
-    ///
-    /// `_user_id` is unused: the real config this reads is host-machine-wide,
-    /// not per-user, so there is nothing to scope by.
     async fn detect_existing(&self, _user_id: &str) -> Result<Vec<DetectedServer>, McpError> {
         if !self.is_installed().await? {
             return Err(McpError::AgentNotInstalled(CLI_NAME.into()));

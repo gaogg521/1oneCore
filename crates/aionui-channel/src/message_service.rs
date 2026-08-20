@@ -220,6 +220,9 @@ impl ChannelMessageService {
             | AgentStreamEvent::Plan(_)
             | AgentStreamEvent::Permission(_)
             | AgentStreamEvent::AcpPermission(_)
+            // IM channels have no interactive question card; the ask stays
+            // pending in the app UI (same treatment as Permission).
+            | AgentStreamEvent::Ask(_)
             | AgentStreamEvent::AcpToolCall(_)
             | AgentStreamEvent::AvailableCommands(_)
             | AgentStreamEvent::SkillSuggest(_)
@@ -229,6 +232,9 @@ impl ChannelMessageService {
             | AgentStreamEvent::AcpConfigOption(_)
             | AgentStreamEvent::AcpSessionInfo(_)
             | AgentStreamEvent::AcpContextUsage(_)
+            // Live terminal snapshots are a web-UI card refresh; the final
+            // command outcome reaches the IM transcript via the tool result.
+            | AgentStreamEvent::AcpTerminalOutput(_)
             | AgentStreamEvent::AcpPromptHookWarning(_)
             | AgentStreamEvent::System(_)
             | AgentStreamEvent::RequestTrace(_)
@@ -241,12 +247,12 @@ impl ChannelMessageService {
             // message per refresh would spam the channel.
             | AgentStreamEvent::WorkflowProgress(_)
             | AgentStreamEvent::AcpDialectSignal(_)
-            // A tool borrowing another model is accounting, not output — the
-            // relay meters it and never forwards it anywhere user-facing.
-            | AgentStreamEvent::DelegateUsage(_) => None,
             // Internal-only correlation frame for mid-turn interjection; never
             // user-facing (consumed by the conversation layer's watcher).
-            | AgentStreamEvent::MessageLifecycle(_) => None,
+            | AgentStreamEvent::MessageLifecycle(_)
+            // Vision-delegate usage accounting; relay-internal only (billing),
+            // never forwarded to any client surface.
+            | AgentStreamEvent::DelegateUsage(_) => None,
         }
     }
 
@@ -566,6 +572,7 @@ mod tests {
             args: serde_json::Value::Null,
             status: ToolCallStatus::Running,
             description: None,
+            parent_call_id: None,
             input: None,
             output: None,
         });

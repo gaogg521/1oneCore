@@ -830,20 +830,16 @@ async fn extension_enablement_and_contributions_are_isolated_by_user() {
     let (token_a, csrf_a) = setup_and_login(&mut app, &services, "extension-user-a", "pass-a").await;
     let (token_b, csrf_b) = setup_and_login(&mut app, &services, "extension-user-b", "pass-b").await;
 
-    // Bearer requests carry no ambient credential a cross-site form could ride
-    // on, so the CSRF middleware exempts them (remote-desktop clients depend on
-    // this — see M4d, crates/aionui-auth/src/csrf.rs). Cookie-authenticated
-    // requests still require the CSRF token pair. Upstream's version of this
-    // test asserted 403 here, which only holds without that exemption.
-    let bearer_without_csrf = Request::builder()
+    let missing_csrf = Request::builder()
         .method("POST")
         .uri("/api/extensions/disable")
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token_a}"))
         .body(Body::from(r#"{"name":"legacy-suite"}"#))
         .unwrap();
-    let response = app.clone().oneshot(bearer_without_csrf).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    let response = app.clone().oneshot(missing_csrf).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(body_json(response).await["code"], "CSRF_INVALID");
 
     let response = app
         .clone()
@@ -1434,8 +1430,7 @@ async fn skill_batch_import_reports_partial_failures_without_rolling_back_succes
         .unwrap()
         .expect("imported skill row should exist for the importing user");
     assert!(
-        // Real filesystem path — normalize, since Windows joins with `\`.
-        alpha_row.path.replace('\\', "/").contains("/skills/users/"),
+        alpha_row.path.contains("/skills/users/"),
         "import must use user-scoped storage: {}",
         alpha_row.path
     );

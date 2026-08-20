@@ -18,7 +18,7 @@ pub use service::FileService;
 pub use snapshot_service::SnapshotService;
 pub use traits::{
     ClipboardWriterRef, FileServiceRef, FileWatchServiceRef, IClipboardWriter, IFileService, IFileWatchService,
-    IItemRevealer, ISnapshotService, ItemRevealerRef, SnapshotServiceRef,
+    IItemRevealer, ISnapshotService, ISystemFileOpener, ItemRevealerRef, SnapshotServiceRef, SystemFileOpenerRef,
 };
 pub use types::{
     CompareResult, ContentUpdateEvent, ContentUpdateOperation, CopyResult, DirOrFile, FileChangeInfo, FileMetadata,

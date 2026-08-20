@@ -183,28 +183,6 @@ mod tests {
     }
 
     #[test]
-    fn file_watch_event_serialization() {
-        let event = FileWatchEvent {
-            file_path: "/path/to/file.txt".into(),
-            event_type: "change".into(),
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["file_path"], "/path/to/file.txt");
-        assert_eq!(json["event_type"], "change");
-    }
-
-    #[test]
-    fn office_file_added_event_serialization() {
-        let event = OfficeFileAddedEvent {
-            file_path: "/ws/report.docx".into(),
-            workspace: "/ws".into(),
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["file_path"], "/ws/report.docx");
-        assert_eq!(json["workspace"], "/ws");
-    }
-
-    #[test]
     fn content_update_event_deserialization() {
         let raw = json!({
             "file_path": "/ws/a.txt",

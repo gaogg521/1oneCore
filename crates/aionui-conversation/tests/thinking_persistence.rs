@@ -98,6 +98,7 @@ fn tool_call(call_id: &str) -> AgentStreamEvent {
         args: json!({"path": "a.ts"}),
         status: ToolCallStatus::Running,
         description: None,
+        parent_call_id: None,
         input: None,
         output: None,
     })
@@ -125,6 +126,7 @@ async fn empty_thinking_segment_is_dropped_before_persistence() {
         updated_at: now_ms(),
         project_id: None,
         folder_id: None,
+        name_source: None,
     })
     .await
     .unwrap();

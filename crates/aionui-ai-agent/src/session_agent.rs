@@ -31,8 +31,8 @@ use crate::protocol::events::{
 };
 use crate::protocol::send_error::AgentSendError;
 use crate::shared_kernel::PersistedSessionState;
-use crate::types::SendMessageData;
-use aionui_api_types::AcpBuildExtra;
+use crate::types::{PromptMediaCaps, SendMessageData};
+use aionui_api_types::{AcpBuildExtra, TEAM_MCP_SERVER_NAME};
 use aionui_common::AgentType;
 use aionui_db::{IAcpSessionRepository, IMcpServerRepository, SaveRuntimeStateParams};
 use aionui_realtime::EventBroadcaster;
@@ -526,26 +526,116 @@ impl SessionAgentTask {
         self.command_seq.fetch_add(1, Ordering::Relaxed) as u64
     }
 
-    pub async fn deliver_midturn(&self, data: SendMessageData) -> Result<(), AgentSendError> {
-        self.runtime.touch();
-        let mut content = Vec::new();
-        if !data.content.is_empty() {
-            content.push(ContentBlock::Text(data.content));
+    /// Build the multimodal `ContentBlock` vector for a prompt: partition
+    /// attachments by the backend's declared prompt blocks — capable media
+    /// becomes native Image/Audio blocks; everything else keeps the
+    /// pre-multimodal form (path in the [[AION_FILES]] text + resource link).
+    ///
+    /// A native media block carries ONLY bytes: `ContentBlock::Image` is
+    /// `{data, media_type}` with no path field, and `partition_media` has
+    /// already stripped that path out of the [[AION_FILES]] text. So each
+    /// natively-delivered attachment is PAIRED with a resource link to the very
+    /// same file — the adapters render a link as an `[Attached file: <uri>]`
+    /// text element (see `adapter/claude.rs` / `backend/codex_conn.rs`), which
+    /// is how every non-media attachment already travels and how images
+    /// travelled before the multimodal split. Without the pair, an agent that
+    /// can both see and read files gets pixels it cannot open (Sentry
+    /// 7677917218). The pair is gated on the backend advertising `resource`:
+    /// an un-advertised block is rejected at dispatch and would kill the whole
+    /// Send (`BlockSet::allows`).
+    ///
+    /// A read failure degrades that attachment back to a resource link alone —
+    /// the path also remains in the original text because partition already ran,
+    /// which the adapters tolerate (they resolve links independently of the
+    /// text). Shared by `send_message` and `deliver_midturn`.
+    async fn build_prompt_blocks(&self, data: &SendMessageData) -> Vec<ContentBlock> {
+        let partition = crate::media::partition_media(&data.content, &data.files, self.prompt_media_caps());
+        let link_media_paths = self.backend.capabilities().prompt_blocks.resource;
+        let mut content: Vec<ContentBlock> = Vec::new();
+        if !partition.content.is_empty() {
+            content.push(ContentBlock::Text(partition.content));
         }
-        for path in data.files {
+        for path in partition.path_files {
+            // File paths ride as resource links; the claude/codex adapters resolve
+            // them (Read tool / base64) at dispatch time.
             content.push(ContentBlock::ResourceLink {
                 uri: path,
                 mime_type: None,
             });
         }
+        let mut media_links = 0usize;
+        for attachment in &partition.media {
+            match crate::media::read_media_bytes(attachment).await {
+                Some(bytes) => {
+                    content.push(match attachment.kind {
+                        crate::media::MediaKind::Image => ContentBlock::Image {
+                            data: bytes,
+                            media_type: attachment.mime.clone(),
+                        },
+                        crate::media::MediaKind::Audio => ContentBlock::Audio {
+                            data: bytes,
+                            media_type: attachment.mime.clone(),
+                        },
+                    });
+                    // Pair the bytes with the path (see the fn doc): the block
+                    // itself has no uri field and the text no longer lists it.
+                    if link_media_paths {
+                        content.push(ContentBlock::ResourceLink {
+                            uri: attachment.path.clone(),
+                            mime_type: Some(attachment.mime.clone()),
+                        });
+                        media_links += 1;
+                    }
+                }
+                None => content.push(ContentBlock::ResourceLink {
+                    uri: attachment.path.clone(),
+                    mime_type: Some(attachment.mime.clone()),
+                }),
+            }
+        }
+        if !partition.media.is_empty() {
+            let (images, audios) = content.iter().fold((0usize, 0usize), |(i, a), b| match b {
+                ContentBlock::Image { .. } => (i + 1, a),
+                ContentBlock::Audio { .. } => (i, a + 1),
+                _ => (i, a),
+            });
+            tracing::info!(
+                conversation_id = %self.conversation_id,
+                msg_id = %data.msg_id,
+                images,
+                audios,
+                media_links,
+                "session prompt carries native media content blocks"
+            );
+        }
+        content
+    }
+
+    /// B5 mid-turn delivery: hand a message to the RUNNING turn instead of
+    /// opening a new one. Dispatches `Command::Steer` (codex `turn/steer`;
+    /// claude direct stdin user-frame write) with `data.msg_id` as the
+    /// correlation id both CLIs round-trip (claude user-frame `uuid` echoed via
+    /// `command_lifecycle`; codex `clientUserMessageId`).
+    ///
+    /// Deliberately NOT `send_message`: no `AgentStreamEvent::Start` emit and
+    /// no status flip — the message folds into the ACTIVE turn, whose relay and
+    /// status are already live (a stray Start would open a phantom turn
+    /// boundary mid-stream).
+    pub async fn deliver_midturn(&self, data: SendMessageData) -> Result<(), AgentSendError> {
+        self.runtime.touch();
+        let content = self.build_prompt_blocks(&data).await;
         self.dump_session_cli_final_input(&content, Some(data.msg_id.as_str()));
+        let cmd = Command::Steer {
+            content,
+            client_msg_id: Some(data.msg_id),
+        };
         self.backend
-            .dispatch(Command::Steer {
-                content,
-                client_msg_id: Some(data.msg_id),
-            })
+            .dispatch(cmd)
             .await
             .map(|_| ())
+            // Preserve the backend's message text: the conversation layer
+            // classifies codex's "no active turn to steer" rejection to fall
+            // back to the normal new-turn path.
             .map_err(|e| AgentSendError::from_agent_error(AgentError::bad_gateway(e.to_string())))
     }
 
@@ -621,7 +711,14 @@ impl SessionAgentTask {
             .map(|p| {
                 let is_ask = p.tool_name == "AskUserQuestion";
                 let options = if is_ask {
-                    ask_user_question_options(p.questions.as_ref())
+                    // `p.questions` is the bare `questions[]` ARRAY, but the
+                    // projector expects the whole tool input and does its own
+                    // `.get("questions")` — passing the array straight through
+                    // made recovery silently degrade to the generic
+                    // Allow/AllowAlways/Reject card (live e2e catch, 2026-08-04).
+                    // Re-wrap to the input shape the live path uses.
+                    let input = p.questions.as_ref().map(|qs| serde_json::json!({ "questions": qs }));
+                    ask_user_question_options(input.as_ref())
                 } else {
                     Vec::new()
                 };
@@ -637,6 +734,10 @@ impl SessionAgentTask {
                     action: None,
                     description: String::new(),
                     command_type: None,
+                    // The full question payload rides along so the frontend
+                    // recovery rebuilds the REAL question card; the flattened
+                    // options above stay as the fallback for older frontends.
+                    questions: if is_ask { p.questions.clone() } else { None },
                     options: options
                         .into_iter()
                         .map(|o| aionui_common::ConfirmationOption {
@@ -660,6 +761,54 @@ impl SessionAgentTask {
     ///     (claude keys the AskUserQuestion answer by the chosen label — see
     ///     claude_conn `build_control_response`; single-select single-question path).
     ///
+    /// Answer a structured question card (AskUserQuestion) — the DEDICATED
+    /// typed channel (2026-08-05 ruling: question answers do not ride the
+    /// permission confirm endpoint). `answers: None` = the user dismissed the
+    /// card; the claude adapter maps that to a deny (an allow with no answers
+    /// is silent data loss — claude drops unanswered questions, live 2.1.178).
+    pub fn answer_ask(
+        &self,
+        request_id: &str,
+        answers: Option<Vec<aionui_api_types::AskQuestionAnswer>>,
+    ) -> Result<(), AgentError> {
+        // api-types is the conversation layer's currency; convert to the
+        // session command's own type at this boundary.
+        let answers = answers.map(|list| {
+            list.into_iter()
+                .map(|a| aionui_session::QuestionAnswer {
+                    question: a.question,
+                    labels: a.labels,
+                })
+                .collect::<Vec<_>>()
+        });
+        let backend = self.backend.clone();
+        let request_id = request_id.to_string();
+        let conv_id = self.conversation_id.clone();
+        // Same fire-and-forget shape as confirm(): the REST reply has already
+        // returned by the time the dispatch runs, so a failure here MUST be
+        // surfaced in the log or a wedged ask is undiagnosable in production.
+        tokio::spawn(async move {
+            let command = aionui_session::Command::AnswerAsk {
+                request_id: request_id.clone(),
+                answers,
+            };
+            match backend.dispatch(command).await {
+                Ok(_) => tracing::info!(
+                    conv_id = %conv_id,
+                    request_id = %request_id,
+                    "ask answer delivered to backend (dedicated channel)"
+                ),
+                Err(e) => tracing::error!(
+                    conv_id = %conv_id,
+                    request_id = %request_id,
+                    error = %e,
+                    "ask answer FAILED after REST reply already returned success — claude stays blocked on can_use_tool"
+                ),
+            }
+        });
+        Ok(())
+    }
+
     /// `always_allow` (legacy flag) forces AllowAlways regardless.
     pub fn confirm(
         &self,
@@ -1173,20 +1322,17 @@ impl IAgentTask for SessionAgentTask {
         self.backend.capabilities().supports_midturn_delivery
     }
 
+    fn prompt_media_caps(&self) -> PromptMediaCaps {
+        let blocks = self.backend.capabilities().prompt_blocks;
+        PromptMediaCaps {
+            image: blocks.image,
+            audio: blocks.audio,
+        }
+    }
+
     async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
         self.runtime.touch();
-        let mut content: Vec<ContentBlock> = Vec::new();
-        if !data.content.is_empty() {
-            content.push(ContentBlock::Text(data.content));
-        }
-        for path in data.files {
-            // File paths ride as resource links; the claude/codex adapters resolve
-            // them (Read tool / base64) at dispatch time.
-            content.push(ContentBlock::ResourceLink {
-                uri: path,
-                mime_type: None,
-            });
-        }
+        let content = self.build_prompt_blocks(&data).await;
         // DEV (`--dump-prompts`): borrow the final blocks BEFORE they move into
         // Command::Send. No-op / best-effort — never affects the dispatch.
         self.dump_session_cli_final_input(&content, Some(data.msg_id.as_str()));
@@ -1268,10 +1414,14 @@ impl IAgentTask for SessionAgentTask {
         // turn (gate recovers in seconds, no crash card), then (2) delegate real
         // process teardown to the backend, which kills the process tree WITHOUT
         // waiting for the last Arc to drop.
-        if matches!(reason, Some(AgentKillReason::UserCancelTimeout)) {
+        if matches!(
+            reason,
+            Some(AgentKillReason::UserCancelTimeout | AgentKillReason::RuntimeRestart)
+        ) {
             tracing::info!(
                 conversation_id = %self.conversation_id,
-                "session kill(UserCancelTimeout): emitted clean Finish + delegating backend terminate (was Drop-only no-op)"
+                ?reason,
+                "session kill: emitted clean Finish and delegated backend termination"
             );
             // 1) clean converge FIRST: relay breaks → orchestrator releases the turn
             //    claim → `cancelling` cleared → gate recovers (no red crash card).
@@ -1307,10 +1457,14 @@ impl SessionAgentTask {
         &self,
         reason: Option<AgentKillReason>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-        if matches!(reason, Some(AgentKillReason::UserCancelTimeout)) {
+        if matches!(
+            reason,
+            Some(AgentKillReason::UserCancelTimeout | AgentKillReason::RuntimeRestart)
+        ) {
             tracing::info!(
                 conversation_id = %self.conversation_id,
-                "session kill_and_wait(UserCancelTimeout): emitted clean Finish + awaiting backend terminate"
+                ?reason,
+                "session kill_and_wait: emitted clean Finish and awaiting backend termination"
             );
             self.runtime.emit_finish_once(); // clean converge FIRST (sync)
             let backend = self.backend.clone();
@@ -1664,7 +1818,9 @@ pub async fn build_session_instance(
 
     // GAP #3 — MCP init surface: resolve user-configured servers to the neutral
     // spec (clean-slate resolve_session_init), fold in the inline snapshot, then
-    // prepend the team coordination MCP. Same order as the app boundary.
+    // prepend the team coordination MCP. Same order as the app boundary. The
+    // reserved name `aionui-team` is filtered from BOTH sources so the team
+    // coordination MCP (prepended last, below) always wins.
     let mut neutral = match mcp_server_repo {
         Some(repo) => {
             crate::mcp_resolve::resolve_session_mcp_servers(
@@ -1678,7 +1834,14 @@ pub async fn build_session_instance(
         }
         None => Vec::new(),
     };
-    neutral.extend(config.session_mcp_servers.iter().cloned());
+    neutral.retain(|server| server.name != TEAM_MCP_SERVER_NAME);
+    neutral.extend(
+        config
+            .session_mcp_servers
+            .iter()
+            .filter(|server| server.name != TEAM_MCP_SERVER_NAME)
+            .cloned(),
+    );
     let mut mcp_servers: Vec<McpServerSpec> = neutral.iter().map(session_server_to_spec).collect();
     if let Some(cfg) = config.team_mcp_stdio_config.as_ref() {
         // Team-MCP is PREPENDED before the user's servers (clean-slate + legacy
@@ -1923,7 +2086,13 @@ fn resolve_session_cli_program(
         });
     }
 
-    aionui_runtime::resolve_bundled_cli(backend_label).or_else(|| aionui_runtime::resolve_command_path(backend_label))
+    // PATH only. claude/codex used to prefer a bundled, version-pinned copy,
+    // which silently diverged from whatever the user had installed: the same
+    // prompt behaved differently in AionUi and in the user's terminal, with
+    // nothing on screen explaining why. They are now treated exactly like agy —
+    // the user's own install is the one that runs, and a drift from the version
+    // this integration was verified against is reported rather than hidden.
+    aionui_runtime::resolve_command_path(backend_label)
 }
 
 /// Assemble the direct-CLI spawn env (legacy spawn-surface parity; order
@@ -2314,6 +2483,8 @@ fn session_event_name(e: &SessionEvent) -> &'static str {
         SessionEvent::Detached { .. } => "Detached",
         SessionEvent::Permission { .. } => "Permission",
         SessionEvent::PermissionResolved { .. } => "PermissionResolved",
+        SessionEvent::Ask { .. } => "Ask",
+        SessionEvent::AskResolved { .. } => "AskResolved",
         SessionEvent::UsageDelta { .. } => "UsageDelta",
         SessionEvent::ConfigChanged { .. } => "ConfigChanged",
         SessionEvent::BackendBound { .. } => "BackendBound",
@@ -2638,7 +2809,8 @@ fn spawn_event_pump(
                     | SessionEvent::ThoughtDelta { .. }
                     | SessionEvent::ToolCall { .. }
                     | SessionEvent::ToolResult { .. }
-                    | SessionEvent::Permission { .. } => {
+                    | SessionEvent::Permission { .. }
+                    | SessionEvent::Ask { .. } => {
                         tracing::info!(
                             conv_id = %conversation_id,
                             event = session_event_name(&env.event),
@@ -2675,6 +2847,7 @@ fn spawn_event_pump(
                     input: None,
                     output: Some(acc.clone()),
                     description: None,
+                    parent_call_id: None,
                 }));
                 continue;
             }
@@ -2711,7 +2884,7 @@ fn spawn_event_pump(
                     let commands = slash_commands
                         .iter()
                         .map(|c| {
-                            agent_client_protocol::schema::AvailableCommand::new(
+                            agent_client_protocol::schema::v1::AvailableCommand::new(
                                 c.name.clone(),
                                 c.description.clone().unwrap_or_default(),
                             )
@@ -2883,6 +3056,7 @@ fn spawn_event_pump(
                                     input: None,
                                     output: None,
                                     description: None,
+                                    parent_call_id: None,
                                 }));
                             }
                             tool_output.clear();
@@ -3015,6 +3189,7 @@ fn spawn_event_pump(
                             input: None,
                             output: None,
                             description: None,
+                            parent_call_id: None,
                         }));
                     }
                     for (call_id, name) in kept_open {
@@ -3643,11 +3818,19 @@ fn update_workflow_cards(
                         .and_then(|v| v.as_str())
                         .or_else(|| args.get("command").and_then(|v| v.as_str()))
                         .map(str::to_string);
-                    let mut card = WorkflowCard::new_background(call_id.clone(), name, args, r#ref, desc, now_ms);
+                    // A Task subagent (`local_agent`) gets the "subagent" headline;
+                    // everything else (`local_bash`, unknown) stays "bg task".
+                    let is_agent = matches!(kind, Some(SubagentTaskKind::AgentContainer));
+                    let mut card = if is_agent {
+                        WorkflowCard::new_subagent(call_id.clone(), name, args, r#ref, desc, now_ms)
+                    } else {
+                        WorkflowCard::new_background(call_id.clone(), name, args, r#ref, desc, now_ms)
+                    };
                     tracing::info!(
                         conv_id = %conversation_id,
                         task_id = %r#ref,
                         %call_id,
+                        subagent = is_agent,
                         "session-pump: background task card opened"
                     );
                     // No roster will ever arrive to trigger a first emission, so
@@ -3700,6 +3883,7 @@ fn update_workflow_cards(
                                 input: None,
                                 output: None,
                                 description: None,
+                                parent_call_id: None,
                             },
                             agents: Vec::new(),
                             settle_only: true,
@@ -3931,6 +4115,7 @@ fn empty_turn_tip(outcome: &aionui_session::TurnOutcome) -> Option<TipsEventData
         tip_type,
         code: Some(code.to_owned()),
         params: None,
+        supersedes_key: None,
     })
 }
 
@@ -3968,6 +4153,7 @@ fn translate_event(event: SessionEvent, conversation_id: &str, terminal_result_s
             tool_use_id,
             name,
             input,
+            parent_tool_use_id,
             ..
         } => {
             vec![AgentStreamEvent::ToolCall(ToolCallEventData {
@@ -3978,12 +4164,16 @@ fn translate_event(event: SessionEvent, conversation_id: &str, terminal_result_s
                 input: Some(input),
                 output: None,
                 description: None,
+                // Subagent attribution (009 H5): persisted onto the row so the
+                // frontend can group a subagent's steps under its Task call.
+                parent_call_id: parent_tool_use_id,
             })]
         }
         SessionEvent::ToolResult {
             tool_use_id,
             is_error,
             content,
+            parent_tool_use_id,
             ..
         } => {
             let output = tool_result_text(&content);
@@ -3999,6 +4189,7 @@ fn translate_event(event: SessionEvent, conversation_id: &str, terminal_result_s
                 input: None,
                 output,
                 description: None,
+                parent_call_id: parent_tool_use_id,
             })]
         }
         SessionEvent::TurnResult {
@@ -4126,6 +4317,22 @@ fn translate_event(event: SessionEvent, conversation_id: &str, terminal_result_s
                 ),
             )]
         }
+        // Structured question (claude AskUserQuestion) → its own `ask` frame; the
+        // frontend renders a multi-question card and answers via confirm with the
+        // full per-question set. Deliberately NOT projected into AcpPermission
+        // options anymore — that flattening dropped every question after the first
+        // (the reason the tool was disabled at spawn until 2026-08-04).
+        SessionEvent::Ask { request_id, questions } => {
+            vec![AgentStreamEvent::Ask(serde_json::json!({
+                "session_id": conversation_id,
+                "request_id": request_id,
+                "questions": questions,
+            }))]
+        }
+        // The FSM counter side is handled by the reducer; the frontend closes the
+        // card on its own answer. A cross-client "someone else answered" push is a
+        // follow-up (the recovery REST path re-lists open asks on reload).
+        SessionEvent::AskResolved { .. } => Vec::new(),
         // Per-turn usage/cost → the AcpContextUsage passthrough frame the frontend
         // usage indicator reads (shape: cumulative token counters).
         SessionEvent::UsageDelta {
@@ -4233,6 +4440,7 @@ fn translate_event(event: SessionEvent, conversation_id: &str, terminal_result_s
             level,
             message,
             localized,
+            supersedes_key,
         } => {
             let tip_type = match level {
                 aionui_session::NoticeLevel::Info => TipType::Info,
@@ -4251,8 +4459,22 @@ fn translate_event(event: SessionEvent, conversation_id: &str, terminal_result_s
                 tip_type,
                 code,
                 params,
+                supersedes_key,
             })]
         }
+        // Agent-generated session title (claude generate_session_title, spec
+        // 2026-08-04). Reuse the ACP session_info_update event shape so the
+        // StreamRelay's name_source-guarded consumer handles both paths
+        // identically (translate.rs emits the same frame for real ACP agents).
+        SessionEvent::SessionTitle { title } => {
+            vec![AgentStreamEvent::AcpSessionInfo(serde_json::json!({ "title": title }))]
+        }
+        // Mid-turn interjection (Task 3): lower the claude command_lifecycle echo
+        // to an internal-only stream frame so the conversation layer's
+        // BackgroundStreamWatcher can tell an agent-started turn that SERVES a
+        // user message (claim it) from a pure background continuation (leave it
+        // unclaimed). Consumed inside the relay/watcher, never forwarded to the
+        // WebSocket.
         SessionEvent::MessageLifecycle { client_msg_id, phase } => {
             vec![AgentStreamEvent::MessageLifecycle(
                 crate::protocol::events::MessageLifecycleData { client_msg_id, phase },
@@ -4316,11 +4538,7 @@ mod build_mapping_tests {
     /// other path must not be silently added to it).
     #[test]
     fn initial_cost_seed_reads_the_persisted_usd_cost_only() {
-        // Fork pins agent-client-protocol 0.11.1, where these live directly under
-        // `schema` — upstream (2.0.0) moved them behind a `v1` module. Same
-        // constructors and fields either way (verified:
-        // agent-client-protocol-schema-0.12.0/src/client.rs:264,285,296,332).
-        use agent_client_protocol::schema::{Cost, UsageUpdate};
+        use agent_client_protocol::schema::v1::{Cost, UsageUpdate};
         let usd = PersistedSessionState {
             context_usage: Some(UsageUpdate::new(12_600, 262_144).cost(Cost::new(6.4294, "USD"))),
             ..Default::default()
@@ -4518,6 +4736,233 @@ mod build_mapping_tests {
             has_command_override: false,
             env_override_key_count: 0,
         }
+    }
+
+    struct DirectMcpRepo {
+        rows: Vec<aionui_db::models::McpServerRow>,
+    }
+
+    #[derive(Default)]
+    struct RecordingFailSpawner {
+        last_command: std::sync::Mutex<Option<aionui_common::CommandSpec>>,
+    }
+
+    impl RecordingFailSpawner {
+        fn last_command(&self) -> Option<aionui_common::CommandSpec> {
+            self.last_command.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl aionui_process::Spawner for RecordingFailSpawner {
+        async fn spawn(
+            &self,
+            spec: aionui_common::CommandSpec,
+            _extra_env: &[(String, String)],
+            _opaque_owner_tag: &str,
+        ) -> Result<Arc<aionui_process::ManagedProcess>, aionui_process::ProcessError> {
+            *self.last_command.lock().unwrap() = Some(spec);
+            Err(aionui_process::ProcessError::internal(
+                "recording spawner deliberately stops after assembly",
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl IMcpServerRepository for DirectMcpRepo {
+        async fn list(&self, user_id: &str) -> Result<Vec<aionui_db::models::McpServerRow>, aionui_db::DbError> {
+            Ok(self.rows.iter().filter(|row| row.user_id == user_id).cloned().collect())
+        }
+
+        async fn find_by_id(
+            &self,
+            user_id: &str,
+            id: &str,
+        ) -> Result<Option<aionui_db::models::McpServerRow>, aionui_db::DbError> {
+            Ok(self
+                .rows
+                .iter()
+                .find(|row| row.user_id == user_id && row.id == id)
+                .cloned())
+        }
+
+        async fn find_by_name(
+            &self,
+            user_id: &str,
+            name: &str,
+        ) -> Result<Option<aionui_db::models::McpServerRow>, aionui_db::DbError> {
+            Ok(self
+                .rows
+                .iter()
+                .find(|row| row.user_id == user_id && row.name == name)
+                .cloned())
+        }
+
+        async fn create(
+            &self,
+            _params: aionui_db::CreateMcpServerParams<'_>,
+        ) -> Result<aionui_db::models::McpServerRow, aionui_db::DbError> {
+            unimplemented!("not needed for direct assembly test")
+        }
+
+        async fn update(
+            &self,
+            _user_id: &str,
+            _id: &str,
+            _params: aionui_db::UpdateMcpServerParams<'_>,
+        ) -> Result<aionui_db::models::McpServerRow, aionui_db::DbError> {
+            unimplemented!("not needed for direct assembly test")
+        }
+
+        async fn delete(&self, _user_id: &str, _id: &str) -> Result<(), aionui_db::DbError> {
+            unimplemented!("not needed for direct assembly test")
+        }
+
+        async fn batch_upsert(
+            &self,
+            _user_id: &str,
+            _servers: &[aionui_db::CreateMcpServerParams<'_>],
+        ) -> Result<Vec<aionui_db::models::McpServerRow>, aionui_db::DbError> {
+            unimplemented!("not needed for direct assembly test")
+        }
+
+        async fn update_status(
+            &self,
+            _user_id: &str,
+            _id: &str,
+            _status: &str,
+            _last_connected: Option<aionui_common::TimestampMs>,
+        ) -> Result<(), aionui_db::DbError> {
+            unimplemented!("not needed for direct assembly test")
+        }
+
+        async fn update_tools(
+            &self,
+            _user_id: &str,
+            _id: &str,
+            _tools: Option<&str>,
+        ) -> Result<(), aionui_db::DbError> {
+            unimplemented!("not needed for direct assembly test")
+        }
+    }
+
+    fn direct_mcp_row(id: &str, name: &str) -> aionui_db::models::McpServerRow {
+        aionui_db::models::McpServerRow {
+            id: id.into(),
+            user_id: "user-1".into(),
+            name: name.into(),
+            description: None,
+            enabled: true,
+            transport_type: "http".into(),
+            transport_config: r#"{"url":"http://127.0.0.1:9999/mcp"}"#.into(),
+            tools: None,
+            last_test_status: "disconnected".into(),
+            last_connected: None,
+            original_json: None,
+            builtin: false,
+            deleted_at: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_claude_spawn_contains_team_nonbuiltin_and_builtin_without_reserved_override() {
+        use aionui_api_types::{SessionMcpServer, SessionMcpTransport, TeamMcpStdioConfig};
+
+        let executable = std::env::current_exe()
+            .expect("current test executable")
+            .to_string_lossy()
+            .into_owned();
+        let config = AcpBuildExtra {
+            backend: Some("claude".into()),
+            mcp_server_ids: Some(vec!["mcp-docs".into(), "mcp-reserved".into()]),
+            session_mcp_servers: vec![
+                SessionMcpServer {
+                    id: "mcp-chrome".into(),
+                    name: "chrome-devtools".into(),
+                    transport: SessionMcpTransport::Stdio {
+                        command: executable.clone(),
+                        args: vec!["chrome-devtools-mcp".into()],
+                        env: Default::default(),
+                    },
+                },
+                SessionMcpServer {
+                    id: "mcp-inline-collision".into(),
+                    name: TEAM_MCP_SERVER_NAME.into(),
+                    transport: SessionMcpTransport::Stdio {
+                        command: executable,
+                        args: vec!["malicious".into()],
+                        env: Default::default(),
+                    },
+                },
+            ],
+            team_mcp_stdio_config: Some(TeamMcpStdioConfig {
+                team_id: "team-1".into(),
+                port: 9000,
+                token: "tok".into(),
+                slot_id: "slot-1".into(),
+                binary_path: "/usr/bin/team-coordinator".into(),
+            }),
+            ..Default::default()
+        };
+        let repo: Arc<dyn IMcpServerRepository> = Arc::new(DirectMcpRepo {
+            rows: vec![
+                direct_mcp_row("mcp-docs", "mcp-docs"),
+                direct_mcp_row("mcp-reserved", TEAM_MCP_SERVER_NAME),
+            ],
+        });
+        let metadata = test_metadata(Some("claude"), None);
+        let broadcaster: Arc<dyn EventBroadcaster> = Arc::new(aionui_realtime::BroadcastEventBus::new(16));
+        let spawner = Arc::new(RecordingFailSpawner::default());
+
+        let result = build_session_instance(
+            "claude",
+            SessionBuildInputs {
+                conversation_id: "conv-direct-mcp".into(),
+                user_id: "user-1".into(),
+                workspace: std::env::current_dir()
+                    .expect("current directory")
+                    .to_string_lossy()
+                    .into_owned(),
+                config: &config,
+                metadata: &metadata,
+                session_snapshot: None,
+                backend_session_id: None,
+                mcp_server_repo: Some(&repo),
+                runtime_env: &[],
+                broadcaster,
+                catalog_writeback: None,
+                acp_session_repo: None,
+                prompt_dump_dir: None,
+                permission_hook_body: None,
+            },
+            spawner.clone(),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "FakeSpawner deliberately fails after recording the spawn"
+        );
+
+        let command = spawner.last_command().expect("direct backend must reach spawn");
+        let mcp_flag = command
+            .args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .expect("direct claude spawn must carry --mcp-config");
+        let config_json: serde_json::Value =
+            serde_json::from_str(&command.args[mcp_flag + 1]).expect("valid inline MCP config");
+        let servers = config_json["mcpServers"].as_object().expect("MCP server map");
+
+        assert_eq!(servers.len(), 3);
+        assert!(servers.contains_key("mcp-docs"));
+        assert!(servers.contains_key("chrome-devtools"));
+        assert_eq!(
+            servers[TEAM_MCP_SERVER_NAME]["command"],
+            serde_json::json!("/usr/bin/team-coordinator"),
+            "the coordination MCP must survive both repo and inline reserved-name collisions"
+        );
     }
 
     #[test]
@@ -4924,6 +5369,7 @@ mod translate_tests {
             input: None,
             output: None,
             description: None,
+            parent_call_id: None,
         })
     }
 
@@ -5122,6 +5568,7 @@ mod translate_tests {
                     level,
                     message: "set effort: rejected by agent".into(),
                     localized: None,
+                    supersedes_key: None,
                 },
                 "conv-1",
                 false,
@@ -6282,28 +6729,8 @@ mod pump_tests {
     }
 
     // Image-capable backend: an image attachment leaves the [[AION_FILES]]
-    // text and rides as a native Image block; non-media files keep the
-    // path-text + resource-link form.
-    //
-    // ⚠️ NOT ADOPTED on this fork. The assertions below are upstream's and are
-    // left verbatim — what is missing is the implementation: multimodal prompt
-    // partitioning landed upstream in `5a78a0b2` (feat(agent): multimodal
-    // prompt — native image/audio content blocks gated by promptCapabilities,
-    // #774), which this fork has not taken. `a326fb26` brought the test in
-    // ahead of it.
-    //
-    // `5a78a0b2` was evaluated and declined for this sync (2026-08-14): it sits
-    // on a chain of other unpicked upstream features — its cherry-pick fails on
-    // `ForkSpec`, `get_message_by_msg_id_any`, `resolve_backend_turn_anchor`,
-    // `end_turn_usage_frame_from_response` and `preserve_known_window`, none of
-    // which exist here. Adopting it means adopting session-fork and the usage
-    // frame work with it, which is its own round.
-    //
-    // Worth doing later: it also touches `manager/acp/agent_session_flow.rs`,
-    // which IS this fork's live path — images to claude/codex/gemini currently
-    // ride as file paths rather than native image blocks. Un-ignore this test
-    // when that lands.
-    #[ignore = "needs upstream 5a78a0b2 (multimodal prompt blocks), not adopted on this fork"]
+    // text and rides as a native Image block PAIRED with a link to the same
+    // file; non-media files keep the path-text + resource-link form.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn send_message_partitions_image_into_native_block() {
         let dir = std::env::temp_dir().join("aionui-session-media-tests");
@@ -6351,7 +6778,11 @@ mod pump_tests {
         let Some(Command::Send { content, .. }) = commands.iter().find(|c| matches!(c, Command::Send { .. })) else {
             panic!("expected a Send command");
         };
-        assert_eq!(content.len(), 3, "text + pdf link + image block: {content:?}");
+        assert_eq!(
+            content.len(),
+            4,
+            "text + pdf link + image block + the image's own link: {content:?}"
+        );
         let ContentBlock::Text(text) = &content[0] else {
             panic!("expected text first: {content:?}");
         };
@@ -6365,6 +6796,132 @@ mod pump_tests {
         };
         assert_eq!(data, b"catbytes");
         assert_eq!(media_type, "image/png");
+        let ContentBlock::ResourceLink { uri, mime_type } = &content[3] else {
+            panic!("expected the image's paired resource link fourth: {content:?}");
+        };
+        assert_eq!(uri, &img);
+        assert_eq!(mime_type.as_deref(), Some("image/png"));
+    }
+
+    // Regression guard (Sentry 7677917218): a natively-delivered image must ALSO
+    // carry its disk path. Without the paired link the agent sees pixels but has
+    // no path for its Read tool — it can look at the image but not open the file.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_message_pairs_image_block_with_resource_link() {
+        let dir = std::env::temp_dir().join("aionui-session-media-link-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("qr.png");
+        std::fs::write(&img, b"qrbytes").unwrap();
+        let img = img.to_string_lossy().into_owned();
+
+        let backend = Arc::new(RecordingBackend {
+            commands: std::sync::Mutex::new(Vec::new()),
+            blocks: aionui_session::BlockSet {
+                text: true,
+                image: true,
+                audio: false,
+                resource: true,
+                at_mention: false,
+            },
+        });
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-link".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend.clone() as Arc<dyn SessionBackend>,
+            None,
+        );
+        let marker = aionui_common::constants::AIONUI_FILES_MARKER;
+        crate::agent_task::IAgentTask::send_message(
+            task.as_ref(),
+            SendMessageData {
+                content: format!("replace the qr code\n\n{marker}\n{img}"),
+                msg_id: "m-link".into(),
+                turn_id: None,
+                files: vec![img.clone()],
+                inject_skills: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let commands = backend.commands.lock().unwrap();
+        let Some(Command::Send { content, .. }) = commands.iter().find(|c| matches!(c, Command::Send { .. })) else {
+            panic!("expected a Send command");
+        };
+        assert!(
+            content.iter().any(|b| matches!(b, ContentBlock::Image { .. })),
+            "image block missing: {content:?}"
+        );
+        let linked: Vec<&str> = content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ResourceLink { uri, .. } => Some(uri.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            linked,
+            vec![img.as_str()],
+            "the image's path must ride along as a resource link: {content:?}"
+        );
+    }
+
+    // Capability gate: a backend that takes images but NOT resource links must not
+    // receive the paired link — `BlockSet::allows` rejects an un-advertised block
+    // and that rejection kills the WHOLE Send.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_message_omits_media_link_when_resource_block_unsupported() {
+        let dir = std::env::temp_dir().join("aionui-session-media-link-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("no-link.png");
+        std::fs::write(&img, b"pngbytes").unwrap();
+        let img = img.to_string_lossy().into_owned();
+
+        let backend = Arc::new(RecordingBackend {
+            commands: std::sync::Mutex::new(Vec::new()),
+            blocks: aionui_session::BlockSet {
+                text: true,
+                image: true,
+                audio: false,
+                resource: false,
+                at_mention: false,
+            },
+        });
+        let task = SessionAgentTask::new(
+            AgentType::Acp,
+            "conv-nolink".into(),
+            "user-1".into(),
+            "/w".into(),
+            backend.clone() as Arc<dyn SessionBackend>,
+            None,
+        );
+        crate::agent_task::IAgentTask::send_message(
+            task.as_ref(),
+            SendMessageData {
+                content: "look".into(),
+                msg_id: "m-nolink".into(),
+                turn_id: None,
+                files: vec![img.clone()],
+                inject_skills: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let commands = backend.commands.lock().unwrap();
+        let Some(Command::Send { content, .. }) = commands.iter().find(|c| matches!(c, Command::Send { .. })) else {
+            panic!("expected a Send command");
+        };
+        assert!(
+            content.iter().any(|b| matches!(b, ContentBlock::Image { .. })),
+            "image block missing: {content:?}"
+        );
+        assert!(
+            !content.iter().any(|b| matches!(b, ContentBlock::ResourceLink { .. })),
+            "must not emit a resource link to a backend that does not advertise it: {content:?}"
+        );
     }
 
     /// A codex detached exec (`source: unifiedExecStartup`) is still RUNNING when
@@ -6627,6 +7184,34 @@ mod pump_tests {
             AgentStreamEvent::SegmentBreak => "SegmentBreak",
             _ => "other",
         }
+    }
+
+    // SessionTitle (claude generate_session_title, spec 2026-08-04) maps to the
+    // SAME AcpSessionInfo frame the ACP bridge emits for session_info_update, so
+    // the StreamRelay's guarded consumer handles both backends through one path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_title_maps_to_acp_session_info_frame() {
+        let script = vec![
+            env(SessionEvent::SessionTitle {
+                title: "Fix login bug".into(),
+            }),
+            env(SessionEvent::TurnResult {
+                is_error: false,
+                api_error_status: None,
+                result_text: String::new(),
+                epoch: 0,
+                outcome: aionui_session::TurnOutcome::EndTurn,
+            }),
+        ];
+        let frames = drain_script(script).await;
+        let payload = frames
+            .iter()
+            .find_map(|f| match f {
+                AgentStreamEvent::AcpSessionInfo(v) => Some(v.clone()),
+                _ => None,
+            })
+            .expect("SessionTitle must surface as an AcpSessionInfo frame");
+        assert_eq!(payload["title"], "Fix login bug");
     }
 
     // A ConfigChanged never produces a stream frame (it would fall into origin
@@ -7524,6 +8109,85 @@ mod pump_tests {
         );
     }
 
+    /// A Task subagent (`task_type: local_agent`, kind `AgentContainer`) rides
+    /// the same card machinery as a background bash but must be LABELLED as a
+    /// subagent — with both saying "bg task" the step list could not tell
+    /// delegated agent work from a background shell (live 2026-08-19). Its
+    /// internal tool calls also carry the launching call's id so the frontend
+    /// can group them under the Task row.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn task_subagent_card_is_labelled_subagent_and_children_carry_parent() {
+        use aionui_session::{SubagentStatus, SubagentTaskKind};
+        let script = vec![
+            // Shape mirrors claude_2.1.169_single_tool_turn.ndjson: Agent
+            // tool_use → task_started{local_agent} → the subagent's own tool_use
+            // frame carrying parent_tool_use_id.
+            env(SessionEvent::ToolCall {
+                tool_use_id: "toolu_task".into(),
+                name: "修复 AIONUI-151 桌面 401 恢复".into(),
+                subagent: aionui_session::SubagentKind::Inline,
+                input: serde_json::json!({
+                    "description": "修复 AIONUI-151 桌面 401 恢复",
+                    "subagent_type": "claude",
+                    "run_in_background": false
+                }),
+                parent_tool_use_id: None,
+            }),
+            env(SessionEvent::SubagentUpdate {
+                r#ref: "ae859b22dc5afbdca".into(),
+                label: Some("claude".into()),
+                status: SubagentStatus::Running,
+                parent_ref: Some("toolu_task".into()),
+                kind: Some(SubagentTaskKind::AgentContainer),
+            }),
+            env(SessionEvent::ToolCall {
+                tool_use_id: "toolu_inner".into(),
+                name: "Read httpBridge.ts".into(),
+                subagent: aionui_session::SubagentKind::Inline,
+                input: serde_json::json!({"file_path": "/tmp/httpBridge.ts"}),
+                parent_tool_use_id: Some("toolu_task".into()),
+            }),
+            env(SessionEvent::SubagentUpdate {
+                r#ref: "ae859b22dc5afbdca".into(),
+                label: None,
+                status: SubagentStatus::Completed,
+                parent_ref: Some("toolu_task".into()),
+                kind: None,
+            }),
+        ];
+        let frames = drain_script(script).await;
+
+        let progress = wf_frames(&frames);
+        assert!(!progress.is_empty(), "the subagent card must emit on open");
+        let desc = progress[0].card.description.as_deref().unwrap_or_default();
+        assert!(
+            desc.contains("subagent ae859b22dc5afbdca"),
+            "a Task subagent's card says 'subagent', not 'bg task': {desc}"
+        );
+        assert!(!desc.contains("bg task"), "not a bg task: {desc}");
+
+        // Attribution: the subagent's INTERNAL call carries the Task call's id;
+        // the Task launch itself (a main-agent call) carries none.
+        let parent_of = |id: &str| {
+            frames.iter().find_map(|f| match f {
+                AgentStreamEvent::ToolCall(d) if d.call_id == id && d.status == ToolCallStatus::Running => {
+                    Some(d.parent_call_id.clone())
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(
+            parent_of("toolu_inner"),
+            Some(Some("toolu_task".into())),
+            "a subagent-internal call must carry its Task call's id"
+        );
+        assert_eq!(
+            parent_of("toolu_task"),
+            Some(None),
+            "the main-agent launching call carries no parent"
+        );
+    }
+
     /// A CANCELLED turn takes background-task cards down with it: the interrupt
     /// kills background tasks silently (no task frames follow — per the #732
     /// capture), so waiting for a notification would strand the card spinning.
@@ -8049,8 +8713,7 @@ mod pump_tests {
         // watcher owns them.
         let last_turn_frame = frames
             .iter()
-            .filter(|f| !matches!(f, AgentStreamEvent::WorkflowProgress(_)))
-            .next_back();
+            .rfind(|f| !matches!(f, AgentStreamEvent::WorkflowProgress(_)));
         assert!(
             matches!(last_turn_frame, Some(AgentStreamEvent::Finish(_))),
             "the settled Finish is the turn's terminal frame, got {seq:?}"
@@ -8122,8 +8785,7 @@ mod pump_tests {
         assert!(
             frames
                 .iter()
-                .filter(|f| !matches!(f, AgentStreamEvent::WorkflowProgress(_)))
-                .next_back()
+                .rfind(|f| !matches!(f, AgentStreamEvent::WorkflowProgress(_)))
                 .is_some_and(|f| matches!(f, AgentStreamEvent::Finish(_))),
             "the clean result's Finish must flow while a background bash is alive, got {seq:?}"
         );
@@ -8452,12 +9114,16 @@ mod pump_tests {
         let backend: Arc<dyn SessionBackend> = Arc::new(PendingPermBackend(aionui_session::PendingPermissionView {
             request_id: "req-recover".into(),
             tool_name: "AskUserQuestion".into(),
-            questions: Some(serde_json::json!({
-                "questions": [{
-                    "question": "Which?",
-                    "options": [{"label": "A"}, {"label": "B"}]
-                }]
-            })),
+            // The BARE questions[] array — matching what claude_conn's
+            // pending_permission_requests() actually stores
+            // (`perm.input.get("questions").cloned()`). The old fixture carried
+            // the {questions:[…]} wrapper, so the projection passed here while
+            // silently degrading to Allow/Reject against the real backend
+            // (caught live in the 2026-08-04 e2e).
+            questions: Some(serde_json::json!([{
+                "question": "Which?",
+                "options": [{"label": "A"}, {"label": "B"}]
+            }])),
         }));
         let task = SessionAgentTask::new(
             AgentType::Acp,
@@ -9278,6 +9944,52 @@ mod force_kill_tests {
         }
     }
 
+    /// Task-1 brief: `SessionAgentTask::supports_midturn_delivery` must read
+    /// straight through to the backend's declared capability bit — no
+    /// reinterpretation, no default override.
+    struct MidturnCapableBackend {
+        supports_midturn_delivery: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBackend for MidturnCapableBackend {
+        async fn dispatch(&self, _c: Command) -> Result<CommandReceipt, BackendError> {
+            Ok(CommandReceipt {
+                accepted: true,
+                admission: Admission::NoTurn,
+                turn_gen: 1,
+            })
+        }
+        fn events(&self) -> BoxStream<'static, SessionEnvelope> {
+            use futures_util::StreamExt as _;
+            futures_util::stream::empty().boxed()
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                supports_midturn_delivery: self.supports_midturn_delivery,
+                ..Capabilities::default()
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn supports_midturn_delivery_reads_through_backend_capabilities() {
+        for expected in [true, false] {
+            let backend: Arc<dyn SessionBackend> = Arc::new(MidturnCapableBackend {
+                supports_midturn_delivery: expected,
+            });
+            let task = SessionAgentTask::new(
+                AgentType::Acp,
+                "conv-1".into(),
+                "user-1".into(),
+                "/w".into(),
+                backend,
+                None,
+            );
+            assert_eq!(IAgentTask::supports_midturn_delivery(task.as_ref()), expected);
+        }
+    }
+
     fn build_task_with_counter() -> (Arc<SessionAgentTask>, Arc<AtomicUsize>) {
         let counter = Arc::new(AtomicUsize::new(0));
         let backend: Arc<dyn SessionBackend> = Arc::new(TerminateCountingBackend {
@@ -9386,6 +10098,24 @@ mod force_kill_tests {
         let again = next_terminal(&mut rx).await;
         assert!(again.is_none(), "no second Finish broadcast, got {again:?}");
         assert_eq!(IAgentTask::status(task.as_ref()), Some(ConversationStatus::Finished));
+    }
+
+    #[tokio::test]
+    async fn runtime_restart_forces_clean_finish_and_terminates_backend() {
+        let (task, counter) = build_task_with_counter();
+        let mut rx = IAgentTask::subscribe(task.as_ref());
+        start_turn(task.as_ref()).await;
+
+        let inst = AgentInstance::Session(Arc::clone(&task));
+        inst.kill_and_wait(Some(AgentKillReason::RuntimeRestart)).await;
+
+        let terminal = next_terminal(&mut rx).await.expect("a terminal frame after restart");
+        assert!(
+            matches!(terminal, AgentStreamEvent::Finish(_)),
+            "runtime restart must finish the turn without an Error frame, got {terminal:?}"
+        );
+        assert_eq!(IAgentTask::status(task.as_ref()), Some(ConversationStatus::Finished));
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
     /// T6: isolation — non-`UserCancelTimeout` reasons keep the original

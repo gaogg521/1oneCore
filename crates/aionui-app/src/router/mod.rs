@@ -9,6 +9,8 @@ mod routes;
 mod runtime_team_tools;
 mod scm_monitor;
 mod state;
+mod system_file_opener;
+mod team_capability_resolver;
 mod team_conversation_adapters;
 mod trace;
 

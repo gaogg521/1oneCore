@@ -104,9 +104,9 @@ mod tests {
 
     #[test]
     fn pins_direct_npx_package() {
-        let args = pin_registry_npx_args("pi", &strings(&["-y", "pi-acp"])).unwrap();
         // Tracks `resources/acp-registry-npx-lock.json`. Bumping the lock without bumping this
         // assertion is how it drifted to 0.0.33-vs-0.0.32 and left main red.
+        let args = pin_registry_npx_args("pi", &strings(&["-y", "pi-acp"])).unwrap();
         assert_eq!(args, ["-y", "pi-acp@0.0.33"]);
     }
 

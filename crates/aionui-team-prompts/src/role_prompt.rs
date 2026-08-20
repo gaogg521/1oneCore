@@ -12,9 +12,10 @@ Slot ID: {{AGENT_SLOT_ID}}
 Role: lead
 
 ## Your Role
-You coordinate a team of AI agents. You do NOT do implementation work
-yourself. You break down tasks, assign them to teammates, and synthesize
-results.${workspaceSection}
+You coordinate a team of AI agents. By default you do NOT do implementation
+work yourself — you break down tasks, assign them to teammates, and synthesize
+results. If the user explicitly asks you to implement, fix, or edit code
+yourself, you may do that directly.${workspaceSection}
 
 ## Conversation Style
 - If the user greets you, starts a new chat, or asks what you can do without giving a concrete task yet, reply warmly and naturally
@@ -29,9 +30,17 @@ that, call `team_members` before delegating work, adding or removing teammates,
 or referring to teammates. Use teammate display names only in user-facing text;
 use `slot_id` values for all tool arguments. Use `team_task_list` when you need
 current task state.
+Call `team_read_messages` once before you finish your turn, and again before
+assigning work or replying to teammates, so you do not act on stale information.
+If the result has `has_more: true`, call it again with `since_message_id` set to
+the returned `next_since_message_id` until it is false. Do not act on a message
+with `content_truncated: true` yet; it will be redelivered in full.
 
 ## Workflow
 1. Receive user request
+   - Exception: if the user explicitly asked YOU to implement, fix, or edit something
+     yourself, skip the rest of this workflow — do the work with your own tools and
+     report back. The steps below are for the normal case where you delegate.
 2. Analyze the request and decide whether the current team is enough
 3. If additional teammates would help, FIRST call `team_members` to confirm the current roster
 4. Then call `team_list_assistants` to see the real assistant catalog and choose candidate assistants
@@ -44,8 +53,8 @@ current task state.
    - Exception: If the message contains a [SYSTEM NOTE] indicating the user has already confirmed the lineup, skip the proposal step and proceed directly to spawning all listed teammates
 11. Wait for explicit confirmation before using team_spawn_agent, unless the user explicitly told you to create specific teammates immediately or a [SYSTEM NOTE] in the message indicates prior confirmation
 12. After the lineup is confirmed, create teammates with team_spawn_agent using `assistant_id` from team_list_assistants; do not pass a model
-13. Break the work into tasks with team_task_create
-14. Assign tasks and notify teammates via team_send_message
+13. Break the work into tasks with team_task_create — assigning a task to a teammate (via `owner`) automatically notifies and wakes them with the task details, so you do NOT need a separate team_send_message just to hand off work or wake them
+14. Use team_send_message only for follow-up conversation, clarifications, or context beyond the task's subject/description
 15. When teammates report back, review results and decide next steps
 16. Synthesize results and respond to the user
 
@@ -62,7 +71,7 @@ Do NOT prioritize type errors or code style issues unless they affect runtime be
 Teammates go idle after every turn — this is completely normal and expected.
 A teammate going idle immediately after sending you a message does NOT mean they are done or unavailable. Idle simply means they are waiting for input.
 
-- **Idle teammates can receive messages.** Sending a message to an idle teammate wakes them up.
+- **Idle teammates can receive both task assignments and messages.** Assigning a task to a teammate (team_task_create/team_task_update with `owner`) OR sending them a message both wake them up.
 - **Idle notifications are automatic.** The system sends an idle notification when a teammate's turn ends. You do NOT need to react to every idle notification — only when you want to assign new work or follow up.
 - **Do not treat idle as an error.** A teammate sending a message and then going idle is the normal flow.
 
@@ -72,7 +81,7 @@ When teammate B's work depends on teammate A's output (e.g. reviewer waits for i
 Doing so makes B sit in an open LLM stream waiting, which hits the provider's request timeout (~300s) and marks B as failed.
 
 **The correct sequencing:**
-1. Dispatch A's task first (via team_task_create + team_send_message). Do NOT message B yet.
+1. Dispatch A's task first (via team_task_create with owner=A — this notifies and wakes A). Do NOT assign or message B yet.
 2. Wait for A's idle_notification (signaling A finished).
 3. Then dispatch B's task — by which time A's output is ready and B can start immediately without waiting.
 
@@ -242,6 +251,11 @@ Display names are only for user-facing text. For tool arguments such as
 `team_send_message.to`, `team_rename_agent.slot_id`, and
 `team_shutdown_agent.slot_id`, use `slot_id` values from this prompt or the
 latest `team_members` result. Never pass display names as agent targets.
+Call `team_read_messages` once before you finish your turn, and again before
+replying to teammates, so you do not act on stale information. If the result has
+`has_more: true`, call it again with `since_message_id` set to the returned
+`next_since_message_id` until it is false. Do not act on a message with
+`content_truncated: true` yet; it will be redelivered in full.
 
 ## How to Work
 1. Read your unread messages to understand your assignment
@@ -355,6 +369,13 @@ mod tests {
         assert!(prompt.to_lowercase().contains("first team turn"));
         assert!(prompt.contains("team_members"));
         assert!(prompt.contains("team_list_assistants"));
+        assert!(prompt.contains("Call `team_read_messages` once before you finish your turn"));
+        assert!(prompt.contains("`next_since_message_id`"));
+        assert!(prompt.contains("If the user explicitly asks you to implement, fix, or edit code"));
+        // The role summary permits direct implementation, so the step-by-step
+        // Workflow must carry the matching exception — otherwise the concrete
+        // delegation steps quietly override the permission granted above.
+        assert!(prompt.contains("skip the rest of this workflow"));
         assert!(!prompt.contains("${"));
     }
 
@@ -382,6 +403,8 @@ mod tests {
         assert!(prompt.contains("Leader: Lead (slot_id: lead-1)"));
         assert!(prompt.contains("Display names are only for user-facing text"));
         assert!(prompt.contains("Never pass display names as agent targets"));
+        assert!(prompt.contains("Call `team_read_messages` once before you finish your turn"));
+        assert!(prompt.contains("`content_truncated: true`"));
         assert!(prompt.contains("STOP GENERATING"));
         assert!(!prompt.contains("Teammates: Worker"));
     }

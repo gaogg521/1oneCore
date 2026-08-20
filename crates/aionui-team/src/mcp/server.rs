@@ -14,7 +14,7 @@ use crate::scheduler::TeammateManager;
 use crate::service::TeamSessionService;
 use crate::session::{AgentMessageQueueResult, SpawnAgentRequest};
 use crate::tool_executor::{TeamToolContext, TeamToolExecutor, team_tool_call_from_name};
-use crate::types::{TaskStatus, TeamAgent, TeamTask, TeammateRole, TeammateStatus};
+use crate::types::{MailboxMessage, TaskStatus, TeamAgent, TeamTask, TeammateRole, TeammateStatus};
 use crate::work_source::WorkSource;
 
 use super::protocol::{
@@ -22,8 +22,8 @@ use super::protocol::{
     read_request, write_response,
 };
 use super::tools::{
-    RenameAgentInput, SendMessageInput, ShutdownAgentInput, SpawnAgentInput, TaskCreateInput, TaskListInput,
-    TaskListStatusInput, TaskUpdateInput,
+    ClearAgentContextInput, InterruptAgentInput, ReadMessagesInput, RenameAgentInput, SendMessageInput,
+    ShutdownAgentInput, SpawnAgentInput, TaskCreateInput, TaskListInput, TaskListStatusInput, TaskUpdateInput,
 };
 
 // ---------------------------------------------------------------------------
@@ -523,13 +523,18 @@ pub(crate) async fn dispatch_tool(
     super::tools::authorize_tool(caller_role, tool_name).map_err(ToolCallError::from_message)?;
 
     match tool_name {
+        "team_read_messages" => exec_read_messages(arguments, service, team_id, caller_slot_id).await,
         "team_send_message" => exec_send_message(arguments, scheduler, service, team_id, caller_slot_id).await,
+        "team_interrupt_agent" => {
+            exec_interrupt_agent(arguments, scheduler, service, team_id, caller_slot_id, caller_role).await
+        }
         "team_spawn_agent" => exec_spawn_agent(arguments, service, team_id, caller_slot_id, caller_role).await,
-        "team_task_create" => exec_task_create(arguments, scheduler).await,
-        "team_task_update" => exec_task_update(arguments, scheduler).await,
+        "team_task_create" => exec_task_create(arguments, scheduler, service, team_id, caller_slot_id).await,
+        "team_task_update" => exec_task_update(arguments, scheduler, service, team_id, caller_slot_id).await,
         "team_task_list" => exec_task_list(arguments, scheduler).await,
         "team_members" => exec_members(scheduler).await,
         "team_rename_agent" => exec_rename_agent(arguments, scheduler, service, team_id).await,
+        "team_clear_agent_context" => exec_clear_agent_context(arguments, scheduler, service, team_id).await,
         "team_shutdown_agent" => {
             exec_shutdown_agent(arguments, scheduler, service, team_id, caller_slot_id, caller_role).await
         }
@@ -596,6 +601,154 @@ async fn exec_describe_assistant(
 // ---------------------------------------------------------------------------
 // Individual tool handlers
 // ---------------------------------------------------------------------------
+
+const MAX_INBOX_MESSAGES: usize = 50;
+const MAX_INBOX_CONTENT_CHARS: usize = 4_000;
+const INBOX_TRUNCATION_MARKER: &str = "\n[truncated]";
+const INBOX_TRUNCATION_NOTE: &str = "Content exceeded the inbox preview limit and was truncated. \
+     This message stays unread and will be redelivered in full on a later turn; \
+     do not act on this preview alone.";
+
+/// One page of the caller's unread mailbox, oldest first.
+#[derive(Debug)]
+struct InboxPage {
+    messages: Vec<MailboxMessage>,
+    /// Every unread row the caller has, independent of cursor or page size.
+    total_unread_count: usize,
+    /// Unread rows after this page's cursor window that did not fit.
+    remaining_after_page: usize,
+}
+
+/// A rendered page plus the subset of rows that may be acknowledged with the
+/// current turn.
+struct RenderedInbox {
+    value: Value,
+    /// Rows returned in full. Truncated rows are deliberately excluded so they
+    /// stay unread and get redelivered whole through the normal delivery path.
+    observable_message_ids: Vec<String>,
+}
+
+async fn exec_read_messages(
+    args: &Value,
+    service: &Weak<TeamSessionService>,
+    team_id: &str,
+    caller_slot_id: &str,
+) -> Result<String, ToolCallError> {
+    let input: ReadMessagesInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolCallError::from_message(format!("Invalid params: {e}")))?;
+    let since_message_id = input
+        .since_message_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let service = service
+        .upgrade()
+        .ok_or_else(|| ToolCallError::from_message("Team service not available"))?;
+    let peek = service
+        .peek_agent_messages(team_id, caller_slot_id)
+        .await
+        .map_err(|error| ToolCallError::from_message(error.to_string()))?;
+    let page = inbox_page(peek.messages, since_message_id)?;
+    let rendered = render_inbox_page(page);
+
+    // `batch_id` is `None` when no turn owned the slot at peek time (e.g. a CLI
+    // read outside a turn); nothing can be acknowledged, so every row stays unread.
+    if let Some(batch_id) = &peek.batch_id
+        && !rendered.observable_message_ids.is_empty()
+    {
+        service
+            .observe_agent_messages(team_id, caller_slot_id, batch_id, &rendered.observable_message_ids)
+            .await
+            .map_err(|error| ToolCallError::from_message(error.to_string()))?;
+    }
+    json_text(&rendered.value)
+}
+
+/// Takes the **oldest** unread rows so processing order matches arrival order.
+/// `since_message_id` advances the window past a row the caller already saw.
+fn inbox_page(messages: Vec<MailboxMessage>, since_message_id: Option<&str>) -> Result<InboxPage, ToolCallError> {
+    let total_unread_count = messages.len();
+    let after_cursor = match since_message_id {
+        None => messages,
+        Some(cursor) => {
+            let position = messages
+                .iter()
+                .position(|message| message.id == cursor)
+                .ok_or_else(|| {
+                    ToolCallError::from_message(format!(
+                        "Invalid params: since_message_id '{cursor}' is not one of your unread messages. \
+                         Call team_read_messages with no arguments to restart from the oldest unread message."
+                    ))
+                })?;
+            messages.into_iter().skip(position + 1).collect()
+        }
+    };
+    let after_cursor_count = after_cursor.len();
+    let messages = after_cursor.into_iter().take(MAX_INBOX_MESSAGES).collect::<Vec<_>>();
+    Ok(InboxPage {
+        remaining_after_page: after_cursor_count - messages.len(),
+        messages,
+        total_unread_count,
+    })
+}
+
+fn render_inbox_page(page: InboxPage) -> RenderedInbox {
+    let InboxPage {
+        messages,
+        total_unread_count,
+        remaining_after_page,
+    } = page;
+    let mut observable_message_ids = Vec::new();
+    let mut last_message_id = None;
+    let messages = messages
+        .into_iter()
+        .map(|message| {
+            let (content, content_truncated) = truncate_inbox_content(&message.content);
+            if content_truncated {
+                // Left out of the acknowledged set on purpose — see RenderedInbox.
+            } else {
+                observable_message_ids.push(message.id.clone());
+            }
+            last_message_id = Some(message.id.clone());
+            let mut item = json!({
+                "message_id": message.id,
+                "from_slot": message.from_agent_id,
+                "type": message.msg_type,
+                "content": content,
+                "content_truncated": content_truncated,
+                "files": message.files.unwrap_or_default(),
+                "created_at": message.created_at,
+            });
+            if content_truncated {
+                item["note"] = json!(INBOX_TRUNCATION_NOTE);
+            }
+            item
+        })
+        .collect::<Vec<_>>();
+    let returned_count = messages.len();
+    let has_more = remaining_after_page > 0;
+    RenderedInbox {
+        value: json!({
+            "messages": messages,
+            "returned_count": returned_count,
+            "total_unread_count": total_unread_count,
+            "has_more": has_more,
+            "next_since_message_id": if has_more { last_message_id } else { None },
+        }),
+        observable_message_ids,
+    }
+}
+
+fn truncate_inbox_content(content: &str) -> (String, bool) {
+    let mut chars = content.chars();
+    let truncated = chars.by_ref().take(MAX_INBOX_CONTENT_CHARS).collect::<String>();
+    if chars.next().is_none() {
+        (truncated, false)
+    } else {
+        (format!("{truncated}{INBOX_TRUNCATION_MARKER}"), true)
+    }
+}
 
 async fn resolve_agent_target(
     scheduler: &TeammateManager,
@@ -720,6 +873,48 @@ async fn exec_send_message(
     let response = build_send_message_queued_response(target_results).map_err(ToolCallError::from_message)?;
 
     serde_json::to_string(&response).map_err(|e| ToolCallError::from_message(format!("Serialization error: {e}")))
+}
+
+async fn exec_interrupt_agent(
+    args: &Value,
+    scheduler: &TeammateManager,
+    service: &Weak<TeamSessionService>,
+    team_id: &str,
+    caller_slot_id: &str,
+    caller_role: TeammateRole,
+) -> Result<String, ToolCallError> {
+    if caller_role != TeammateRole::Lead {
+        return Err(ToolCallError::from_message("Only Lead can use team_interrupt_agent"));
+    }
+    let input: InterruptAgentInput = serde_json::from_value(args.clone())
+        .map_err(|error| ToolCallError::from_message(format!("Invalid params: {error}")))?;
+    if input.slot_id == "*" {
+        return Err(ToolCallError::from_message(
+            "team_interrupt_agent requires an exact slot_id; wildcard is not supported",
+        ));
+    }
+    if input.message.trim().is_empty() {
+        return Err(ToolCallError::from_message("message must not be empty"));
+    }
+    let target = resolve_agent_target(scheduler, &input.slot_id, false)
+        .await
+        .map_err(ToolCallError::from_message)?;
+    let service = service
+        .upgrade()
+        .ok_or_else(|| ToolCallError::from_message("Team service not available"))?;
+    let response = service
+        .interrupt_agent_from_agent(
+            team_id,
+            caller_slot_id,
+            &target,
+            &input.message,
+            (!input.files.is_empty()).then_some(input.files),
+            input.reason,
+        )
+        .await
+        .map_err(|error| ToolCallError::from_message(error.to_string()))?;
+    serde_json::to_string_pretty(&response)
+        .map_err(|error| ToolCallError::from_message(format!("Serialization error: {error}")))
 }
 
 fn build_send_message_queued_response(
@@ -876,7 +1071,103 @@ async fn exec_spawn_agent(
         .map_err(|e| ToolCallError::from_message(e.to_string()))
 }
 
-async fn exec_task_create(args: &Value, scheduler: &TeammateManager) -> Result<String, ToolCallError> {
+/// Renders the mailbox notice a task owner receives when a task becomes theirs
+/// to act on. Carries the full assignment (subject + description) so the
+/// teammate — which is prompted to read its mailbox for assignments — has
+/// everything without a separate message from the lead (Method Y).
+fn format_task_assignment_notice(task: &TeamTask) -> String {
+    let mut notice = format!("📋 Task assigned to you (#{}): {}", task.id, task.subject);
+    if let Some(desc) = task.description.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        notice.push_str("\n\n");
+        notice.push_str(desc);
+    }
+    notice
+}
+
+/// Pure eligibility gate: should `task`'s owner be notified + woken?
+///
+/// `owner_role` is the resolved role of the owner slot, or `None` when the slot
+/// is unknown/removed. Returns `true` only for a live, non-lead teammate other
+/// than the caller, on a non-terminal task with no outstanding blockers.
+fn should_wake_task_owner(task: &TeamTask, from_slot_id: &str, owner_role: Option<TeammateRole>) -> bool {
+    let Some(owner) = task.owner.as_deref() else {
+        return false;
+    };
+    // Nothing to wake for a self-assignment, the fallback "user" lane, or a
+    // broadcast marker.
+    if owner == from_slot_id || owner == "user" || owner == "*" {
+        return false;
+    }
+    // Only a live, non-lead teammate is a wake target. The lead is the assigner
+    // and manages itself; a removed/unknown slot has no runtime to wake.
+    match owner_role {
+        Some(TeammateRole::Teammate) => {}
+        Some(TeammateRole::Lead) | None => return false,
+    }
+    // Not actionable yet: terminal tasks or ones still gated by dependencies.
+    !matches!(task.status, TaskStatus::Completed | TaskStatus::Deleted) && task.blocked_by.is_empty()
+}
+
+/// Notifies and lazily wakes the owner of a task that has just become
+/// actionable (freshly created & unblocked, (re)assigned, or unblocked by an
+/// upstream completion). Reuses the same mailbox-write + enqueue + wake path as
+/// agent-to-agent messages, so an already-working owner has the notice queued
+/// and drained on its next turn boundary rather than being interrupted.
+///
+/// Best-effort: skips when there is no eligible teammate owner, and logs (never
+/// propagates) failures so it cannot fail the tool call whose task write has
+/// already committed.
+async fn maybe_notify_task_owner(
+    scheduler: &TeammateManager,
+    service: &Weak<TeamSessionService>,
+    team_id: &str,
+    from_slot_id: &str,
+    task: &TeamTask,
+    trigger: &str,
+) {
+    let Some(owner) = task.owner.as_deref() else {
+        return;
+    };
+    // Resolve the owner's role (None = removed/unknown slot) so the pure gate
+    // can decide eligibility.
+    let owner_role = scheduler.get_agent(owner).await.ok().map(|agent| agent.role);
+    if !should_wake_task_owner(task, from_slot_id, owner_role) {
+        return;
+    }
+    let Some(service) = service.upgrade() else {
+        return;
+    };
+
+    let notice = format_task_assignment_notice(task);
+    match service
+        .send_agent_message_from_agent(team_id, from_slot_id, owner, &notice, None)
+        .await
+    {
+        Ok(_) => info!(
+            team_id,
+            owner_slot = owner,
+            task_id = %task.id,
+            trigger,
+            "task owner notified and woken"
+        ),
+        Err(error) => warn!(
+            team_id,
+            owner_slot = owner,
+            task_id = %task.id,
+            trigger,
+            error = %error,
+            "failed to notify task owner"
+        ),
+    }
+}
+
+async fn exec_task_create(
+    args: &Value,
+    scheduler: &TeammateManager,
+    service: &Weak<TeamSessionService>,
+    team_id: &str,
+    caller_slot_id: &str,
+) -> Result<String, ToolCallError> {
     let input: TaskCreateInput = serde_json::from_value(args.clone())
         .map_err(|e| ToolCallError::from_message(format!("Invalid params: {e}")))?;
 
@@ -890,12 +1181,25 @@ async fn exec_task_create(args: &Value, scheduler: &TeammateManager) -> Result<S
         .await
         .map_err(|e| ToolCallError::from_message(e.to_string()))?;
 
+    // Assigning a task to a teammate notifies and wakes it (gated: skips blocked
+    // tasks, which wake later via the upstream-completion unblock path).
+    maybe_notify_task_owner(scheduler, service, team_id, caller_slot_id, &task, "create").await;
+
     json_text(&json!({ "status": "ok", "task": task_json(&task) }))
 }
 
-async fn exec_task_update(args: &Value, scheduler: &TeammateManager) -> Result<String, ToolCallError> {
+async fn exec_task_update(
+    args: &Value,
+    scheduler: &TeammateManager,
+    service: &Weak<TeamSessionService>,
+    team_id: &str,
+    caller_slot_id: &str,
+) -> Result<String, ToolCallError> {
     let input: TaskUpdateInput = serde_json::from_value(args.clone())
         .map_err(|e| ToolCallError::from_message(format!("Invalid params: {e}")))?;
+
+    let reassigned = input.owner.is_some();
+    let completed = input.status.as_deref() == Some("completed");
 
     let task = scheduler
         .update_task(
@@ -907,6 +1211,22 @@ async fn exec_task_update(args: &Value, scheduler: &TeammateManager) -> Result<S
         )
         .await
         .map_err(|e| ToolCallError::from_message(e.to_string()))?;
+
+    // A (re)assignment to a teammate notifies the new owner.
+    if reassigned {
+        maybe_notify_task_owner(scheduler, service, team_id, caller_slot_id, &task, "reassign").await;
+    }
+
+    // Completing a task can unblock downstream tasks; wake each downstream owner
+    // whose task is now fully unblocked and actionable.
+    if completed
+        && !task.blocks.is_empty()
+        && let Ok(all_tasks) = scheduler.list_tasks().await
+    {
+        for downstream in all_tasks.iter().filter(|t| task.blocks.contains(&t.id)) {
+            maybe_notify_task_owner(scheduler, service, team_id, caller_slot_id, downstream, "unblock").await;
+        }
+    }
 
     json_text(&json!({ "status": "ok", "task": task_json(&task) }))
 }
@@ -992,6 +1312,39 @@ async fn exec_rename_agent(
         "status": "ok",
         "action": "agent_renamed",
         "agent": agent_json(&agent),
+    }))
+}
+
+async fn exec_clear_agent_context(
+    args: &Value,
+    scheduler: &TeammateManager,
+    service: &Weak<TeamSessionService>,
+    team_id: &str,
+) -> Result<String, ToolCallError> {
+    let input: ClearAgentContextInput = serde_json::from_value(args.clone())
+        .map_err(|e| ToolCallError::from_message(format!("Invalid params: {e}")))?;
+    let target_slot_id = resolve_agent_target(scheduler, &input.slot_id, false)
+        .await
+        .map_err(ToolCallError::from_message)?;
+    let service = service
+        .upgrade()
+        .ok_or_else(|| ToolCallError::from_message("Team service not available"))?;
+    let user_id = service
+        .team_owner_user_id(team_id)
+        .await
+        .map_err(|error| ToolCallError::from_message(error.to_string()))?;
+    let outcome = service
+        .clear_agent_context_in_session(&user_id, team_id, &target_slot_id)
+        .await
+        .map_err(|error| ToolCallError::from_message(error.to_string()))?;
+
+    json_text(&json!({
+        "status": "ok",
+        "action": "agent_context_reset",
+        "target_slot_id": target_slot_id,
+        "reset_status": outcome.reset_status,
+        "runtime_status": outcome.runtime_status,
+        "preserved_unread_count": outcome.preserved_unread_count,
     }))
 }
 
@@ -1216,7 +1569,252 @@ fn http_bearer_token(request: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::MailboxMessageType;
     use aionui_api_types::{TeamRunTargetRole, TeamSlotWorkPayload, TeamSlotWorkState};
+
+    fn inbox_message(index: usize, content: impl Into<String>) -> MailboxMessage {
+        MailboxMessage {
+            id: format!("message-{index:02}"),
+            team_id: "team-1".into(),
+            to_agent_id: "lead-1".into(),
+            from_agent_id: format!("worker-{index:02}"),
+            msg_type: MailboxMessageType::Message,
+            content: content.into(),
+            summary: None,
+            files: Some(vec![format!("C:\\work\\file-{index:02}.txt")]),
+            read: false,
+            created_at: index as i64,
+        }
+    }
+
+    fn task_owned_by(owner: Option<&str>, status: TaskStatus, blocked_by: Vec<String>) -> TeamTask {
+        TeamTask {
+            id: "tk1".into(),
+            team_id: "t1".into(),
+            subject: "Build".into(),
+            description: Some("Do the thing".into()),
+            status,
+            owner: owner.map(str::to_owned),
+            blocked_by,
+            blocks: vec![],
+            metadata: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn render(messages: Vec<MailboxMessage>, since_message_id: Option<&str>) -> RenderedInbox {
+        render_inbox_page(inbox_page(messages, since_message_id).expect("page builds"))
+    }
+
+    #[test]
+    fn read_messages_json_returns_fifo_messages_and_an_explicit_empty_list() {
+        let rendered = render(vec![inbox_message(1, "first"), inbox_message(2, "second")], None);
+        let value = &rendered.value;
+        assert_eq!(value["returned_count"], 2);
+        assert_eq!(value["total_unread_count"], 2);
+        assert_eq!(value["has_more"], false);
+        assert_eq!(value["next_since_message_id"], Value::Null);
+        assert_eq!(value["messages"][0]["message_id"], "message-01");
+        assert_eq!(value["messages"][0]["from_slot"], "worker-01");
+        assert_eq!(value["messages"][0]["type"], "message");
+        assert_eq!(value["messages"][0]["content"], "first");
+        assert_eq!(value["messages"][0]["content_truncated"], false);
+        assert_eq!(value["messages"][0]["files"][0], "C:\\work\\file-01.txt");
+        assert_eq!(value["messages"][0]["created_at"], 1);
+        assert_eq!(value["messages"][1]["content"], "second");
+        assert_eq!(
+            rendered.observable_message_ids,
+            vec!["message-01".to_owned(), "message-02".to_owned()],
+            "messages returned in full are acknowledged with the turn"
+        );
+
+        let empty = render(Vec::new(), None);
+        assert_eq!(empty.value["messages"], json!([]));
+        assert_eq!(empty.value["returned_count"], 0);
+        assert_eq!(empty.value["total_unread_count"], 0);
+        assert_eq!(empty.value["has_more"], false);
+        assert!(empty.observable_message_ids.is_empty());
+    }
+
+    /// P1: the page must start at the *oldest* unread row, otherwise a backlog
+    /// over the page size makes the agent process newer messages before older
+    /// ones and inverts causal order.
+    #[test]
+    fn inbox_page_keeps_the_oldest_fifty_so_processing_order_matches_arrival() {
+        let messages = (0..=MAX_INBOX_MESSAGES)
+            .map(|index| inbox_message(index, format!("message {index}")))
+            .collect::<Vec<_>>();
+
+        let page = inbox_page(messages, None).expect("page builds");
+        assert_eq!(page.messages.len(), MAX_INBOX_MESSAGES);
+        assert_eq!(page.messages[0].id, "message-00", "oldest row leads the page");
+        assert_eq!(page.messages[MAX_INBOX_MESSAGES - 1].id, "message-49");
+        assert!(
+            page.messages.iter().all(|message| message.id != "message-50"),
+            "the newest row is deferred, not preferred"
+        );
+
+        let rendered = render_inbox_page(page);
+        assert_eq!(rendered.value["returned_count"], MAX_INBOX_MESSAGES);
+        assert_eq!(rendered.value["total_unread_count"], MAX_INBOX_MESSAGES + 1);
+        assert_eq!(rendered.value["has_more"], true);
+        assert_eq!(
+            rendered.value["next_since_message_id"], "message-49",
+            "has_more must come with a usable cursor"
+        );
+    }
+
+    /// P2: `since_message_id` is the follow-up read for `has_more`.
+    #[test]
+    fn inbox_page_cursor_resumes_after_the_last_seen_message() {
+        let messages = vec![
+            inbox_message(1, "first"),
+            inbox_message(2, "second"),
+            inbox_message(3, "third"),
+        ];
+
+        let rendered = render(messages, Some("message-01"));
+        assert_eq!(rendered.value["returned_count"], 2);
+        assert_eq!(
+            rendered.value["total_unread_count"], 3,
+            "total_unread_count stays absolute so the agent keeps a global sense of backlog"
+        );
+        assert_eq!(rendered.value["has_more"], false);
+        assert_eq!(rendered.value["messages"][0]["message_id"], "message-02");
+        assert_eq!(rendered.value["messages"][1]["message_id"], "message-03");
+        assert_eq!(
+            rendered.observable_message_ids,
+            vec!["message-02".to_owned(), "message-03".to_owned()]
+        );
+    }
+
+    #[test]
+    fn inbox_page_rejects_a_cursor_that_is_not_an_unread_message() {
+        let error = inbox_page(vec![inbox_message(1, "first")], Some("message-99"))
+            .expect_err("a stale cursor must not silently restart the page");
+        assert!(
+            error.message.starts_with("Invalid params:"),
+            "must map to a schema error, got {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("message-99"),
+            "the rejected cursor should be echoed, got {}",
+            error.message
+        );
+    }
+
+    /// P2: a truncated row is a preview only. It must stay unread so the normal
+    /// delivery path re-delivers the whole body, otherwise the tail of a long
+    /// message is lost the moment the turn succeeds.
+    #[test]
+    fn truncated_messages_carry_a_note_and_are_never_acknowledged() {
+        let long_content = "x".repeat(MAX_INBOX_CONTENT_CHARS + 1);
+        let messages = vec![
+            inbox_message(1, "short"),
+            inbox_message(2, long_content),
+            inbox_message(3, "also short"),
+        ];
+
+        let rendered = render(messages, None);
+        assert_eq!(rendered.value["returned_count"], 3, "the preview is still returned");
+        assert_eq!(
+            rendered.observable_message_ids,
+            vec!["message-01".to_owned(), "message-03".to_owned()],
+            "only fully-returned rows may be acknowledged"
+        );
+
+        let truncated = &rendered.value["messages"][1];
+        assert_eq!(truncated["message_id"], "message-02");
+        assert_eq!(truncated["content_truncated"], true);
+        assert!(
+            truncated["content"]
+                .as_str()
+                .unwrap()
+                .ends_with(INBOX_TRUNCATION_MARKER)
+        );
+        assert_eq!(truncated["note"], INBOX_TRUNCATION_NOTE);
+        assert!(
+            rendered.value["messages"][0].get("note").is_none(),
+            "untruncated rows carry no note"
+        );
+    }
+
+    #[test]
+    fn wake_gate_notifies_live_teammate_owner() {
+        let task = task_owned_by(Some("worker-1"), TaskStatus::Pending, vec![]);
+        assert!(should_wake_task_owner(&task, "lead-1", Some(TeammateRole::Teammate)));
+    }
+
+    #[test]
+    fn wake_gate_skips_unowned_self_user_and_broadcast() {
+        // No owner.
+        assert!(!should_wake_task_owner(
+            &task_owned_by(None, TaskStatus::Pending, vec![]),
+            "lead-1",
+            Some(TeammateRole::Teammate)
+        ));
+        // Self-assignment.
+        assert!(!should_wake_task_owner(
+            &task_owned_by(Some("lead-1"), TaskStatus::Pending, vec![]),
+            "lead-1",
+            Some(TeammateRole::Teammate)
+        ));
+        // Fallback "user" lane and broadcast marker.
+        for sentinel in ["user", "*"] {
+            assert!(!should_wake_task_owner(
+                &task_owned_by(Some(sentinel), TaskStatus::Pending, vec![]),
+                "lead-1",
+                Some(TeammateRole::Teammate)
+            ));
+        }
+    }
+
+    #[test]
+    fn wake_gate_skips_lead_and_removed_owner() {
+        let task = task_owned_by(Some("owner-1"), TaskStatus::Pending, vec![]);
+        // Owner is the lead.
+        assert!(!should_wake_task_owner(&task, "lead-1", Some(TeammateRole::Lead)));
+        // Owner slot is unknown/removed (role could not be resolved).
+        assert!(!should_wake_task_owner(&task, "lead-1", None));
+    }
+
+    #[test]
+    fn wake_gate_skips_terminal_and_blocked_tasks() {
+        // Terminal statuses are not actionable.
+        for status in [TaskStatus::Completed, TaskStatus::Deleted] {
+            assert!(!should_wake_task_owner(
+                &task_owned_by(Some("worker-1"), status, vec![]),
+                "lead-1",
+                Some(TeammateRole::Teammate)
+            ));
+        }
+        // Still gated by an outstanding dependency → wake later on unblock.
+        assert!(!should_wake_task_owner(
+            &task_owned_by(Some("worker-1"), TaskStatus::Pending, vec!["tk0".into()]),
+            "lead-1",
+            Some(TeammateRole::Teammate)
+        ));
+    }
+
+    #[test]
+    fn assignment_notice_includes_subject_and_description() {
+        let task = task_owned_by(Some("worker-1"), TaskStatus::Pending, vec![]);
+        let notice = format_task_assignment_notice(&task);
+        assert!(notice.contains("#tk1"));
+        assert!(notice.contains("Build"));
+        assert!(notice.contains("Do the thing"));
+    }
+
+    #[test]
+    fn assignment_notice_omits_empty_description() {
+        let mut task = task_owned_by(Some("worker-1"), TaskStatus::Pending, vec![]);
+        task.description = None;
+        let notice = format_task_assignment_notice(&task);
+        assert!(notice.contains("Build"));
+        assert!(!notice.contains("\n\n"));
+    }
 
     #[test]
     fn build_send_message_queued_response_serializes_json_contract() {

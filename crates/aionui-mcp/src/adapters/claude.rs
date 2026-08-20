@@ -99,28 +99,6 @@ impl McpAgentAdapter for ClaudeAdapter {
         is_cli_installed(CLI_NAME).await
     }
 
-    /// Read the operator's **real** Claude Code configuration.
-    ///
-    /// Deliberately not isolated: this feeds `GET /api/mcp/agent-configs`,
-    /// whose purpose is to let the user import MCP servers they already set
-    /// up in their own Claude Code. Isolating it would make the import
-    /// feature scan this app's own registry and find nothing to import.
-    ///
-    /// Safe because it is strictly read-only — `mcp list` never writes. All
-    /// mutations go to the isolated home instead (see struct docs).
-    ///
-    /// Names, live connectivity status, and plugin-managed detection all
-    /// come from `claude mcp list`'s plain-text output — there is no other
-    /// source for "is this server actually reachable right now". But that
-    /// same text has no delimiter between a command and its arguments (see
-    /// `parse_claude_list_line`), so the transport it produces is a guess.
-    /// Once we have the name, [`read_claude_json_mcp_servers`] overlays the
-    /// *structurally correct* command/args/env straight from
-    /// `~/.claude.json` — best-effort, never blocks detection if the file is
-    /// missing or unreadable.
-    ///
-    /// `_user_id` is unused: the real config this reads is host-machine-wide,
-    /// not per-user, so there is nothing to scope by.
     async fn detect_existing(&self, _user_id: &str) -> Result<Vec<DetectedServer>, McpError> {
         if !self.is_installed().await? {
             return Err(McpError::AgentNotInstalled(CLI_NAME.into()));

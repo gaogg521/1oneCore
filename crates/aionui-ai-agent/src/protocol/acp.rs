@@ -25,15 +25,19 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use agent_client_protocol::schema::{
-    AGENT_METHOD_NAMES, AuthenticateResponse, ClientNotification, ClientRequest, CloseSessionResponse, ExtResponse,
-    ForkSessionResponse, Implementation, InitializeRequest, LoadSessionResponse, PromptResponse, ProtocolVersion,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse, ResumeSessionResponse,
-    SelectedPermissionOutcome, SessionNotification, SetSessionConfigOptionResponse, SetSessionModeResponse,
-    SetSessionModelResponse,
+use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::schema::v1::{
+    AGENT_METHOD_NAMES, AuthenticateResponse, ClientCapabilities, ClientNotification, ClientRequest,
+    ClientSessionCapabilities, CloseSessionResponse, CreateTerminalRequest, CreateTerminalResponse, ExtResponse,
+    ForkSessionResponse, Implementation, InitializeRequest, KillTerminalRequest, KillTerminalResponse,
+    LoadSessionResponse, PromptResponse, ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionResponse, SelectedPermissionOutcome,
+    SessionConfigOptionsCapabilities, SessionNotification, SetSessionConfigOptionResponse, SetSessionModeResponse,
+    TerminalExitStatus, TerminalOutputRequest, TerminalOutputResponse, WaitForTerminalExitRequest,
+    WaitForTerminalExitResponse,
 };
 use agent_client_protocol::{
-    Agent, Client, ConnectionTo, Lines, Responder, on_receive_notification, on_receive_request,
+    Agent, Client, ConnectionTo, Lines, Responder, UntypedMessage, on_receive_notification, on_receive_request,
 };
 use aionui_common::ErrorChain;
 use futures_util::{SinkExt, StreamExt, TryStreamExt};
@@ -47,12 +51,23 @@ use crate::protocol::acp_init_budget::InitBudget;
 use crate::protocol::error::AcpError;
 use crate::protocol::events::{self as stream_event, AgentStreamEvent};
 
-use agent_client_protocol::schema::{
+use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthMethod, AuthenticateRequest, CancelNotification, CloseSessionRequest, ExtNotification,
     ExtRequest, ForkSessionRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
     NewSessionRequest, NewSessionResponse, PromptRequest, ResumeSessionRequest, SetSessionConfigOptionRequest,
-    SetSessionModeRequest, SetSessionModelRequest,
+    SetSessionModeRequest,
 };
+
+/// Method name of the legacy model-selection RPC. The typed request/response
+/// pair was removed from the SDK (model selection moved to session config
+/// options), but old-camp agents still implement the method, so the frame is
+/// sent untyped. See `manager::acp::legacy_session_model` for the state DTOs.
+const LEGACY_SESSION_SET_MODEL_METHOD: &str = "session/set_model";
+
+/// Params frame for the legacy `session/set_model` request.
+fn build_legacy_set_model_params(session_id: &str, model_id: &str) -> serde_json::Value {
+    serde_json::json!({ "sessionId": session_id, "modelId": model_id })
+}
 
 /// Timeout for the short config/mode/model RPCs (seconds). Intentionally
 /// shorter than every `initialize` budget in [`acp_init_budget`]; a
@@ -79,8 +94,22 @@ enum AcpConnectionPhase {
 /// non-empty name and version so downstream agents that require client metadata
 /// (e.g. Mistral Vibe) accept the request. See issue #3326.
 fn build_initialize_request() -> InitializeRequest {
+    // Advertised client services:
+    // - terminal: full `terminal/*` suite backed by TerminalRegistry —
+    //   delegated commands run in OUR process tree (live output, per-command
+    //   kill, audit logging). Adoption probed 2026-08-05: codebuddy/grok/omp.
+    // - session.config_options: we already consume `config_option_update`
+    //   and render the options UI; declaring it stops strictly-capability-
+    //   gated agents from withholding their config options.
+    // fs stays undeclared (P2).
+    let mut session_caps = ClientSessionCapabilities::default();
+    session_caps.config_options = Some(SessionConfigOptionsCapabilities::default());
+    let mut caps = ClientCapabilities::default();
+    caps.terminal = true;
+    caps.session = Some(session_caps);
     InitializeRequest::new(ProtocolVersion::LATEST)
         .client_info(Implementation::new(ACP_CLIENT_NAME, ACP_CLIENT_VERSION))
+        .client_capabilities(caps)
 }
 
 /// A pending permission request from the agent, awaiting user decision.
@@ -127,6 +156,10 @@ pub struct AcpProtocol {
     /// Owned by the outer struct; an `Arc` clone is captured by the SDK
     /// background task's `on_receive_notification` closure.
     replay_suppression: Arc<AtomicBool>,
+    /// Client-hosted terminals for this connection (ACP `terminal/*`).
+    /// Shared with the SDK background task's request handlers; torn down
+    /// (all processes killed) when the protocol drops.
+    terminal_registry: Arc<crate::terminal::TerminalRegistry>,
 }
 
 #[allow(dead_code)] // Full ACP method set; some methods await wiring (fork, close, list, auth, ext).
@@ -147,10 +180,13 @@ impl AcpProtocol {
         event_tx: broadcast::Sender<AgentStreamEvent>,
         permission_tx: mpsc::Sender<PermissionRequest>,
         notification_tx: mpsc::Sender<SessionNotification>,
+        terminal_label: &str,
+        terminal_cwd: Option<std::path::PathBuf>,
         init_budget: InitBudget,
     ) -> Result<Self, AcpError> {
         let alive = Arc::new(AtomicBool::new(true));
         let replay_suppression = Arc::new(AtomicBool::new(false));
+        let terminal_registry = Arc::new(crate::terminal::TerminalRegistry::new(terminal_label, terminal_cwd));
         let started_at = std::time::Instant::now();
         log_acp_initialize_start(init_budget);
 
@@ -176,6 +212,7 @@ impl AcpProtocol {
             shutdown_rx,
             Arc::clone(&alive),
             Arc::clone(&replay_suppression),
+            Arc::clone(&terminal_registry),
         ));
 
         // Wait for init to complete with timeout.
@@ -213,11 +250,17 @@ impl AcpProtocol {
             alive,
             initialize_response: Arc::new(RwLock::new(Some(init_response))),
             replay_suppression,
+            terminal_registry,
         })
     }
 
     pub fn initialize_response(&self) -> Option<InitializeResponse> {
         self.initialize_response.read().unwrap().clone()
+    }
+
+    /// Client-hosted terminals of this connection (for UI queries / kill).
+    pub fn terminal_registry(&self) -> Arc<crate::terminal::TerminalRegistry> {
+        Arc::clone(&self.terminal_registry)
     }
 
     pub fn agent_capabilities(&self) -> Option<AgentCapabilities> {
@@ -229,8 +272,18 @@ impl AcpProtocol {
     }
 
     /// Create a new ACP session.
-    pub async fn new_session(&self, req: NewSessionRequest) -> Result<NewSessionResponse, AcpError> {
-        self.send_request(req, AGENT_METHOD_NAMES.session_new).await
+    ///
+    /// Returns the typed response plus the raw top-level `models` value when
+    /// the agent sent one: the legacy session-model state is no longer part
+    /// of the typed schema, but old-camp agents still include it, so the
+    /// response is received untyped and the key captured before typed
+    /// parsing (typed parsing alone would silently drop it).
+    pub async fn new_session(
+        &self,
+        req: NewSessionRequest,
+    ) -> Result<(NewSessionResponse, Option<serde_json::Value>), AcpError> {
+        self.send_request_capturing_legacy_models(req, AGENT_METHOD_NAMES.session_new)
+            .await
     }
 
     /// Load (resume) an existing ACP session.
@@ -246,9 +299,16 @@ impl AcpProtocol {
     ///
     /// Note: Claude resumes via `session/new` with `_meta.claudeCode.options.resume`
     /// and never calls this method, so it is unaffected by the guard.
-    pub async fn load_session(&self, req: LoadSessionRequest) -> Result<LoadSessionResponse, AcpError> {
+    ///
+    /// Like [`Self::new_session`], returns the raw top-level `models` value
+    /// alongside the typed response for legacy-surface agents.
+    pub async fn load_session(
+        &self,
+        req: LoadSessionRequest,
+    ) -> Result<(LoadSessionResponse, Option<serde_json::Value>), AcpError> {
         let _guard = ReplaySuppressionGuard::new(&self.replay_suppression);
-        self.send_request(req, AGENT_METHOD_NAMES.session_load).await
+        self.send_request_capturing_legacy_models(req, AGENT_METHOD_NAMES.session_load)
+            .await
     }
 
     /// Fork an existing ACP session into a new session.
@@ -300,16 +360,23 @@ impl AcpProtocol {
         .await
     }
 
-    /// Set the session model.
+    /// Set the session model via the legacy `session/set_model` RPC, sent as
+    /// an untyped frame (the typed pair no longer exists in the SDK).
     ///
     /// Bounded by `CONFIG_RPC_TIMEOUT_SECS`; see [`Self::set_mode`].
-    pub async fn set_model(&self, req: SetSessionModelRequest) -> Result<SetSessionModelResponse, AcpError> {
+    pub async fn set_model(&self, session_id: &str, model_id: &str) -> Result<(), AcpError> {
+        let req = UntypedMessage::new(
+            LEGACY_SESSION_SET_MODEL_METHOD,
+            build_legacy_set_model_params(session_id, model_id),
+        )
+        .map_err(|e| AcpError::from_sdk(e, LEGACY_SESSION_SET_MODEL_METHOD))?;
         self.send_config_request(
             req,
-            AGENT_METHOD_NAMES.session_set_model,
+            LEGACY_SESSION_SET_MODEL_METHOD,
             std::time::Duration::from_secs(CONFIG_RPC_TIMEOUT_SECS),
         )
         .await
+        .map(|_ack: serde_json::Value| ())
     }
 
     /// Set a session config option.
@@ -457,6 +524,33 @@ impl AcpProtocol {
         rsp.map_err(|e| AcpError::from_sdk(e, method))
     }
 
+    /// Like [`Self::send_request`], but receives the response untyped so keys
+    /// outside the typed schema survive, captures the legacy top-level
+    /// `models` value, then parses the typed response from the same raw JSON.
+    async fn send_request_capturing_legacy_models<Req>(
+        &self,
+        req: Req,
+        method: &str,
+    ) -> Result<(Req::Response, Option<serde_json::Value>), AcpError>
+    where
+        Req: agent_client_protocol::JsonRpcRequest + serde::Serialize + std::fmt::Debug,
+        Req::Response: serde::de::DeserializeOwned + serde::Serialize + std::fmt::Debug + Send,
+    {
+        self.ensure_connected()?;
+        log_client_request(method, &json_str(&req));
+        let untyped = UntypedMessage::new(method, &req).map_err(|e| AcpError::from_sdk(e, method))?;
+        let raw = self.connection.send_request(untyped).block_task().await;
+        log_agent_response(method, &json_or_err(&raw));
+        let raw = raw.map_err(|e| AcpError::from_sdk(e, method))?;
+        let legacy_models = raw.get("models").cloned();
+        let response: Req::Response = serde_json::from_value(raw).map_err(|e| AcpError::AgentInternal {
+            message: format!("failed to parse {method} response: {e}"),
+            code: -32603,
+            data: None,
+        })?;
+        Ok((response, legacy_models))
+    }
+
     /// Return `Err(NotConnected)` if the connection is dead.
     fn ensure_connected(&self) -> Result<(), AcpError> {
         if self.is_connected() {
@@ -469,6 +563,11 @@ impl AcpProtocol {
 
 impl Drop for AcpProtocol {
     fn drop(&mut self) {
+        // Tear down every client-hosted terminal with the connection: an
+        // orphaned delegated command must not outlive its agent. Drop can't
+        // await, so hand the kill sweep to the runtime.
+        let registry = Arc::clone(&self.terminal_registry);
+        tokio::spawn(async move { registry.kill_all().await });
         // Releasing the oneshot wakes `main_fn` in the background task, which
         // returns, which drives SDK shutdown. The bg_task joins naturally
         // (we don't await it here — Drop can't be async; the task is
@@ -519,6 +618,7 @@ async fn run_sdk_background(
     shutdown_rx: oneshot::Receiver<()>,
     alive: Arc<AtomicBool>,
     replay_suppression: Arc<AtomicBool>,
+    terminal_registry: Arc<crate::terminal::TerminalRegistry>,
 ) {
     // Tolerant transport: intercept incoming lines *before* the SDK parses them
     // so CodeBuddy's non-standard dialect notifications (`session_end` /
@@ -600,6 +700,58 @@ async fn run_sdk_background(
             {
                 async move |request: RequestPermissionRequest, responder, _cx| {
                     handle_permission_request(request, responder, &permission_tx).await;
+                    Ok(())
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let registry = Arc::clone(&terminal_registry);
+                let event_tx = event_tx.clone();
+                async move |request: CreateTerminalRequest, responder, _cx| {
+                    handle_terminal_create(request, responder, &registry, &event_tx).await;
+                    Ok(())
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let registry = Arc::clone(&terminal_registry);
+                async move |request: TerminalOutputRequest, responder, _cx| {
+                    handle_terminal_output(request, responder, &registry).await;
+                    Ok(())
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let registry = Arc::clone(&terminal_registry);
+                let event_tx = event_tx.clone();
+                async move |request: WaitForTerminalExitRequest, responder, _cx| {
+                    handle_terminal_wait(request, responder, &registry, &event_tx).await;
+                    Ok(())
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let registry = Arc::clone(&terminal_registry);
+                async move |request: KillTerminalRequest, responder, _cx| {
+                    handle_terminal_kill(request, responder, &registry).await;
+                    Ok(())
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let registry = Arc::clone(&terminal_registry);
+                async move |request: ReleaseTerminalRequest, responder, _cx| {
+                    handle_terminal_release(request, responder, &registry).await;
                     Ok(())
                 }
             },
@@ -706,6 +858,143 @@ async fn handle_permission_request(
 
     log_client_response("session/request_permission", &json_str(&response));
     let _ = responder.respond(response);
+}
+
+/// Convert a registry exit into the wire `TerminalExitStatus`.
+fn wire_exit_status(exit: crate::terminal::TerminalExit) -> TerminalExitStatus {
+    let mut status = TerminalExitStatus::new();
+    status.exit_code = exit.exit_code;
+    if exit.signaled {
+        status.signal = Some("SIGKILL".into());
+    }
+    status
+}
+
+/// Broadcast one terminal snapshot to the UI event channel.
+async fn emit_terminal_snapshot(
+    registry: &crate::terminal::TerminalRegistry,
+    terminal_id: &str,
+    event_tx: &broadcast::Sender<AgentStreamEvent>,
+) -> bool {
+    let Some(snap) = registry.output(terminal_id).await else {
+        return false;
+    };
+    let command = registry.command_line(terminal_id).await.unwrap_or_default();
+    let done = snap.exit.is_some();
+    let _ = event_tx.send(AgentStreamEvent::AcpTerminalOutput(serde_json::json!({
+        "terminal_id": terminal_id,
+        "command": command,
+        "output": snap.output,
+        "truncated": snap.truncated,
+        "exit_status": snap.exit.map(|e| serde_json::json!({
+            "exit_code": e.exit_code,
+            "signaled": e.signaled,
+        })),
+    })));
+    done
+}
+
+async fn handle_terminal_create(
+    request: CreateTerminalRequest,
+    responder: Responder<CreateTerminalResponse>,
+    registry: &Arc<crate::terminal::TerminalRegistry>,
+    event_tx: &broadcast::Sender<AgentStreamEvent>,
+) {
+    log_agent_request("terminal/create", &json_str(&request));
+    let params = crate::terminal::CreateTerminalParams {
+        command: request.command.clone(),
+        args: request.args.clone(),
+        env: request.env.iter().map(|v| (v.name.clone(), v.value.clone())).collect(),
+        cwd: request.cwd.clone(),
+        output_byte_limit: request.output_byte_limit,
+    };
+    match registry.create(params).await {
+        Ok(terminal_id) => {
+            // UI stream: push throttled snapshots until the command exits.
+            // The agent-side contract stays pull-based (`terminal/output`);
+            // this task only feeds our own frontend.
+            let poll_registry = Arc::clone(registry);
+            let poll_event_tx = event_tx.clone();
+            let poll_id = terminal_id.clone();
+            tokio::spawn(async move {
+                loop {
+                    let done = emit_terminal_snapshot(&poll_registry, &poll_id, &poll_event_tx).await;
+                    if done {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            });
+            let response = CreateTerminalResponse::new(terminal_id);
+            log_client_response("terminal/create", &json_str(&response));
+            let _ = responder.respond(response);
+        }
+        Err(err) => {
+            warn!(error = %err, "terminal/create failed");
+            let _ = responder.respond_with_internal_error(err);
+        }
+    }
+}
+
+async fn handle_terminal_output(
+    request: TerminalOutputRequest,
+    responder: Responder<TerminalOutputResponse>,
+    registry: &Arc<crate::terminal::TerminalRegistry>,
+) {
+    match registry.output(&request.terminal_id.to_string()).await {
+        Some(snap) => {
+            let mut response = TerminalOutputResponse::new(snap.output, snap.truncated);
+            response.exit_status = snap.exit.map(wire_exit_status);
+            let _ = responder.respond(response);
+        }
+        None => {
+            let _ = responder.respond_with_internal_error(format!("unknown terminal: {}", request.terminal_id));
+        }
+    }
+}
+
+async fn handle_terminal_wait(
+    request: WaitForTerminalExitRequest,
+    responder: Responder<WaitForTerminalExitResponse>,
+    registry: &Arc<crate::terminal::TerminalRegistry>,
+    event_tx: &broadcast::Sender<AgentStreamEvent>,
+) {
+    let terminal_id = request.terminal_id.to_string();
+    match registry.wait_for_exit(&terminal_id).await {
+        Some(exit) => {
+            // Make sure the UI sees the terminal frame even if the poller
+            // lost a race with process exit.
+            emit_terminal_snapshot(registry, &terminal_id, event_tx).await;
+            let response = WaitForTerminalExitResponse::new(wire_exit_status(exit));
+            let _ = responder.respond(response);
+        }
+        None => {
+            let _ = responder.respond_with_internal_error(format!("unknown terminal: {terminal_id}"));
+        }
+    }
+}
+
+async fn handle_terminal_kill(
+    request: KillTerminalRequest,
+    responder: Responder<KillTerminalResponse>,
+    registry: &Arc<crate::terminal::TerminalRegistry>,
+) {
+    if registry.kill(&request.terminal_id.to_string(), "agent").await {
+        let _ = responder.respond(KillTerminalResponse::new());
+    } else {
+        let _ = responder.respond_with_internal_error(format!("unknown terminal: {}", request.terminal_id));
+    }
+}
+
+async fn handle_terminal_release(
+    request: ReleaseTerminalRequest,
+    responder: Responder<ReleaseTerminalResponse>,
+    registry: &Arc<crate::terminal::TerminalRegistry>,
+) {
+    registry.release(&request.terminal_id.to_string()).await;
+    // Release is idempotent on the wire: an unknown id still gets a success
+    // response (the agent's intent — "this terminal is gone" — holds).
+    let _ = responder.respond(ReleaseTerminalResponse::new());
 }
 
 /// Serialize a value to a compact JSON string, falling back to Debug on failure.
@@ -958,6 +1247,15 @@ impl std::fmt::Debug for AcpProtocol {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_set_model_frame_shape() {
+        let frame = build_legacy_set_model_params("sess-1", "deepseek-v4-pro");
+        assert_eq!(
+            frame,
+            serde_json::json!({"sessionId": "sess-1", "modelId": "deepseek-v4-pro"})
+        );
+    }
 
     fn capture_logs(max_level: tracing::Level, f: impl FnOnce()) -> String {
         use std::io::Write;
@@ -1212,7 +1510,7 @@ mod tests {
         for method in [
             AGENT_METHOD_NAMES.session_set_config_option,
             AGENT_METHOD_NAMES.session_set_mode,
-            AGENT_METHOD_NAMES.session_set_model,
+            LEGACY_SESSION_SET_MODEL_METHOD,
         ] {
             let result = AcpProtocol::await_config_rpc_detached(
                 method,
@@ -1290,5 +1588,19 @@ mod tests {
             completed.load(Ordering::SeqCst),
             "timed-out config RPC task must survive the timeout (detached, not aborted)"
         );
+    }
+
+    #[test]
+    fn initialize_request_declares_terminal_and_config_options_capabilities() {
+        let req = build_initialize_request();
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["clientCapabilities"]["terminal"], serde_json::json!(true));
+        assert!(
+            v["clientCapabilities"]["session"]["configOptions"].is_object(),
+            "session.configOptions must be declared: {v}"
+        );
+        // fs stays undeclared in P1 (read service is P2).
+        assert_eq!(v["clientCapabilities"]["fs"]["readTextFile"], serde_json::json!(false));
+        assert_eq!(v["clientCapabilities"]["fs"]["writeTextFile"], serde_json::json!(false));
     }
 }

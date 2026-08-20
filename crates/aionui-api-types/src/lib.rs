@@ -7,6 +7,7 @@ mod agent_build_extra;
 mod agent_discovery;
 mod agent_error;
 mod antigravity_hook;
+mod ask;
 mod assistant;
 mod auth;
 mod channel;
@@ -58,10 +59,12 @@ pub use antigravity_hook::{
     AntigravityHookConfig, AntigravityHookDecision, AntigravityHookInput, AntigravityHookOutput,
     AntigravityHookToolCall,
 };
+pub use ask::{AskAnswerRequest, AskQuestionAnswer};
 pub use assistant::{
-    AssistantAgentResponse, AssistantCapabilitiesResponse, AssistantDefaultListRequest, AssistantDefaultListResponse,
-    AssistantDefaultScalarRequest, AssistantDefaultScalarResponse, AssistantDefaultsRequest, AssistantDefaultsResponse,
-    AssistantDetailResponse, AssistantEngineResponse, AssistantPreferencesResponse, AssistantProfileResponse,
+    ASSISTANT_MCP_BINDING_CHANGED_EVENT, AssistantAgentResponse, AssistantCapabilitiesResponse,
+    AssistantDefaultListRequest, AssistantDefaultListResponse, AssistantDefaultScalarRequest,
+    AssistantDefaultScalarResponse, AssistantDefaultsRequest, AssistantDefaultsResponse, AssistantDetailResponse,
+    AssistantEngineResponse, AssistantMcpBindingChanged, AssistantPreferencesResponse, AssistantProfileResponse,
     AssistantPromptsResponse, AssistantResponse, AssistantRulesResponse, AssistantSource, AssistantStateResponse,
     CreateAssistantRequest, ImportAssistantsRequest, ImportAssistantsResult, ImportError, MarketplacePersonaResponse,
     SetAssistantStateRequest, UpdateAssistantRequest, assistant_avatar_response_value,
@@ -81,7 +84,7 @@ pub use channel::{
     PluginStatusChangedPayload, PluginStatusResponse, RejectPairingRequest, RevokeUserRequest,
     SyncChannelSettingsRequest, TestPluginExtraConfig, TestPluginRequest, TestPluginResponse, UserAuthorizedPayload,
 };
-pub use chat_file::{ChatFileRef, TaggedChatFileRef};
+pub use chat_file::ChatFileRef;
 pub use confirmation::{ApprovalCheckQuery, ApprovalCheckResponse, ConfirmRequest, ConfirmationListResponse};
 pub use connection_test::TestBedrockConnectionRequest;
 pub use conversation::{
@@ -91,9 +94,9 @@ pub use conversation::{
     ConversationAssistantIdentityResponse, ConversationListResponse, ConversationMcpStatus, ConversationMcpStatusKind,
     ConversationNameUpdatedPayload, ConversationResponse, ConversationRuntimeStateKind, ConversationRuntimeSummary,
     CreateConversationRequest, EnsureConversationRuntimeResponse, ForkCapabilityView, ForkConversationRequest,
-    ListConversationsQuery, ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchItem,
-    MessageSearchResponse, MessageStatusChangedPayload, SearchMessagesQuery, SendMessageRequest, SendMessageResponse,
-    UpdateConversationArtifactRequest, UpdateConversationRequest,
+    ListConversationsQuery, ListMessagesQuery, McpRuntimeSnapshot, MessageListResponse, MessageResponse,
+    MessageSearchItem, MessageSearchResponse, MessageStatusChangedPayload, PromptCapabilityView, SearchMessagesQuery,
+    SendMessageRequest, SendMessageResponse, UpdateConversationArtifactRequest, UpdateConversationRequest,
 };
 pub use cron::{
     CreateConversationCronRequest, CreateConversationCronResponse, CreateCronJobRequest, CronAgentConfigReadDto,
@@ -114,11 +117,12 @@ pub use file::{
     BrowseDirectoryQuery, BrowseDirectoryResponse, BrowseEntry, CancelZipRequest, ContentEncoding,
     ContentMetadataRequest, CopyFailure, CopyFilesRequest, CopyFilesResponse, CopyTarget, CreateTempFileRequest,
     DirOrFileResponse, FetchRemoteImageRequest, FileChangeInfoResponse, FileMetadataResponse, FileWatchRequest,
-    GetFileMetadataRequest, GetFilesByDirRequest, GetImageBase64Request, ListWorkspaceFilesRequest, ReadContentRequest,
-    ReadFileBufferRequest, ReadFileRequest, RemoveEntryRequest, RenameRequest, RenameResponse, RevealItemRequest,
-    SnapshotBaselineRequest, SnapshotCompareResponse, SnapshotDiscardRequest, SnapshotInfoResponse, SnapshotMode,
-    SnapshotStageRequest, SnapshotWorkspaceRequest, StreamQuery, WorkspaceFlatFileResponse,
-    WorkspaceOfficeWatchRequest, WriteContentRequest, WriteFileRequest, ZipFileEntry, ZipRequest,
+    GetFileMetadataRequest, GetFilesByDirRequest, GetImageBase64Request, ListWorkspaceFilesRequest,
+    OpenSystemFileRequest, ReadContentRequest, ReadFileBufferRequest, ReadFileRequest, RemoveEntryRequest,
+    RenameRequest, RenameResponse, RevealItemRequest, SnapshotBaselineRequest, SnapshotCompareResponse,
+    SnapshotDiscardRequest, SnapshotInfoResponse, SnapshotMode, SnapshotStageRequest, SnapshotWorkspaceRequest,
+    StreamQuery, WorkspaceFlatFileResponse, WorkspaceOfficeWatchRequest, WriteContentRequest, WriteFileRequest,
+    ZipFileEntry, ZipRequest,
 };
 pub use lifecycle::{GitHubReleaseAsset, SystemInfoResponse, UpdateCheckRequest, UpdateCheckResult, UpdateReleaseInfo};
 pub use mcp::{
@@ -131,9 +135,12 @@ pub use office::{
     CellCoord, CellRange, ConversionResultDto, ConversionTarget, DocumentConversionRequest, DocumentConversionResponse,
     ExcelSheetData, ExcelSheetImage, ExcelWorkbookData, GetSnapshotContentRequest, ListSnapshotsRequest, PptJsonData,
     PptSlideData, PreviewHistoryTargetDto, PreviewSnapshotInfoDto, PreviewState, PreviewStatusEvent,
-    PreviewUrlResponse, SaveSnapshotRequest, SnapshotContentResponse, StartPreviewRequest, StopPreviewRequest,
+    PreviewUrlResponse, RefreshPreviewRequest, RefreshPreviewResponse, SaveSnapshotRequest, SnapshotContentResponse,
+    StartPreviewRequest, StopPreviewRequest,
 };
-pub use project::{AttachFolderRequest, ProjectDetailResponse, ProjectEntry, ProjectExplorer};
+pub use project::{
+    AttachFolderRequest, ProjectDetailResponse, ProjectEntry, ProjectExplorer, ResolveRefRequest, ResolveRefResponse,
+};
 pub use provider::{
     BedrockAuthMethod, BedrockConfig, CreateProviderRequest, DetectProtocolRequest, DetectionSuggestion,
     FetchModelsAnonymousRequest, FetchModelsRequest, FetchModelsResponse, HealthStatus, KeyTestResult, ModelCapability,
@@ -170,14 +177,19 @@ pub use system::{
     UpdateClientPreferencesRequest, UpdateSettingsRequest,
 };
 pub use team::{
-    AddAgentRequest, CancelTeamChildTurnRequest, CancelTeamRunRequest, CreateTeamRequest, PauseTeamSlotRequest,
-    RenameAgentRequest, RenameTeamRequest, SendAgentMessageRequest, SendTeamMessageRequest, TeamAgentInput,
+    AddAgentRequest, CancelTeamChildTurnRequest, CancelTeamRunRequest, CreateTeamRequest, InterruptTeamAgentRequest,
+    PauseTeamSlotRequest, RenameAgentRequest, RenameTeamRequest, SendAgentMessageRequest, SendTeamMessageRequest,
+    TeamActivityCursor, TeamActivityItemResponse, TeamActivityKind, TeamActivityPageResponse, TeamAgentInput,
     TeamAgentRemovedPayload, TeamAgentRenamedPayload, TeamAgentResponse, TeamAgentRuntimeStatus,
     TeamAgentRuntimeStatusPayload, TeamAgentSpawnedPayload, TeamAgentStatusPayload, TeamChildTurnPayload,
-    TeamListResponse, TeamMcpRuntimeConfig, TeamMessageEnqueueStatus, TeamResponse, TeamRunAckResponse, TeamRunPayload,
+    TeamContextResetAvailability, TeamContextResetCapability, TeamContextResetNotice, TeamContextResetResponse,
+    TeamContextResetRuntimeStatus, TeamContextResetStatus, TeamInterruptAgentResponse, TeamInterruptOutcome,
+    TeamListResponse, TeamMailboxChange, TeamMailboxChangedPayload, TeamMailboxMessageResponse, TeamMcpRuntimeConfig,
+    TeamMcpSelection, TeamMessageEnqueueStatus, TeamQueuedPolicy, TeamResponse, TeamRunAckResponse, TeamRunPayload,
     TeamRunSource, TeamRunStateResponse, TeamRunStatus, TeamRunTargetRole, TeamRuntimeSeed,
     TeamSendMessageQueuedResponse, TeamSessionBinding, TeamSessionPhase, TeamSessionStatus, TeamSessionStatusPayload,
-    TeamSlotBlockedReason, TeamSlotWorkChangedPayload, TeamSlotWorkPayload, TeamSlotWorkState, TeammateMessagePayload,
+    TeamSlotBlockedReason, TeamSlotWorkChangedPayload, TeamSlotWorkPayload, TeamSlotWorkState, TeamTaskChange,
+    TeamTaskChangedPayload, TeamTaskResponse, TeammateMessagePayload, assistant_mcp_binding_fingerprint,
 };
 pub use team_mcp::{TEAM_MCP_SERVER_NAME, TeamMcpStdioConfig};
 pub use team_tools::{

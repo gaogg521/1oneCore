@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use aionui_ai_agent::protocol::events::{DelegateUsageEventData, ErrorEventData, TipType};
+use aionui_ai_agent::protocol::events::{DelegateUsageEventData, ErrorEventData, TipType, TipsEventData};
 use aionui_ai_agent::{AgentSendError, AgentStreamEvent, protocol::events::ThinkingEventData};
 
 use crate::response_middleware::{ISkillLoadService, MessageMiddleware, MiddlewareResult};
@@ -23,6 +23,65 @@ use tracing::{debug, info, warn};
 
 /// Number of text chunks to accumulate before flushing to the database.
 const FLUSH_INTERVAL: u32 = 20;
+
+/// Running totals for tips that supersede themselves, kept for the whole turn.
+///
+/// A superseding tip is one card the user watches update — codex's retry card
+/// is the first — and what it measures is the turn, not the agent process. A
+/// stalled prompt can be replayed against a freshly spawned CLI, and a counter
+/// living in that process restarts at 1 halfway through the card. The relay
+/// outlives those attempts, so the totals belong here.
+///
+/// The two params are added to whatever the producer already sent, so a locale
+/// body can use them (`CODEX_RETRYING`) or ignore them.
+///
+/// Shared by handle: the turn orchestrator builds a FRESH relay per attempt, so
+/// state living in one relay resets on exactly the boundary this is meant to
+/// span. The orchestrator makes one of these per turn and hands every attempt
+/// the same handle.
+#[derive(Debug, Clone, Default)]
+pub struct SupersedingTipTotals {
+    seen: Arc<std::sync::Mutex<std::collections::HashMap<String, (u64, i64)>>>,
+}
+
+impl SupersedingTipTotals {
+    /// Returns the tip with `attempts`/`elapsed` filled in, or `None` when it
+    /// carries no merge key and therefore has no history to report.
+    fn annotate(&self, data: &TipsEventData, now_ms: i64) -> Option<TipsEventData> {
+        let key = data.supersedes_key.as_deref()?;
+        let (attempts, first_ms) = {
+            let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+            let entry = seen.entry(key.to_owned()).or_insert((0, now_ms));
+            entry.0 += 1;
+            *entry
+        };
+
+        let mut params = match data.params.clone() {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        params.insert("attempts".into(), serde_json::Value::from(attempts));
+        params.insert(
+            "elapsed".into(),
+            serde_json::Value::String(humanize_ms(now_ms.saturating_sub(first_ms))),
+        );
+
+        Some(TipsEventData {
+            params: Some(serde_json::Value::Object(params)),
+            ..data.clone()
+        })
+    }
+}
+
+/// Compact, locale-neutral duration: `45s`, `7m41s`, `1h02m`.
+fn humanize_ms(ms: i64) -> String {
+    let total = (ms.max(0) / 1000) as u64;
+    match (total / 3600, (total % 3600) / 60, total % 60) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, s) => format!("{m}m{s:02}s"),
+        (h, m, _) => format!("{h}h{m:02}m"),
+    }
+}
 
 /// Conservative summary of what happened during one agent send attempt.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -119,6 +178,7 @@ pub struct StreamRelay {
     msg_id: String,
     turn_id: String,
     user_id: String,
+    repo: Arc<dyn IConversationRepository>,
     broadcaster: Arc<dyn EventBroadcaster>,
     skill_resolver: Option<Arc<dyn SkillResolver>>,
     allowed_skill_names: Vec<String>,
@@ -127,6 +187,7 @@ pub struct StreamRelay {
     adapter: StreamPersistenceAdapter,
     complete_turn: bool,
     defer_clean_terminal_errors: bool,
+    superseding_tips: SupersedingTipTotals,
 }
 
 impl StreamRelay {
@@ -138,13 +199,19 @@ impl StreamRelay {
         repo: Arc<dyn IConversationRepository>,
         broadcaster: Arc<dyn EventBroadcaster>,
     ) -> Self {
-        let adapter =
-            StreamPersistenceAdapter::new(user_id.clone(), conversation_id.clone(), msg_id.clone(), repo, None);
+        let adapter = StreamPersistenceAdapter::new(
+            user_id.clone(),
+            conversation_id.clone(),
+            msg_id.clone(),
+            repo.clone(),
+            None,
+        );
         Self {
             conversation_id,
             msg_id,
             turn_id,
             user_id,
+            repo,
             broadcaster,
             skill_resolver: None,
             allowed_skill_names: Vec::new(),
@@ -153,6 +220,7 @@ impl StreamRelay {
             adapter,
             complete_turn: true,
             defer_clean_terminal_errors: false,
+            superseding_tips: SupersedingTipTotals::default(),
         }
     }
 
@@ -179,6 +247,14 @@ impl StreamRelay {
 
     pub fn with_turn_completion(mut self, enabled: bool) -> Self {
         self.complete_turn = enabled;
+        self
+    }
+
+    /// Share this turn's superseding-tip totals across its replay attempts.
+    /// Without it each attempt counts from one, and the card the user is
+    /// watching restarts mid-stall.
+    pub fn with_superseding_tip_totals(mut self, totals: SupersedingTipTotals) -> Self {
+        self.superseding_tips = totals;
         self
     }
 
@@ -604,14 +680,26 @@ impl StreamRelay {
                             if data.code.as_deref() == Some("ACP_EMPTY_TURN_NEEDS_AUTH") {
                                 attempt.needs_auth = true;
                             }
-                            self.forward_to_websocket(&event);
+                            // A card that supersedes itself gets this turn's
+                            // running totals before it goes anywhere, so the
+                            // live frame and the persisted row agree.
+                            let annotated = self.superseding_tips.annotate(data, now_ms());
+                            let forwarded = match &annotated {
+                                Some(data) => std::borrow::Cow::Owned(AgentStreamEvent::Tips(data.clone())),
+                                None => std::borrow::Cow::Borrowed(&event),
+                            };
+                            self.forward_to_websocket(&forwarded);
                             if matches!(data.tip_type, TipType::Success | TipType::Warning | TipType::Info) {
-                                self.adapter.persist_tip(data).await;
+                                self.adapter.persist_tip(annotated.as_ref().unwrap_or(data)).await;
                             }
                         }
                         AgentStreamEvent::CronTrigger(_)
                         | AgentStreamEvent::Permission(_)
-                        | AgentStreamEvent::AcpPermission(_) => {
+                        | AgentStreamEvent::AcpPermission(_)
+                        // Ask rides the permission lane: a raised question is a
+                        // side-effect (blocks auto-replay) and must reach the ws
+                        // live for the card to pop mid-turn.
+                        | AgentStreamEvent::Ask(_) => {
                             attempt.saw_tool_or_side_effect = true;
                             self.forward_to_websocket(&event);
                         }
@@ -630,12 +718,40 @@ impl StreamRelay {
                             // turns; inside a turn it is pure bookkeeping. Never
                             // forwarded to the WebSocket.
                         }
-                        // NOTE: AcpSessionInfo (agent session titles) is deliberately
-                        // NOT consumed here. Titles arrive at session-open and at the
-                        // turn's final instant (pi/omp race the relay's exit by ~1ms;
-                        // claude replies seconds after Finish), so the per-instance
-                        // BackgroundStreamWatcher is the single gate-free consumer.
-                        // The frame still reaches the frontend via the catch-all.
+                        // Agent session titles. The BackgroundStreamWatcher is the
+                        // between-turns consumer, but while it lends its receiver to
+                        // an orphan-turn relay THIS relay is the only consumer — live
+                        // 2026-08-19 (conv a7f2838a): claude's generate_session_title
+                        // reply landed 0.6s after a CLI-initiated turn opened, the
+                        // frame was dropped here, and the one-shot latch was already
+                        // completed (no retry) — the placeholder name stuck forever.
+                        // apply_agent_title is idempotent (same-title no-op) and
+                        // name_source-guarded, so watcher+relay double-apply is safe.
+                        AgentStreamEvent::AcpSessionInfo(payload) => {
+                            if let Some(title) = payload
+                                .get("title")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::trim)
+                                .filter(|t| !t.is_empty())
+                                && let Err(e) = crate::service::apply_agent_title(
+                                    &self.repo,
+                                    &self.broadcaster,
+                                    &self.user_id,
+                                    &self.conversation_id,
+                                    title,
+                                    "relay",
+                                )
+                                .await
+                            {
+                                warn!(
+                                    conversation_id = %self.conversation_id,
+                                    error = %e,
+                                    "agent session title apply failed (relay)"
+                                );
+                            }
+                            // The raw frame still reaches the frontend via message.stream.
+                            self.forward_to_websocket(&event);
+                        }
                         _ => {
                             self.forward_to_websocket(&event);
                         }
@@ -726,6 +842,7 @@ impl StreamRelay {
             AgentStreamEvent::Plan(_) => "Plan",
             AgentStreamEvent::Permission(_) => "Permission",
             AgentStreamEvent::AcpPermission(_) => "AcpPermission",
+            AgentStreamEvent::Ask(_) => "Ask",
             AgentStreamEvent::SkillSuggest(_) => "SkillSuggest",
             AgentStreamEvent::CronTrigger(_) => "CronTrigger",
             AgentStreamEvent::AcpModelInfo(_) => "AcpModelInfo",
@@ -733,6 +850,7 @@ impl StreamRelay {
             AgentStreamEvent::AcpConfigOption(_) => "AcpConfigOption",
             AgentStreamEvent::AcpSessionInfo(_) => "AcpSessionInfo",
             AgentStreamEvent::AcpContextUsage(_) => "AcpContextUsage",
+            AgentStreamEvent::AcpTerminalOutput(_) => "AcpTerminalOutput",
             AgentStreamEvent::AcpPromptHookWarning(_) => "AcpPromptHookWarning",
             AgentStreamEvent::SlashCommandsUpdated(_) => "SlashCommandsUpdated",
             AgentStreamEvent::AvailableCommands(_) => "AvailableCommands",
@@ -1342,6 +1460,143 @@ mod tests {
         assert!(relay.consume(rx).await.delegate_usage.is_empty());
     }
 
+    fn agent_title_test_row(name: &str, name_source: Option<&str>) -> aionui_db::models::ConversationRow {
+        let now = aionui_common::now_ms();
+        aionui_db::models::ConversationRow {
+            id: "conv-1".into(),
+            user_id: "user-1".into(),
+            name: name.into(),
+            r#type: "acp".into(),
+            extra: "{}".into(),
+            model: None,
+            status: None,
+            source: None,
+            channel_chat_id: None,
+            pinned: false,
+            pinned_at: None,
+            created_at: now,
+            updated_at: now,
+            project_id: None,
+            folder_id: None,
+            name_source: name_source.map(str::to_owned),
+        }
+    }
+
+    /// Live 2026-08-19 (conv a7f2838a): claude's `generate_session_title` reply
+    /// landed 0.6s after the BackgroundStreamWatcher lent its receiver to a
+    /// CLI-initiated orphan turn — the relay was the ONLY consumer of the title
+    /// frame and dropped it, and the one-shot latch was already completed, so
+    /// the conversation kept its placeholder name forever. The relay must apply
+    /// titles itself (apply_agent_title is idempotent and name_source-guarded,
+    /// so watcher+relay double-apply is a harmless no-op).
+    #[tokio::test]
+    async fn acp_session_info_applies_agent_title_at_relay_level() {
+        let repo = Arc::new(RecordingRepo::new());
+        *repo.conversation.lock().unwrap() = Some(agent_title_test_row("first message placeholder", None));
+        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
+        let mut ws_rx = bus.subscribe();
+        let (tx, _) = broadcast::channel(64);
+
+        let relay = StreamRelay::new(
+            "conv-1".into(),
+            "asst-1".into(),
+            "turn-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+        );
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::AcpSessionInfo(serde_json::json!({
+            "title": "Fix login bug"
+        })))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+        let outcome = relay.consume(rx).await;
+        assert_eq!(outcome.terminal, RelayTerminal::Finish);
+
+        let renamed = repo.conversation_updates.lock().unwrap().iter().any(|(id, u)| {
+            id == "conv-1" && u.name.as_deref() == Some("Fix login bug") && u.name_source.as_deref() == Some("agent")
+        });
+        assert!(
+            renamed,
+            "relay must apply the agent title (rename + name_source='agent')"
+        );
+        // The raw frame still reaches the frontend via message.stream.
+        let mut saw_forward = false;
+        while let Ok(msg) = ws_rx.try_recv() {
+            if msg.name == "message.stream" && msg.data["data"]["title"] == "Fix login bug" {
+                saw_forward = true;
+            }
+        }
+        assert!(saw_forward, "AcpSessionInfo frame must still be forwarded");
+    }
+
+    #[tokio::test]
+    async fn acp_session_info_never_renames_user_owned_name() {
+        let repo = Arc::new(RecordingRepo::new());
+        *repo.conversation.lock().unwrap() = Some(agent_title_test_row("my name", Some("user")));
+        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+
+        let relay = StreamRelay::new(
+            "conv-1".into(),
+            "asst-1".into(),
+            "turn-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+        );
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::AcpSessionInfo(serde_json::json!({
+            "title": "Fix login bug"
+        })))
+        .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+        relay.consume(rx).await;
+
+        assert!(
+            repo.conversation_updates
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, u)| u.name.is_none()),
+            "a user-owned name must never be overwritten by an agent title"
+        );
+    }
+
+    #[tokio::test]
+    async fn acp_session_info_null_title_never_renames() {
+        let repo = Arc::new(RecordingRepo::new());
+        *repo.conversation.lock().unwrap() = Some(agent_title_test_row("kept name", None));
+        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+
+        let relay = StreamRelay::new(
+            "conv-1".into(),
+            "asst-1".into(),
+            "turn-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+        );
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::AcpSessionInfo(serde_json::json!({ "title": null })))
+            .unwrap();
+        tx.send(AgentStreamEvent::AcpSessionInfo(serde_json::json!({ "title": "   " })))
+            .unwrap();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+        relay.consume(rx).await;
+
+        assert!(
+            repo.conversation_updates
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, u)| u.name.is_none()),
+            "null/blank titles must not rename"
+        );
+    }
+
     #[tokio::test]
     async fn needs_auth_tip_sets_summary_flag_on_finish() {
         use aionui_ai_agent::protocol::events::{TipType, TipsEventData};
@@ -1367,6 +1622,7 @@ mod tests {
             tip_type: TipType::Info,
             code: Some("ACP_EMPTY_TURN_NEEDS_AUTH".into()),
             params: Some(serde_json::json!({ "hint": "Run `kilo auth login` in the terminal" })),
+            supersedes_key: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -1402,6 +1658,7 @@ mod tests {
             tip_type: TipType::Info,
             code: Some("ACP_EMPTY_TURN".into()),
             params: None,
+            supersedes_key: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -1440,6 +1697,7 @@ mod tests {
             tip_type: TipType::Info,
             code: Some("ACP_EMPTY_TURN_TOKEN_LIMIT".into()),
             params: None,
+            supersedes_key: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -1528,6 +1786,7 @@ mod tests {
                     input: None,
                     output: Some("Phase 1  Run   [0/1]".into()),
                     description: Some("Run [0/1] · run:A · 1 agents".into()),
+                    parent_call_id: None,
                 },
                 agents: vec![ToolGroupEntry {
                     call_id: "1".into(),
@@ -1580,6 +1839,7 @@ mod tests {
             input: None,
             output: None,
             description: None,
+            parent_call_id: None,
         }))
         .await;
         assert_eq!(
@@ -1660,6 +1920,7 @@ mod tests {
             args: json!({"path": "a.ts"}),
             status: ToolCallStatus::Running,
             description: None,
+            parent_call_id: None,
             input: None,
             output: None,
         }))
@@ -1963,6 +2224,7 @@ mod tests {
             tip_type: TipType::Warning,
             code: None,
             params: None,
+            supersedes_key: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Error(ErrorEventData {
@@ -2017,6 +2279,7 @@ mod tests {
             input: None,
             output: None,
             description: None,
+            parent_call_id: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Error(ErrorEventData {
@@ -2061,6 +2324,7 @@ mod tests {
                 tip_type: aionui_ai_agent::protocol::events::TipType::Warning,
                 code: Some("ACP_EMPTY_TURN".into()),
                 params: None,
+                supersedes_key: None,
             },
         ))
         .unwrap();
@@ -2274,6 +2538,7 @@ mod tests {
             args: json!({"path": "a.ts"}),
             status: ToolCallStatus::Running,
             description: None,
+            parent_call_id: None,
             input: None,
             output: None,
         }))
@@ -2340,6 +2605,7 @@ mod tests {
             args: json!({"path": "a.ts"}),
             status: ToolCallStatus::Running,
             description: None,
+            parent_call_id: None,
             input: None,
             output: None,
         }))
@@ -2545,6 +2811,7 @@ mod tests {
             input: Some(json!({"prompt": "a cat", "size": "1024x1024"})),
             output: None,
             description: Some("Generate image".into()),
+            parent_call_id: None,
         }))
         .unwrap();
         // Second event: Completed with output but no input
@@ -2556,6 +2823,7 @@ mod tests {
             input: None,
             output: Some("image.png".into()),
             description: None,
+            parent_call_id: None,
         }))
         .unwrap();
         tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
@@ -2962,6 +3230,10 @@ mod tests {
     struct RecordingRepo {
         inserts: Mutex<Vec<MessageRow>>,
         updates: Mutex<Vec<(String, aionui_db::MessageRowUpdate)>>,
+        /// Optional conversation row served by `get` (agent-title tests).
+        conversation: Mutex<Option<aionui_db::models::ConversationRow>>,
+        /// Conversation-level updates recorded by `update` (agent-title tests).
+        conversation_updates: Mutex<Vec<(String, aionui_db::ConversationRowUpdate)>>,
         not_found: AtomicBool,
         foreign_key_failure: AtomicBool,
     }
@@ -2971,6 +3243,8 @@ mod tests {
             Self {
                 inserts: Mutex::new(vec![]),
                 updates: Mutex::new(vec![]),
+                conversation: Mutex::new(None),
+                conversation_updates: Mutex::new(vec![]),
                 not_found: AtomicBool::new(false),
                 foreign_key_failure: AtomicBool::new(false),
             }
@@ -3066,7 +3340,7 @@ mod tests {
     #[async_trait::async_trait]
     impl IConversationRepository for RecordingRepo {
         async fn get(&self, _user_id: &str, _id: &str) -> Result<Option<aionui_db::models::ConversationRow>, DbError> {
-            Ok(None)
+            Ok(self.conversation.lock().unwrap().clone())
         }
         async fn owner_user_id(&self, _id: &str) -> Result<Option<String>, DbError> {
             Ok(Some("user-1".into()))
@@ -3077,12 +3351,16 @@ mod tests {
         async fn update(
             &self,
             _user_id: &str,
-            _id: &str,
-            _updates: &aionui_db::ConversationRowUpdate,
+            id: &str,
+            updates: &aionui_db::ConversationRowUpdate,
         ) -> Result<(), DbError> {
             if self.not_found.load(Ordering::Acquire) {
                 return Err(DbError::NotFound("Conversation deleted-conv not found".into()));
             }
+            self.conversation_updates
+                .lock()
+                .unwrap()
+                .push((id.to_string(), updates.clone()));
             Ok(())
         }
         async fn delete(&self, _user_id: &str, _id: &str) -> Result<(), DbError> {

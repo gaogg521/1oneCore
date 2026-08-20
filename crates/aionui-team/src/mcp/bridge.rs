@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use agent_client_protocol::schema::{EnvVariable, McpServer, McpServerStdio};
+use agent_client_protocol::schema::v1::{EnvVariable, McpServer, McpServerStdio};
 
 pub use aionui_api_types::{TEAM_MCP_SERVER_NAME, TeamMcpStdioConfig};
 

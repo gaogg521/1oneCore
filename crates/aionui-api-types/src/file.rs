@@ -1,7 +1,7 @@
 use aionui_common::FileChangeOperation;
 use serde::{Deserialize, Serialize};
 
-use crate::chat_file::{ChatFileRef, TaggedChatFileRef};
+use crate::chat_file::ChatFileRef;
 
 // ---------------------------------------------------------------------------
 // Content endpoint (ChatFileRef identity) — Request DTOs
@@ -70,20 +70,18 @@ impl StreamQuery {
     pub fn to_chat_file_ref(&self) -> Result<ChatFileRef, &'static str> {
         match self.kind.as_str() {
             "project" => match (self.pe_id.clone(), self.relative_path.clone()) {
-                (Some(pe_id), Some(relative_path)) => {
-                    Ok(ChatFileRef::Tagged(TaggedChatFileRef::Project { pe_id, relative_path }))
-                }
+                (Some(pe_id), Some(relative_path)) => Ok(ChatFileRef::Project { pe_id, relative_path }),
                 _ => Err("project stream requires pe_id and relative_path"),
             },
             "upload" => self
                 .path
                 .clone()
-                .map(|path| ChatFileRef::Tagged(TaggedChatFileRef::Upload { path }))
+                .map(|path| ChatFileRef::Upload { path })
                 .ok_or("upload stream requires path"),
             "local" => self
                 .path
                 .clone()
-                .map(|path| ChatFileRef::Tagged(TaggedChatFileRef::Local { path }))
+                .map(|path| ChatFileRef::Local { path })
                 .ok_or("local stream requires path"),
             _ => Err("unknown stream kind (expected project|upload|local)"),
         }
@@ -199,6 +197,23 @@ pub struct RenameRequest {
 #[derive(Debug, Deserialize)]
 pub struct CreateTempFileRequest {
     pub file_name: String,
+}
+
+/// Request body for `POST /api/fs/open-system` — open a `ChatFileRef`-addressed
+/// file with the OS default application ("open in system editor"). Preview offers
+/// this as the escape hatch for files it will not render itself (oversized or
+/// unsupported formats).
+///
+/// Uses `ChatFileRef` rather than `{pe_id, relative_path}` so all three preview
+/// sources are covered — project files, uploads, and host-picked local files —
+/// whereas [`RevealItemRequest`] serves the project-only Explorer tree.
+///
+/// The response carries no body: the backend resolves the identity to an absolute
+/// path, opens it locally, and never returns that path (see INV-OPEN on the
+/// handler).
+#[derive(Debug, Deserialize)]
+pub struct OpenSystemFileRequest {
+    pub file: ChatFileRef,
 }
 
 /// Request body for `POST /api/fs/image-base64` — get image as base64.
@@ -361,7 +376,7 @@ pub struct RenameResponse {
 }
 
 // ---------------------------------------------------------------------------
-// D. File watch — Request DTOs
+// B. File watch — Request DTOs
 // ---------------------------------------------------------------------------
 
 /// Request body for `POST /api/fs/watch/start` and `/stop`.
@@ -377,7 +392,7 @@ pub struct WorkspaceOfficeWatchRequest {
 }
 
 // ---------------------------------------------------------------------------
-// E. Workspace snapshot — Request DTOs
+// C. Workspace snapshot — Request DTOs
 // ---------------------------------------------------------------------------
 
 /// Request body for snapshot init / getInfo / compare / stageAll / unstageAll / dispose.
@@ -409,7 +424,7 @@ pub struct SnapshotDiscardRequest {
 }
 
 // ---------------------------------------------------------------------------
-// E. Workspace snapshot — Response DTOs
+// C. Workspace snapshot — Response DTOs
 // ---------------------------------------------------------------------------
 
 /// Snapshot mode.

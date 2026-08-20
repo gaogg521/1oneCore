@@ -19,10 +19,9 @@ use crate::protocol::send_error::AgentSendError;
 use crate::registry::CatalogSender;
 use crate::shared_kernel::{ConfigKey, ConfigValue, ModeId, ModelId, SessionId as DomainSessionId};
 use crate::types::SendMessageData;
-use agent_client_protocol::schema::{
+use agent_client_protocol::schema::v1::{
     AvailableCommand, CancelNotification, ContentBlock, PromptRequest, SessionConfigOptionCategory, SessionId,
-    SessionModelState, SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest,
-    SetSessionModelRequest, UsageUpdate,
+    SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest, UsageUpdate,
 };
 use aionui_api_types::{
     AgentHandshake, ConfigOptionConfirmation, GetConfigOptionsResponse, SetConfigOptionResponse,
@@ -60,6 +59,27 @@ pub(super) fn user_facing_message(err: &AgentError) -> String {
     full.split_once(": ").map(|(_, rest)| rest.to_owned()).unwrap_or(full)
 }
 
+/// Converge the ACP runtime after an explicit manager kill and persist the
+/// matching close reason before broadcasting the terminal event.
+fn emit_kill_terminal(
+    runtime: &AgentRuntime,
+    reason: Option<AgentKillReason>,
+    record_close_reason: impl FnOnce(CloseReason),
+) {
+    if matches!(
+        reason,
+        Some(AgentKillReason::UserCancelTimeout | AgentKillReason::RuntimeRestart)
+    ) {
+        record_close_reason(CloseReason::UserCancel);
+        runtime.emit_finish(None);
+    } else {
+        let close_reason = CloseReason::Killed { reason };
+        let message = close_reason.user_facing_message();
+        record_close_reason(close_reason);
+        runtime.emit_error(message);
+    }
+}
+
 fn build_acp_final_input_dump_value(
     conversation_id: &str,
     session_id: &str,
@@ -83,6 +103,7 @@ fn build_acp_final_input_dump_value(
 
 use super::config_option_catalog::{extract_models_from_value, extract_modes_from_value};
 use super::config_options::{ConfigSetPath, ConfigSetPathError, ConfigSnapshot, resolve_set_path};
+use super::legacy_session_model::LegacySessionModelState;
 use super::mode_normalize::normalize_requested_mode;
 use super::mode_normalize::normalize_requested_mode_for_available_values;
 use super::mode_normalize::{RequiredFullAutoMode, resolve_required_full_auto_mode};
@@ -149,6 +170,11 @@ impl AcpStartupConnectError {
         }
     }
 }
+
+/// How many trailing stderr lines to keep when an agent fails to reach a live
+/// ACP session. Both startup failure paths (child exited / handshake failed)
+/// read the same window so their diagnostics are comparable.
+const STARTUP_STDERR_PEEK_LINES: usize = 64;
 
 async fn spawn_and_connect_acp(
     params: &AcpSessionParams,
@@ -251,13 +277,15 @@ async fn spawn_and_connect_acp_once(
         runtime.event_sender(),
         permission_tx,
         notification_tx,
+        &params.conversation_id,
+        Some(std::path::PathBuf::from(&params.workspace.path)),
         crate::protocol::acp_init_budget::init_budget(&params.command_spec),
     );
     tokio::pin!(connect_fut);
     let protocol = tokio::select! {
         biased;
         exit = process.wait_for_exit() => {
-            let stderr = process.peek_stderr_tail(64).await;
+            let stderr = process.peek_stderr_tail(STARTUP_STDERR_PEEK_LINES).await;
             let (exit_code, signal) = exit_status_parts(exit);
             error!(
                 conversation_id = %params.conversation_id,
@@ -269,16 +297,44 @@ async fn spawn_and_connect_acp_once(
             let _ = unregister_agent_process(&params.data_dir, process.pid());
             return Err(AcpStartupConnectError::StartupCrash { exit_code, signal, stderr });
         }
-        res = &mut connect_fut => res.map_err(|e| {
-            error!(
-                conversation_id = %params.conversation_id,
-                error = %ErrorChain(&e),
-                "Failed to establish ACP protocol connection"
-            );
-            process.force_kill_tree();
-            let _ = unregister_agent_process(&params.data_dir, process.pid());
-            AcpStartupConnectError::Agent(AgentError::from(e))
-        })?,
+        res = &mut connect_fut => match res {
+            Ok(protocol) => protocol,
+            Err(e) => {
+                // The handshake future can WIN the race against `wait_for_exit`
+                // even when the child is what died: a crashing agent closes the
+                // pipe first, so connect fails with `incoming_transport_closed`
+                // before the exit is observed. The `wait_for_exit` arm above then
+                // never runs, and its `peek_stderr_tail` — the only record of WHY
+                // — is lost, leaving the user a bare "upstream error"
+                // (AIONUI-DESKTOP-9D). Peek here too.
+                //
+                // stderr is for OUR logs only — never folded into the error that
+                // reaches the client ("stderr intentionally NOT included — may
+                // carry secrets", `protocol::error`).
+                let stderr = process.peek_stderr_tail(STARTUP_STDERR_PEEK_LINES).await;
+                error!(
+                    conversation_id = %params.conversation_id,
+                    error = %ErrorChain(&e),
+                    stderr = %stderr,
+                    "Failed to establish ACP protocol connection"
+                );
+                process.force_kill_tree();
+                let _ = unregister_agent_process(&params.data_dir, process.pid());
+                // Classify STRUCTURALLY. `AgentError::from(e)` would flatten this
+                // into a string, and `classify_upstream_detail` then has to guess
+                // the cause back out of that string by substring match — which
+                // fails for a transport close and lands on the catch-all
+                // UNKNOWN_UPSTREAM_ERROR (AIONUI-DESKTOP-9D). We already KNOW the
+                // structural fact: the handshake did not complete. Say so, and
+                // `from_acp_error_ref` maps it to USER_AGENT_STARTUP_FAILED with
+                // UserAgent ownership and a CheckAgentInstallation resolution.
+                return Err(AcpStartupConnectError::StartupCrash {
+                    exit_code: None,
+                    signal: None,
+                    stderr,
+                });
+            }
+        },
     };
 
     Ok(AcpStartupConnection {
@@ -738,6 +794,13 @@ impl AcpAgentManager {
         runtime.bump_activity();
     }
 
+    /// User-initiated stop of one client-hosted terminal (the terminal
+    /// card's stop button). Returns false when the id is unknown (already
+    /// released or never ours).
+    pub async fn kill_client_terminal(&self, terminal_id: &str) -> bool {
+        self.protocol.terminal_registry().kill(terminal_id, "user").await
+    }
+
     fn ensure_protocol_connected_for_operation(&self, operation: &'static str) -> Result<(), AgentError> {
         if self.protocol.is_connected() {
             return Ok(());
@@ -777,7 +840,7 @@ impl AcpAgentManager {
     }
 
     /// Cached model info from the ACP backend, if any has been received.
-    pub(crate) async fn model(&self) -> Option<SessionModelState> {
+    pub(crate) async fn model(&self) -> Option<LegacySessionModelState> {
         self.session.read().await.model_info().cloned()
     }
 
@@ -951,7 +1014,7 @@ impl AcpAgentManager {
                     .set_config_option(SetSessionConfigOptionRequest::new(
                         SessionId::new(session_id.clone()),
                         config_id.clone(),
-                        resolved_value.clone(),
+                        resolved_value.as_str(),
                     ))
                     .await
                     .map_err(|err| {
@@ -1037,10 +1100,7 @@ impl AcpAgentManager {
             }
             ConfigSetPath::LegacyModel => {
                 self.protocol
-                    .set_model(SetSessionModelRequest::new(
-                        SessionId::new(session_id.clone()),
-                        resolved_value.clone(),
-                    ))
+                    .set_model(&session_id, &resolved_value)
                     .await
                     .map_err(|err| {
                         warn!(
@@ -1497,6 +1557,18 @@ impl crate::agent_task::IAgentTask for AcpAgentManager {
             .is_some_and(aionui_session::backend_supports_midturn_delivery)
     }
 
+    fn prompt_media_caps(&self) -> crate::types::PromptMediaCaps {
+        let caps = self
+            .protocol
+            .agent_capabilities()
+            .map(|c| c.prompt_capabilities)
+            .unwrap_or_default();
+        crate::types::PromptMediaCaps {
+            image: caps.image,
+            audio: caps.audio,
+        }
+    }
+
     #[tracing::instrument(skip_all, fields(conversation_id = %self.params.conversation_id, msg_id = %data.msg_id))]
     async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
         self.runtime.bump_activity();
@@ -1683,22 +1755,11 @@ impl crate::agent_task::IAgentTask for AcpAgentManager {
 
         self.permission_router.cancel_all();
 
-        if matches!(reason, Some(AgentKillReason::UserCancelTimeout)) {
-            if let Ok(mut session) = self.session.try_write() {
-                session.record_close_reason(Some(CloseReason::UserCancel));
-            }
-            self.runtime.emit_finish(None);
-        } else {
-            // m1 fix: emit error with the kill reason so the status goes to
-            // Finished and subscribers see a terminal event. Idempotent.
-            // Source of truth for the toast text is `CloseReason::Killed`.
-            let close_reason = CloseReason::Killed { reason };
-            let message = close_reason.user_facing_message();
+        emit_kill_terminal(&self.runtime, reason, |close_reason| {
             if let Ok(mut session) = self.session.try_write() {
                 session.record_close_reason(Some(close_reason));
             }
-            self.runtime.emit_error(message);
-        }
+        });
 
         Ok(())
     }
@@ -1785,7 +1846,7 @@ impl AcpAgentManager {
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionIdPersistence, build_acp_final_input_dump_value, exit_status_parts,
+        SessionIdPersistence, build_acp_final_input_dump_value, emit_kill_terminal, exit_status_parts,
         normalize_config_option_request_value, register_spawned_process, user_facing_message,
     };
     use crate::agent_runtime::AgentRuntime;
@@ -1793,12 +1854,13 @@ mod tests {
     use crate::manager::acp::config_options::ConfigSnapshot;
     use crate::manager::acp::{AcpAgentManager, AcpSession};
     use crate::protocol::error::{AcpError, CloseReason};
+    use crate::protocol::events::AgentStreamEvent;
     use crate::shared_kernel::{ConfigKey, ConfigValue, ModeId, SessionId as DomainSessionId};
-    use agent_client_protocol::schema::{
+    use agent_client_protocol::schema::v1::{
         AvailableCommand, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
     };
     use aionui_api_types::{AgentHandshake, AgentMetadata, AgentSource, AgentSourceInfo, BehaviorPolicy};
-    use aionui_common::AgentType;
+    use aionui_common::{AgentKillReason, AgentType, ConversationStatus};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -1890,6 +1952,47 @@ mod tests {
             )
             .category(SessionConfigOptionCategory::Mode),
         ])
+    }
+
+    #[tokio::test]
+    async fn runtime_restart_kill_emits_clean_finish_and_records_user_cancel() {
+        let runtime = AgentRuntime::new("conv-restart", "/tmp/workspace", 8);
+        runtime.transition_to(ConversationStatus::Running);
+        let mut events = runtime.subscribe();
+        let mut recorded = None;
+
+        emit_kill_terminal(&runtime, Some(AgentKillReason::RuntimeRestart), |reason| {
+            recorded = Some(reason);
+        });
+
+        assert_eq!(recorded, Some(CloseReason::UserCancel));
+        assert_eq!(runtime.status(), Some(ConversationStatus::Finished));
+        assert!(matches!(events.recv().await.unwrap(), AgentStreamEvent::Finish(_)));
+    }
+
+    #[tokio::test]
+    async fn agent_error_recovery_kill_still_emits_error_and_records_killed_reason() {
+        let runtime = AgentRuntime::new("conv-error-recovery", "/tmp/workspace", 8);
+        runtime.transition_to(ConversationStatus::Running);
+        let mut events = runtime.subscribe();
+        let mut recorded = None;
+
+        emit_kill_terminal(&runtime, Some(AgentKillReason::AgentErrorRecovery), |reason| {
+            recorded = Some(reason);
+        });
+
+        assert_eq!(
+            recorded,
+            Some(CloseReason::Killed {
+                reason: Some(AgentKillReason::AgentErrorRecovery),
+            })
+        );
+        assert_eq!(runtime.status(), Some(ConversationStatus::Finished));
+        let event = events.recv().await.unwrap();
+        match event {
+            AgentStreamEvent::Error(data) => assert_eq!(data.message, "Agent killed: error recovery"),
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 
     #[test]

@@ -318,7 +318,7 @@ async fn request_json(
         DiagnoseError::new(
             DiagnoseErrorCode::HttpRequestFailed,
             command,
-            "failed to call 1One Work backend",
+            "failed to call AionUi backend",
         )
         .field("path", path)
     })?;

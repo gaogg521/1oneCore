@@ -25,7 +25,7 @@ use aionui_api_types::{
 };
 use aionui_api_types::{
     ChatFileRef, CloneConversationRequest, CreateConversationRequest, ListConversationsQuery, SearchMessagesQuery,
-    SendMessageRequest, TaggedChatFileRef, UpdateConversationRequest, WebSocketMessage,
+    SendMessageRequest, UpdateConversationRequest, WebSocketMessage,
 };
 use aionui_common::{
     AgentKillReason, AgentType, Confirmation, ConversationSource, ConversationStatus, PaginatedResult,
@@ -317,6 +317,9 @@ impl IConversationRepository for MockRepo {
         }
         if let Some(folder_id) = &updates.folder_id {
             row.folder_id = Some(folder_id.clone());
+        }
+        if let Some(name_source) = &updates.name_source {
+            row.name_source = Some(name_source.clone());
         }
         Ok(())
     }
@@ -1185,6 +1188,59 @@ impl IAcpSessionRepository for StubAcpSessionRepo {
     }
 }
 
+#[tokio::test]
+async fn clear_acp_context_anchor_drops_only_the_resume_anchor() {
+    let runtime_state = PersistedSessionState {
+        current_mode_id: Some("full_auto".to_owned()),
+        current_model_id: Some("model-preserved".to_owned()),
+        ..Default::default()
+    };
+    let acp_session_repo = Arc::new(StubAcpSessionRepo {
+        create_calls: Mutex::new(Vec::new()),
+        runtime_state_saves: Mutex::new(Vec::new()),
+        session_id: Mutex::new(Some("session-to-clear".to_owned())),
+        runtime_state: Mutex::new(Some(runtime_state.clone())),
+    });
+    let (service, _broadcaster, _repo, _task_manager) = make_service_with_resolver_and_acp_session_repo(
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        acp_session_repo.clone(),
+    );
+    let conversation = service.create("user_1", make_create_req()).await.unwrap();
+
+    assert!(
+        service
+            .supports_acp_context_reset("user_1", &conversation.id)
+            .await
+            .unwrap()
+    );
+    assert!(
+        service
+            .clear_acp_context_anchor("user_1", &conversation.id)
+            .await
+            .unwrap()
+    );
+    assert_eq!(*acp_session_repo.session_id.lock().unwrap(), None);
+    assert_eq!(*acp_session_repo.runtime_state.lock().unwrap(), Some(runtime_state));
+}
+
+#[tokio::test]
+async fn aionrs_conversation_does_not_support_acp_context_reset() {
+    let (service, _broadcaster, _repo, _task_manager) = make_service();
+    let request = serde_json::from_value(json!({
+        "type": "aionrs",
+        "extra": { "workspace": ensure_test_workspace_path() }
+    }))
+    .unwrap();
+    let conversation = service.create("user_1", request).await.unwrap();
+
+    assert!(
+        !service
+            .supports_acp_context_reset("user_1", &conversation.id)
+            .await
+            .unwrap()
+    );
+}
+
 fn make_service() -> (
     ConversationService,
     Arc<MockBroadcaster>,
@@ -1592,9 +1648,189 @@ async fn insert_conversation_with_type(repo: &Arc<MockRepo>, user_id: &str, agen
         updated_at: 1,
         project_id: None,
         folder_id: None,
+        name_source: None,
     };
     repo.create(&row).await.unwrap();
     row
+}
+
+// ── apply_agent_title guard matrix ─────────────────────────────────
+
+async fn seed_titled_conversation(
+    repo: &Arc<MockRepo>,
+    user_id: &str,
+    name: &str,
+    name_source: Option<&str>,
+) -> String {
+    let mut row = insert_conversation_with_type(repo, user_id, AgentType::Acp).await;
+    row.name = name.to_owned();
+    row.name_source = name_source.map(str::to_owned);
+    // MockRepo::create pushed the original row; rewrite it via update.
+    repo.update(
+        user_id,
+        &row.id,
+        &ConversationRowUpdate {
+            name: Some(row.name.clone()),
+            name_source: row.name_source.clone(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    row.id
+}
+
+async fn get_row(repo: &Arc<MockRepo>, user_id: &str, id: &str) -> ConversationRow {
+    use aionui_db::IConversationRepository as _;
+    repo.get(user_id, id).await.unwrap().unwrap()
+}
+
+#[tokio::test]
+async fn agent_title_applies_to_default_named_conversation() {
+    let repo = Arc::new(MockRepo::new());
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let id = seed_titled_conversation(&repo, "user_1", "first message placeholder", None).await;
+
+    let repo_dyn: Arc<dyn IConversationRepository> = repo.clone();
+    let broadcaster_dyn: Arc<dyn EventBroadcaster> = broadcaster.clone();
+    let applied =
+        crate::service::apply_agent_title(&repo_dyn, &broadcaster_dyn, "user_1", &id, "Fix login bug", "test")
+            .await
+            .unwrap();
+
+    assert!(applied);
+    let row = get_row(&repo, "user_1", &id).await;
+    assert_eq!(row.name, "Fix login bug");
+    assert_eq!(row.name_source.as_deref(), Some("agent"));
+
+    let events = broadcaster.take_events();
+    let event = events
+        .iter()
+        .find(|e| e.name == "conversation.nameUpdated")
+        .expect("nameUpdated event broadcast");
+    assert_eq!(event.data["conversation_id"], id);
+    assert_eq!(event.data["name"], "Fix login bug");
+    assert_eq!(event.data["user_id"], "user_1");
+}
+
+#[tokio::test]
+async fn agent_title_overwrites_previous_agent_title() {
+    let repo = Arc::new(MockRepo::new());
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let id = seed_titled_conversation(&repo, "user_1", "Old agent title", Some("agent")).await;
+
+    let repo_dyn: Arc<dyn IConversationRepository> = repo.clone();
+    let broadcaster_dyn: Arc<dyn EventBroadcaster> = broadcaster.clone();
+    let applied =
+        crate::service::apply_agent_title(&repo_dyn, &broadcaster_dyn, "user_1", &id, "Newer agent title", "test")
+            .await
+            .unwrap();
+
+    assert!(applied);
+    assert_eq!(get_row(&repo, "user_1", &id).await.name, "Newer agent title");
+}
+
+#[tokio::test]
+async fn agent_title_never_overwrites_user_rename() {
+    let repo = Arc::new(MockRepo::new());
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let id = seed_titled_conversation(&repo, "user_1", "My careful name", Some("user")).await;
+
+    let repo_dyn: Arc<dyn IConversationRepository> = repo.clone();
+    let broadcaster_dyn: Arc<dyn EventBroadcaster> = broadcaster.clone();
+    let applied = crate::service::apply_agent_title(&repo_dyn, &broadcaster_dyn, "user_1", &id, "Agent title", "test")
+        .await
+        .unwrap();
+
+    assert!(!applied);
+    let row = get_row(&repo, "user_1", &id).await;
+    assert_eq!(row.name, "My careful name");
+    assert_eq!(row.name_source.as_deref(), Some("user"));
+    assert!(
+        !broadcaster
+            .take_events()
+            .iter()
+            .any(|e| e.name == "conversation.nameUpdated"),
+        "discarded title must not broadcast"
+    );
+}
+
+#[tokio::test]
+async fn agent_title_unchanged_is_noop() {
+    let repo = Arc::new(MockRepo::new());
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let id = seed_titled_conversation(&repo, "user_1", "Same title", Some("agent")).await;
+
+    let repo_dyn: Arc<dyn IConversationRepository> = repo.clone();
+    let broadcaster_dyn: Arc<dyn EventBroadcaster> = broadcaster.clone();
+    let applied = crate::service::apply_agent_title(&repo_dyn, &broadcaster_dyn, "user_1", &id, "Same title", "test")
+        .await
+        .unwrap();
+
+    assert!(!applied);
+    assert!(
+        !broadcaster
+            .take_events()
+            .iter()
+            .any(|e| e.name == "conversation.nameUpdated")
+    );
+}
+
+#[tokio::test]
+async fn agent_title_ignores_unknown_conversation() {
+    let repo = Arc::new(MockRepo::new());
+    let broadcaster = Arc::new(MockBroadcaster::new());
+
+    let repo_dyn: Arc<dyn IConversationRepository> = repo.clone();
+    let broadcaster_dyn: Arc<dyn EventBroadcaster> = broadcaster.clone();
+    let applied = crate::service::apply_agent_title(&repo_dyn, &broadcaster_dyn, "user_1", "missing", "Title", "test")
+        .await
+        .unwrap();
+
+    assert!(!applied);
+}
+
+// ── update_conversation name_source intent ─────────────────────────
+
+#[tokio::test]
+async fn update_name_without_source_marks_user() {
+    let (svc, _broadcaster, repo, task_mgr) = make_service();
+    let row = insert_conversation_with_type(&repo, "user_1", AgentType::Acp).await;
+
+    let req: UpdateConversationRequest = serde_json::from_value(json!({ "name": "Renamed by hand" })).unwrap();
+    svc.update("user_1", &row.id, req, &task_mgr).await.unwrap();
+
+    let updated = get_row(&repo, "user_1", &row.id).await;
+    assert_eq!(updated.name, "Renamed by hand");
+    assert_eq!(updated.name_source.as_deref(), Some("user"));
+}
+
+#[tokio::test]
+async fn update_name_with_auto_source_keeps_origin() {
+    let (svc, _broadcaster, repo, task_mgr) = make_service();
+    let row = insert_conversation_with_type(&repo, "user_1", AgentType::Acp).await;
+
+    let req: UpdateConversationRequest =
+        serde_json::from_value(json!({ "name": "Derived title", "name_source": "auto" })).unwrap();
+    svc.update("user_1", &row.id, req, &task_mgr).await.unwrap();
+
+    let updated = get_row(&repo, "user_1", &row.id).await;
+    assert_eq!(updated.name, "Derived title");
+    assert_eq!(updated.name_source, None, "auto rename must stay agent-overwritable");
+}
+
+#[tokio::test]
+async fn update_without_name_leaves_name_source_untouched() {
+    let (svc, _broadcaster, repo, task_mgr) = make_service();
+    let id = seed_titled_conversation(&repo, "user_1", "Agent title", Some("agent")).await;
+
+    let req: UpdateConversationRequest = serde_json::from_value(json!({ "pinned": true })).unwrap();
+    svc.update("user_1", &id, req, &task_mgr).await.unwrap();
+
+    assert_eq!(
+        get_row(&repo, "user_1", &id).await.name_source.as_deref(),
+        Some("agent")
+    );
 }
 
 // ── Create tests ───────────────────────────────────────────────────
@@ -3524,6 +3760,78 @@ struct SlowBuildTaskManager {
     built: AtomicBool,
 }
 
+struct SlowRestartTaskManager {
+    delay: Duration,
+    agent: Mutex<Option<AgentInstance>>,
+    rebuilt: AtomicBool,
+}
+
+impl SlowRestartTaskManager {
+    fn new(delay: Duration) -> Self {
+        Self {
+            delay,
+            agent: Mutex::new(None),
+            rebuilt: AtomicBool::new(false),
+        }
+    }
+
+    fn insert_agent(&self, conversation_id: &str) {
+        self.agent
+            .lock()
+            .unwrap()
+            .replace(AgentInstance::Mock(Arc::new(MockAgent::new(conversation_id))));
+    }
+
+    fn was_rebuilt(&self) -> bool {
+        self.rebuilt.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl IWorkerTaskManager for SlowRestartTaskManager {
+    fn get_task(&self, _conversation_id: &str) -> Option<AgentInstance> {
+        self.agent.lock().unwrap().clone()
+    }
+
+    async fn get_or_build_task(
+        &self,
+        conversation_id: &str,
+        _options: BuildTaskOptions,
+    ) -> Result<AgentInstance, AgentError> {
+        tokio::time::sleep(self.delay).await;
+        let agent = AgentInstance::Mock(Arc::new(MockAgent::new(conversation_id)));
+        self.agent.lock().unwrap().replace(agent.clone());
+        self.rebuilt.store(true, Ordering::SeqCst);
+        Ok(agent)
+    }
+
+    fn kill(&self, _conversation_id: &str, _reason: Option<AgentKillReason>) -> Result<(), AgentError> {
+        self.agent.lock().unwrap().take();
+        Ok(())
+    }
+
+    fn kill_and_wait(
+        &self,
+        conversation_id: &str,
+        reason: Option<AgentKillReason>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        let _ = self.kill(conversation_id, reason);
+        Box::pin(std::future::ready(()))
+    }
+
+    async fn clear(&self) {
+        self.agent.lock().unwrap().take();
+    }
+
+    fn active_count(&self) -> usize {
+        usize::from(self.agent.lock().unwrap().is_some())
+    }
+
+    fn collect_idle(&self, _idle_threshold_ms: TimestampMs) -> Vec<String> {
+        Vec::new()
+    }
+}
+
 impl SlowBuildTaskManager {
     fn new(delay: Duration) -> Self {
         Self {
@@ -4022,6 +4330,7 @@ async fn midturn_send_during_pending_confirmation_stays_409() {
         action: Some("edit_file".into()),
         description: "Edit main.rs".into(),
         command_type: Some("bash".into()),
+        questions: None,
         options: vec![],
     }];
     let task_mgr = Arc::new(MockTaskManager::new());
@@ -4430,6 +4739,225 @@ async fn ensure_runtime_uses_existing_agent_snapshot_without_recovery() {
     assert!(result.runtime.has_task);
     assert_eq!(result.config_options[0].id, "model");
     assert_eq!(result.config_options[0].current_value.as_deref(), Some("gpt-5.5"));
+}
+
+#[tokio::test]
+async fn restart_runtime_without_existing_task_is_rejected() {
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let (svc, _broadcaster, _repo) = make_service_with_mock_task_manager(task_mgr.clone());
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+
+    let error = svc
+        .restart_runtime("user_1", &conv.id, &(task_mgr.clone() as Arc<dyn IWorkerTaskManager>))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ConversationError::Busy { reason }
+            if reason == format!("conversation {} runtime is not ready to restart", conv.id)
+    ));
+    assert_eq!(task_mgr.kill_count(), 0);
+    assert!(task_mgr.get_task(&conv.id).is_none());
+}
+
+#[tokio::test]
+async fn restart_runtime_evicts_existing_task_before_rebuild() {
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let (svc, _broadcaster, _repo) = make_service_with_mock_task_manager(task_mgr.clone());
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    let old_agent = MockAgent::new(&conv.id).with_config_options(vec![AcpConfigOptionDto {
+        id: "model".to_owned(),
+        name: Some("Old Model".to_owned()),
+        label: None,
+        description: None,
+        category: Some("model".to_owned()),
+        option_type: "select".to_owned(),
+        current_value: Some("old-model".to_owned()),
+        options: Vec::new(),
+    }]);
+    task_mgr.insert_agent(&conv.id, AgentInstance::Mock(Arc::new(old_agent)));
+
+    let result = svc
+        .restart_runtime("user_1", &conv.id, &(task_mgr.clone() as Arc<dyn IWorkerTaskManager>))
+        .await
+        .unwrap();
+
+    assert_eq!(task_mgr.kill_count(), 1);
+    assert_eq!(
+        task_mgr.kill_records(),
+        vec![(conv.id.clone(), Some(AgentKillReason::RuntimeRestart))]
+    );
+    assert!(result.recovered);
+    assert!(result.runtime.has_task);
+    assert!(
+        result.config_options.is_empty(),
+        "response must come from the newly built task, not the evicted instance"
+    );
+}
+
+#[tokio::test]
+async fn restart_runtime_cancels_active_turn_before_rebuild() {
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let (svc, _broadcaster, _repo) = make_service_with_mock_task_manager(task_mgr.clone());
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    let old_agent = Arc::new(BlockingCancelAgent::new(&conv.id));
+    task_mgr.insert_agent(&conv.id, AgentInstance::Mock(old_agent.clone()));
+    let _turn_claim = svc
+        .runtime_state()
+        .try_claim_turn(&conv.id, "turn-before-restart")
+        .unwrap();
+
+    let result = svc
+        .restart_runtime("user_1", &conv.id, &(task_mgr.clone() as Arc<dyn IWorkerTaskManager>))
+        .await
+        .unwrap();
+
+    assert_eq!(old_agent.cancel_count.load(Ordering::SeqCst), 1);
+    assert_eq!(task_mgr.kill_count(), 1);
+    assert!(result.runtime.has_task);
+    assert!(!svc.runtime_state().is_claimed(&conv.id));
+}
+
+#[tokio::test]
+async fn restart_runtime_blocks_duplicate_restart_send_and_config_until_ready() {
+    let repo = Arc::new(MockRepo::new());
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let task_mgr = Arc::new(SlowRestartTaskManager::new(Duration::from_millis(150)));
+    let task_mgr_dyn: Arc<dyn IWorkerTaskManager> = task_mgr.clone();
+    let svc = ConversationService::new(
+        std::env::temp_dir(),
+        broadcaster,
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        task_mgr_dyn.clone(),
+        repo,
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+    );
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    task_mgr.insert_agent(&conv.id);
+
+    let restart_service = svc.clone();
+    let restart_conversation_id = conv.id.clone();
+    let restart_task_manager = task_mgr_dyn.clone();
+    let restart = tokio::spawn(async move {
+        restart_service
+            .restart_runtime("user_1", &restart_conversation_id, &restart_task_manager)
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !svc.runtime_state().is_restarting(&conv.id) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("restart gate should become observable");
+
+    let summary = svc.runtime_summary_for(&conv.id).await;
+    assert_eq!(
+        summary.state,
+        aionui_api_types::ConversationRuntimeStateKind::Restarting
+    );
+
+    // All three gates report the SAME coded error, so a client has one rule to
+    // retry on rather than having to match each entry point's message text.
+    let duplicate = svc
+        .restart_runtime("user_1", &conv.id, &task_mgr_dyn)
+        .await
+        .expect_err("duplicate restart must fail");
+    assert!(matches!(duplicate, ConversationError::RuntimeRestarting { .. }));
+    assert_eq!(duplicate.error_code(), "runtime_restarting");
+
+    let send = svc
+        .send_message("user_1", &conv.id, make_send_req(), &task_mgr_dyn)
+        .await
+        .expect_err("send must fail at the backend gate while restart is in progress");
+    assert!(matches!(send, ConversationError::RuntimeRestarting { .. }));
+    assert_eq!(send.error_code(), "runtime_restarting");
+
+    let config = svc
+        .get_config_options("user_1", &conv.id)
+        .await
+        .expect_err("config access must fail while restart is in progress");
+    assert!(matches!(config, ConversationError::RuntimeRestarting { .. }));
+    assert_eq!(config.error_code(), "runtime_restarting");
+
+    let response = restart.await.expect("restart task should not panic").unwrap();
+    assert!(task_mgr.was_rebuilt());
+    assert_eq!(
+        response.runtime.state,
+        aionui_api_types::ConversationRuntimeStateKind::Idle
+    );
+    assert!(!svc.runtime_state().is_restarting(&conv.id));
+}
+
+#[tokio::test]
+async fn restart_runtime_preserves_persisted_messages() {
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let (svc, _broadcaster, repo) = make_service_with_mock_task_manager(task_mgr.clone());
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    task_mgr.insert_agent(&conv.id, AgentInstance::Mock(Arc::new(MockAgent::new(&conv.id))));
+    repo.insert_message(
+        "user_1",
+        &MessageRow {
+            id: "message-before-restart".into(),
+            conversation_id: conv.id.clone(),
+            msg_id: Some("message-before-restart".into()),
+            r#type: "user".into(),
+            content: json!({ "text": "keep me" }).to_string(),
+            position: Some("right".into()),
+            status: Some("finish".into()),
+            hidden: false,
+            created_at: 1234,
+            backend_turn_id: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    svc.restart_runtime("user_1", &conv.id, &(task_mgr.clone() as Arc<dyn IWorkerTaskManager>))
+        .await
+        .unwrap();
+
+    let messages = repo_messages_asc(&repo, &conv.id, 10).await;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id, "message-before-restart");
+}
+
+#[tokio::test]
+async fn restart_runtime_not_found_does_not_touch_task_manager() {
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let (svc, _broadcaster, _repo) = make_service_with_mock_task_manager(task_mgr.clone());
+
+    let error = svc
+        .restart_runtime(
+            "user_1",
+            "missing-conversation",
+            &(task_mgr.clone() as Arc<dyn IWorkerTaskManager>),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, ConversationError::NotFound { .. }));
+    assert_eq!(task_mgr.kill_count(), 0);
+}
+
+#[tokio::test]
+async fn restart_runtime_rejects_cross_user_access_without_eviction() {
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let (svc, _broadcaster, _repo) = make_service_with_mock_task_manager(task_mgr.clone());
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    task_mgr.insert_agent(&conv.id, AgentInstance::Mock(Arc::new(MockAgent::new(&conv.id))));
+
+    let error = svc
+        .restart_runtime("user_2", &conv.id, &(task_mgr.clone() as Arc<dyn IWorkerTaskManager>))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, ConversationError::NotFound { .. }));
+    assert_eq!(task_mgr.kill_count(), 0);
+    assert!(task_mgr.get_task(&conv.id).is_some());
 }
 
 #[tokio::test]
@@ -5130,6 +5658,7 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
                     use_model: Some("model-z".to_owned()),
                 }),
                 name: None,
+                name_source: None,
                 extra: None,
                 pinned: None,
             },
@@ -5203,6 +5732,7 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
                     use_model: Some("model-y".to_owned()),
                 }),
                 name: None,
+                name_source: None,
                 extra: None,
                 pinned: None,
             },
@@ -5752,9 +6282,9 @@ async fn send_message_accepts_attachment_without_text_past_content_validation() 
     let attachment = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let req = SendMessageRequest {
         content: String::new(),
-        files: vec![ChatFileRef::Tagged(TaggedChatFileRef::Local {
+        files: vec![ChatFileRef::Local {
             path: attachment.to_string_lossy().into_owned(),
-        })],
+        }],
         inject_skills: vec![],
         hidden: false,
     };
@@ -6463,6 +6993,7 @@ async fn send_message_does_not_auto_replay_after_tool_side_effect() {
                 input: None,
                 output: None,
                 description: None,
+                parent_call_id: None,
             }),
             AgentStreamEvent::Error(ErrorEventData {
                 message: "temporary provider failure".into(),
@@ -6836,6 +7367,39 @@ async fn warmup_injects_conversation_runtime_context() {
 }
 
 #[tokio::test]
+async fn warmup_keeps_existing_acp_session_anchor_in_build_options() {
+    let acp_session_repo = Arc::new(StubAcpSessionRepo::with_session_id("sess-existing"));
+    let (svc, _broadcaster, _repo, _default_task_mgr) = make_service_with_resolver_and_acp_session_repo(
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        acp_session_repo,
+    );
+    let mut request = make_create_req();
+    request.extra = serde_json::json!({
+        "teamId": "team-1",
+        "slot_id": "slot-1",
+        "role": "teammate",
+    });
+    let conv = svc.create("user_1", request).await.unwrap();
+    let task_mgr = Arc::new(RebuildingScriptedTaskManager::new(vec![AgentInstance::Mock(Arc::new(
+        MockAgent::new(&conv.id),
+    ))]));
+    let task_mgr_dyn: Arc<dyn IWorkerTaskManager> = task_mgr.clone();
+
+    svc.warmup("user_1", &conv.id, &task_mgr_dyn).await.unwrap();
+
+    let options = task_mgr.captured_options();
+    assert_eq!(options.len(), 1);
+    match &options[0].context.kind {
+        AgentSessionKind::Acp(context) => {
+            assert_eq!(context.session_id.as_deref(), Some("sess-existing"));
+        }
+        AgentSessionKind::Aionrs(_) | AgentSessionKind::Antigravity(_) => {
+            panic!("test conversation should build ACP options")
+        }
+    }
+}
+
+#[tokio::test]
 async fn warmup_injects_runtime_token_for_mcp_team_conversation() {
     let (svc, _broadcaster, _repo, _default_task_mgr) = make_service();
     let svc = svc.with_runtime_token_service(Arc::new(RuntimeTokenService::new()));
@@ -7006,6 +7570,7 @@ fn make_test_confirmations() -> Vec<Confirmation> {
             action: Some("edit_file".into()),
             description: "Edit main.rs".into(),
             command_type: Some("bash".into()),
+            questions: None,
             options: vec![],
         },
         Confirmation {
@@ -7015,6 +7580,7 @@ fn make_test_confirmations() -> Vec<Confirmation> {
             action: Some("read_file".into()),
             description: "Read config.toml".into(),
             command_type: None,
+            questions: None,
             options: vec![],
         },
     ]
@@ -8399,6 +8965,7 @@ async fn get_backfills_legacy_row_and_persists() {
         updated_at: 0,
         project_id: None,
         folder_id: None,
+        name_source: None,
     };
     repo.create(&legacy_row).await.unwrap();
 
@@ -8449,6 +9016,7 @@ async fn list_backfills_mixed_rows() {
         updated_at: 1,
         project_id: None,
         folder_id: None,
+        name_source: None,
     };
     // Row 2: already migrated.
     let modern = ConversationRow {
@@ -8471,6 +9039,7 @@ async fn list_backfills_mixed_rows() {
         updated_at: 2,
         project_id: None,
         folder_id: None,
+        name_source: None,
     };
     repo.create(&legacy).await.unwrap();
     repo.create(&modern).await.unwrap();
@@ -8591,6 +9160,7 @@ async fn seed_aionrs_conversation_with_snapshot(
         updated_at: 1,
         project_id: None,
         folder_id: None,
+        name_source: None,
     };
     repo.create(&row).await.unwrap();
     repo.upsert_assistant_snapshot(
@@ -8736,5 +9306,252 @@ async fn get_usage_reads_the_persisted_snapshot_when_no_task_is_live() {
         usage.and_then(|v| v.get("used").and_then(|u| u.as_i64())),
         Some(10465),
         "a reaped task must not blank the usage indicator"
+    );
+}
+
+#[tokio::test]
+async fn cancel_during_the_build_is_recorded_instead_of_dropped() {
+    // The turn is live — its id matches — but the agent has not registered yet,
+    // because building one runs real work first (an Antigravity build probes
+    // models, checks the CLI version, installs its permission hook). Returning a
+    // bare runtime summary here loses the request: the turn runs to completion
+    // while the UI has already reported it as stopped. See #746.
+    let (svc, _broadcaster, _repo, _task_mgr) = make_service();
+    let slow = Arc::new(SlowBuildTaskManager::new(Duration::from_millis(1_500)));
+    let task_mgr: Arc<dyn IWorkerTaskManager> = slow.clone();
+
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    let send = svc
+        .send_message("user_1", &conv.id, make_send_req(), &task_mgr)
+        .await
+        .unwrap();
+
+    // No task is registered yet: this is the window the bug lived in.
+    assert!(
+        task_mgr.get_task(&conv.id).is_none(),
+        "test needs the pre-registration window"
+    );
+
+    svc.cancel("user_1", &conv.id, &send.turn_id, &task_mgr).await.unwrap();
+
+    assert!(
+        svc.runtime_state().take_deferred_cancel(&conv.id, &send.turn_id),
+        "the cancel must be remembered so the orchestrator can apply it when the task appears"
+    );
+    assert!(
+        !svc.runtime_state().is_cancelling(&conv.id),
+        "it must NOT reuse the ordinary cancelling flag: that one is also set when the \
+         agent was handed the cancel directly, and the orchestrator would then abort turns \
+         whose cancel is already being handled"
+    );
+}
+
+/// Remembering the cancel is only half of it — the client has to be told.
+///
+/// The turn ends on the server, but every terminal frame on the send path comes
+/// from the `StreamRelay`, which the deferred-cancel branch returns before
+/// building. So the server settled and the UI kept spinning until the 15s
+/// watchdog. Live symptom (agy 1.1.12, 2026-08-12): the conversation produced no
+/// stream frames at all, not even `start`, and the live cancel test failed 4/4;
+/// with the frame it settles in ~200ms.
+///
+/// The sibling test above asserts only that the request is recorded, which is
+/// why it stayed green through all of that.
+#[tokio::test]
+async fn a_turn_cancelled_before_its_agent_exists_tells_the_client_it_ended() {
+    let (svc, broadcaster, _repo, _task_mgr) = make_service();
+
+    svc.broadcast_turn_settled_without_relay("user_1", "conv_1", "turn_1", "msg_1");
+
+    let events = broadcaster.take_events();
+    let finish = events
+        .iter()
+        .find(|e| e.name == "message.stream" && e.data["type"] == "finish")
+        .expect("a turn that ends before its relay exists must still emit a terminal frame");
+
+    assert_eq!(finish.data["conversation_id"], "conv_1");
+    assert_eq!(finish.data["turn_id"], "turn_1");
+    assert_eq!(
+        finish.data["msg_id"], "msg_1",
+        "the frame has to name the message the client is spinning on"
+    );
+    assert_eq!(
+        finish.data["hidden"], false,
+        "a hidden terminal would settle nothing the user can see"
+    );
+}
+
+#[tokio::test]
+async fn a_deferred_cancel_does_not_leak_into_a_later_turn() {
+    // The record is keyed by turn: one left behind must never abort the next
+    // turn the user starts.
+    let (svc, _broadcaster, _repo, _task_mgr) = make_service();
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+
+    svc.runtime_state().defer_cancel(&conv.id, "turn_old");
+    assert!(!svc.runtime_state().take_deferred_cancel(&conv.id, "turn_new"));
+    assert!(svc.runtime_state().take_deferred_cancel(&conv.id, "turn_old"));
+    // Consumed exactly once.
+    assert!(!svc.runtime_state().take_deferred_cancel(&conv.id, "turn_old"));
+}
+
+/// The agent has declared the persisted id dead, so it MUST be dropped. Keeping
+/// it made the failure permanent: every later turn replayed the same dead id and
+/// failed at warmup with `Session not found`, before the prompt was ever sent —
+/// so the real cause (a missing provider API key, reported exactly once) became
+/// unreachable and no amount of retrying could clear it.
+#[tokio::test]
+async fn session_not_found_clears_the_persisted_session_id() {
+    let acp_repo = Arc::new(StubAcpSessionRepo::with_session_id("df6f811c-dead-session"));
+    let (svc, _broadcaster, _repo, task_mgr) = make_service_with_resolver_and_acp_session_repo(
+        Arc::new(RecordingSkillResolver {
+            names: Vec::new(),
+            links: Arc::new(Mutex::new(Vec::new())),
+        }),
+        acp_repo.clone(),
+    );
+
+    let outcome = crate::stream_relay::RelayOutcome {
+        system_responses: Vec::new(),
+        terminal: crate::stream_relay::RelayTerminal::Error {
+            code: Some(AgentErrorCode::UserAgentSessionNotFound),
+            retryable: Some(true),
+        },
+        attempt: Default::default(),
+        model: None,
+        input_tokens: None,
+        output_tokens: None,
+        delegate_usage: Vec::new(),
+    };
+
+    let evicted = svc
+        .evict_acp_task_after_terminal_error("user-1", "conv-1", AgentType::Acp, &outcome, &task_mgr)
+        .await;
+
+    assert!(evicted, "an ACP terminal error must evict the task");
+    assert!(
+        acp_repo.session_id.lock().unwrap().is_none(),
+        "an id the agent no longer recognises must not survive"
+    );
+}
+
+/// The clear is deliberately NOT unconditional. A retryable failure triggers an
+/// auto-replay rebuild that carries the session id forward on purpose, so the
+/// replay resumes the same session rather than losing the conversation context.
+#[tokio::test]
+async fn other_terminal_errors_keep_the_session_id_for_replay() {
+    for code in [
+        AgentErrorCode::UserLlmProviderAuthFailed,
+        AgentErrorCode::UnknownUpstreamError,
+    ] {
+        let acp_repo = Arc::new(StubAcpSessionRepo::with_session_id("sess-live"));
+        let (svc, _b, _r, task_mgr) = make_service_with_resolver_and_acp_session_repo(
+            Arc::new(RecordingSkillResolver {
+                names: Vec::new(),
+                links: Arc::new(Mutex::new(Vec::new())),
+            }),
+            acp_repo.clone(),
+        );
+
+        let outcome = crate::stream_relay::RelayOutcome {
+            system_responses: Vec::new(),
+            terminal: crate::stream_relay::RelayTerminal::Error {
+                code: Some(code),
+                retryable: Some(true),
+            },
+            attempt: Default::default(),
+            model: None,
+            input_tokens: None,
+            output_tokens: None,
+            delegate_usage: Vec::new(),
+        };
+        svc.evict_acp_task_after_terminal_error("user-1", "conv-1", AgentType::Acp, &outcome, &task_mgr)
+            .await;
+
+        assert_eq!(
+            acp_repo.session_id.lock().unwrap().as_deref(),
+            Some("sess-live"),
+            "session id must survive {code:?} so auto-replay can resume it"
+        );
+    }
+}
+
+/// A clean finish must not evict or touch anything.
+#[tokio::test]
+async fn a_clean_finish_leaves_the_session_id_alone() {
+    let acp_repo = Arc::new(StubAcpSessionRepo::with_session_id("live-session"));
+    let (svc, _b, _r, task_mgr) = make_service_with_resolver_and_acp_session_repo(
+        Arc::new(RecordingSkillResolver {
+            names: Vec::new(),
+            links: Arc::new(Mutex::new(Vec::new())),
+        }),
+        acp_repo.clone(),
+    );
+
+    let outcome = crate::stream_relay::RelayOutcome {
+        system_responses: Vec::new(),
+        terminal: crate::stream_relay::RelayTerminal::Finish,
+        attempt: Default::default(),
+        model: None,
+        input_tokens: None,
+        output_tokens: None,
+        delegate_usage: Vec::new(),
+    };
+
+    let evicted = svc
+        .evict_acp_task_after_terminal_error("user-1", "conv-1", AgentType::Acp, &outcome, &task_mgr)
+        .await;
+
+    assert!(!evicted, "a clean finish must not evict");
+    assert_eq!(
+        acp_repo.session_id.lock().unwrap().as_deref(),
+        Some("live-session"),
+        "a live session must survive a clean turn"
+    );
+}
+
+/// The BUILD path is where the reported loop actually lived: warmup fails, so the
+/// terminal-error eviction never runs. This calls the shared helper directly with
+/// the code that path reports, pinning that a disowned id is dropped there too.
+#[tokio::test]
+async fn session_not_found_during_task_build_clears_the_persisted_session_id() {
+    let acp_repo = Arc::new(StubAcpSessionRepo::with_session_id("deb7c49d-dead"));
+    let (svc, _b, _r, _task_mgr) = make_service_with_resolver_and_acp_session_repo(
+        Arc::new(RecordingSkillResolver {
+            names: Vec::new(),
+            links: Arc::new(Mutex::new(Vec::new())),
+        }),
+        acp_repo.clone(),
+    );
+
+    svc.clear_persisted_acp_session_after_disown("user-1", "conv-1", Some(AgentErrorCode::UserAgentSessionNotFound))
+        .await;
+
+    assert!(
+        acp_repo.session_id.lock().unwrap().is_none(),
+        "a build failure that disowns the session must clear the id"
+    );
+}
+
+/// A build failure for any other reason keeps the id — the session may still be
+/// resumable and dropping it would lose the conversation's context.
+#[tokio::test]
+async fn other_build_failures_keep_the_persisted_session_id() {
+    let acp_repo = Arc::new(StubAcpSessionRepo::with_session_id("sess-live"));
+    let (svc, _b, _r, _task_mgr) = make_service_with_resolver_and_acp_session_repo(
+        Arc::new(RecordingSkillResolver {
+            names: Vec::new(),
+            links: Arc::new(Mutex::new(Vec::new())),
+        }),
+        acp_repo.clone(),
+    );
+
+    svc.clear_persisted_acp_session_after_disown("user-1", "conv-1", Some(AgentErrorCode::UnknownUpstreamError))
+        .await;
+
+    assert_eq!(
+        acp_repo.session_id.lock().unwrap().as_deref(),
+        Some("sess-live"),
+        "an unrelated build failure must not drop a resumable session"
     );
 }

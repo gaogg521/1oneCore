@@ -15,12 +15,12 @@ use aionui_auth::extract_token_from_ws_headers;
 use aionui_channel::ChannelRouterState;
 use aionui_claude_bridge::{ClaudeBridgeRouterState, ClaudeBridgeService};
 use aionui_codex_bridge::{CodexBridgeRouterState, CodexBridgeService};
-use aionui_conversation::{ConversationRouterState, ConversationService};
+use aionui_conversation::ConversationRouterState;
 use aionui_cron::{CronEventEmitter, CronRouterState, service::CronServiceDeps};
 use aionui_db::{
-    IAcpSessionRepository, IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantMarketplaceRepository,
+    IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantMarketplaceRepository,
     IAssistantOverlayRepository, IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository,
-    IConversationRepository, IProviderRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
+    IConversationRepository, IProviderRepository, SqliteAgentMetadataRepository,
     SqliteAssistantDefinitionRepository, SqliteAssistantMarketplaceRepository, SqliteAssistantOverlayRepository,
     SqliteAssistantOverrideRepository, SqliteAssistantPreferenceRepository, SqliteAssistantRepository,
     SqliteClaudeBridgeConfigRepository, SqliteClientPreferenceRepository, SqliteCodexBridgeConfigRepository,
@@ -55,6 +55,7 @@ use aionui_team::{
 };
 
 use crate::config::{IdentityMode, derive_encryption_key};
+use crate::router::team_capability_resolver::TeamCapabilityResolver;
 use crate::router::team_conversation_adapters::TeamConversationAdapters;
 use crate::services::AppServices;
 
@@ -289,12 +290,7 @@ pub async fn build_module_states(
     .await;
     tracing::info!(elapsed_ms = boot.elapsed().as_millis(), "startup: channel state built");
 
-    let backend_binary_path = Arc::new(
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.canonicalize().ok())
-            .unwrap_or_else(|| std::path::PathBuf::from("aioncore")),
-    );
+    let backend_binary_path = services.backend_binary_path();
     tracing::info!(
         elapsed_ms = boot.elapsed().as_millis(),
         "startup: backend binary path resolved"
@@ -425,6 +421,7 @@ pub fn build_assistant_state(services: &AppServices) -> AssistantRouterState {
         },
         services.data_dir.clone(),
     ));
+    service.with_event_broadcaster(services.event_bus.clone());
     let marketplace_repo: Arc<dyn IAssistantMarketplaceRepository> =
         Arc::new(SqliteAssistantMarketplaceRepository::new(pool));
     AssistantRouterState {
@@ -518,13 +515,16 @@ pub fn build_file_state(services: &AppServices) -> Result<FileRouterState, Route
     let file_service = Arc::new(FileService::new(broadcaster.clone(), allowed_roots.clone()));
     let watch_service = Arc::new(FileWatchService::new(broadcaster).map_err(file_watch_init_error)?);
     let snapshot_service = Arc::new(SnapshotService::new());
-    // Reveal-in-file-manager for `/api/fs/reveal`: an adapter over the shell
-    // service, injected as the file crate's revealer port (keeps aionui-file
-    // free of a shell dependency).
+    // Shell-backed capabilities for `/api/fs/reveal` (open enclosing folder) and
+    // `/api/fs/open-system` (open with the default application): adapters over one
+    // shared shell service, injected as the file crate's ports so aionui-file stays
+    // free of a shell dependency.
     let shell = Arc::new(aionui_shell::ShellService::new(Arc::new(
         aionui_shell::DefaultSystemOpener,
     )));
     let revealer: aionui_file::ItemRevealerRef = Arc::new(super::item_revealer::ShellItemRevealer::new(shell.clone()));
+    let system_opener: aionui_file::SystemFileOpenerRef =
+        Arc::new(super::system_file_opener::ShellSystemFileOpener::new(shell.clone()));
     // Clipboard capability for `/api/fs/copy-absolute-path`: the backend resolves
     // the path and writes it to the clipboard itself, so the abs never returns.
     let clipboard: aionui_file::ClipboardWriterRef =
@@ -535,6 +535,7 @@ pub fn build_file_state(services: &AppServices) -> Result<FileRouterState, Route
         snapshot_service,
         project: Arc::new(services.project_service.clone()),
         revealer,
+        system_opener,
         clipboard,
         allowed_roots,
         browse_roots,
@@ -730,11 +731,82 @@ pub async fn build_channel_state(
     (state, components)
 }
 
+/// Backlog of assistant MCP binding changes held between the event bus and the
+/// team service. Bounded on purpose: the payload is tiny and a deep queue would
+/// only delay work that a single trailing reconcile subsumes anyway.
+const ASSISTANT_MCP_EVENT_QUEUE_SIZE: usize = 64;
+
+/// Bridge `assistant.mcpBindingChanged` from the shared event bus into the team
+/// service.
+///
+/// Two tasks rather than one on purpose. The receive loop must stay cheap: the
+/// bus is shared with every streaming WebSocket event and has a bounded backlog,
+/// so a slow consumer is dropped (`Lagged`) rather than waited for. Applying a
+/// binding change is NOT cheap — it re-resolves MCP against the database and can
+/// restart a runtime — so it runs on a separate worker and the receive loop only
+/// forwards. A `Lagged` gap means binding events were silently discarded, which
+/// would leave members on a stale MCP set; it is repaired by asking for a full
+/// reconcile instead of being ignored.
+fn spawn_assistant_mcp_binding_watcher(
+    mut event_rx: tokio::sync::broadcast::Receiver<aionui_api_types::WebSocketMessage<serde_json::Value>>,
+    service: Arc<TeamSessionService>,
+) {
+    enum McpBindingWork {
+        Changed(aionui_api_types::AssistantMcpBindingChanged),
+        ReconcileAll,
+    }
+
+    let (work_tx, mut work_rx) = tokio::sync::mpsc::channel::<McpBindingWork>(ASSISTANT_MCP_EVENT_QUEUE_SIZE);
+
+    tokio::spawn(async move {
+        while let Some(work) = work_rx.recv().await {
+            match work {
+                McpBindingWork::Changed(payload) => service.handle_assistant_mcp_binding_changed(payload).await,
+                McpBindingWork::ReconcileAll => service.reconcile_all_assistant_mcp_bindings().await,
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        loop {
+            let work = match event_rx.recv().await {
+                Ok(event) if event.name == aionui_api_types::ASSISTANT_MCP_BINDING_CHANGED_EVENT => {
+                    match serde_json::from_value::<aionui_api_types::AssistantMcpBindingChanged>(event.data) {
+                        Ok(payload) => McpBindingWork::Changed(payload),
+                        Err(error) => {
+                            tracing::warn!(error = %error, "invalid assistant MCP binding event");
+                            continue;
+                        }
+                    }
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        skipped,
+                        "assistant MCP binding watcher lagged; reconciling every active session"
+                    );
+                    McpBindingWork::ReconcileAll
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            };
+            // A full queue means the worker is already behind on the same kind of
+            // work; a trailing reconcile will cover whatever we drop here, so
+            // degrade to that rather than blocking the bus receiver.
+            if work_tx.try_send(work).is_err() {
+                tracing::warn!("assistant MCP binding queue is full; requesting a full reconcile");
+                if work_tx.send(McpBindingWork::ReconcileAll).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+}
+
 /// Build the default `TeamRouterState` from application services.
 ///
-/// `backend_binary_path` is resolved once in `build_module_states` via
-/// `std::env::current_exe()` and cloned into each builder that needs it,
-/// per `docs/teams/phase1/interface-contracts.md` §10.
+/// `backend_binary_path` is resolved once while constructing `AppServices` and
+/// cloned into each builder that needs it, per
+/// `docs/teams/phase1/interface-contracts.md` §10.
 pub fn build_team_state(
     services: &AppServices,
     _cron_service: Option<Arc<aionui_cron::service::CronService>>,
@@ -795,6 +867,9 @@ pub fn build_team_state(
     let turn_port: Arc<dyn AgentTurnExecutionPort> = adapters.clone();
     let slash_command_port: Arc<dyn NativeSlashCommandPort> = adapters.clone();
     let cancellation_port: Arc<dyn AgentTurnCancellationPort> = adapters;
+    let capability_port: Arc<dyn aionui_team::TeamToolCapabilityPort> = Arc::new(TeamCapabilityResolver::new(
+        Arc::new(SqliteAgentMetadataRepository::new(services.database.pool().clone())),
+    ));
     let service = TeamSessionService::new_with_prompt_dump(
         team_repo,
         Arc::new(SqliteAgentMetadataRepository::new(services.database.pool().clone())),
@@ -811,9 +886,11 @@ pub fn build_team_state(
         turn_port,
         cancellation_port,
         slash_command_port,
+        capability_port,
         backend_binary_path,
         aionui_team::TeamPromptDumpConfig::from_data_dir(&services.data_dir, services.dump_prompts),
     );
+    spawn_assistant_mcp_binding_watcher(services.event_bus.subscribe(), Arc::clone(&service));
     service.with_project_service(Arc::new(services.project_service.clone()));
     TeamRouterState {
         service,
@@ -825,44 +902,19 @@ pub fn build_team_state(
 pub fn build_cron_state(services: &AppServices) -> CronRouterState {
     let pool = services.database.pool().clone();
     let cron_repo: Arc<dyn aionui_db::ICronRepository> = Arc::new(aionui_db::SqliteCronRepository::new(pool.clone()));
+    let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> = Arc::new(SqliteAgentMetadataRepository::new(pool));
 
-    let conv_repo: Arc<dyn aionui_db::IConversationRepository> =
-        Arc::new(SqliteConversationRepository::new(pool.clone()));
-    let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> =
-        Arc::new(SqliteAgentMetadataRepository::new(pool.clone()));
-    let acp_session_repo: Arc<dyn IAcpSessionRepository> = Arc::new(SqliteAcpSessionRepository::new(pool));
-    let skill_resolver = Arc::new(aionui_conversation::skill_resolver::ExtensionSkillResolver::new(
-        services.skill_paths.clone(),
-        services.skill_repo.clone(),
-    ));
-    let conv_service = ConversationService::new(
-        services.work_dir.clone(),
-        services.event_bus.clone(),
-        skill_resolver,
-        services.worker_task_manager.clone(),
-        conv_repo.clone(),
-        agent_metadata_repo.clone(),
-        acp_session_repo,
-    )
-    .with_runtime_state(services.conversation_runtime_state.clone())
-    .with_runtime_helper_context(services.runtime_helper_bin(), services.runtime_base_url());
-    conv_service.with_mcp_server_repo(Arc::new(aionui_db::SqliteMcpServerRepository::new(
-        services.database.pool().clone(),
-    )));
-    conv_service.with_assistant_definition_repo(Arc::new(SqliteAssistantDefinitionRepository::new(
-        services.database.pool().clone(),
-    )));
-    conv_service.with_assistant_state_repo(Arc::new(SqliteAssistantOverlayRepository::new(
-        services.database.pool().clone(),
-    )));
-    conv_service.with_assistant_preference_repo(Arc::new(SqliteAssistantPreferenceRepository::new(
-        services.database.pool().clone(),
-    )));
-    conv_service.with_project_service(Arc::new(services.project_service.clone()));
+    // Reuse the app-level ConversationService (AppServices is the sole service
+    // construction center). A separate instance carries its own
+    // background-watcher registry — `ensure_background_watcher` is idempotent
+    // only within one instance — so a cron-triggered conversation would get a
+    // second BackgroundStreamWatcher on the same agent broadcast channel and
+    // every CLI-initiated (orphan) turn would be persisted twice.
+    let conv_service = services.conversation_service.clone();
 
     let executor = Arc::new(aionui_cron::executor::JobExecutor::new(
         services.worker_task_manager.clone(),
-        conv_repo,
+        conv_service.conversation_repo().clone(),
         Arc::new(conv_service.clone()),
         services.work_dir.clone(),
         services.data_dir.clone(),
@@ -1399,6 +1451,39 @@ mod tests {
         services.database.close().await;
     }
 
+    /// The cron path must share the app-level `ConversationService` (a clone,
+    /// so all `Arc` internals — including the background-watcher registry —
+    /// are shared) rather than construct its own instance. A second instance
+    /// carries its own watcher registry: `ensure_background_watcher` is
+    /// idempotent only within one instance, so a cron-triggered conversation
+    /// got a SECOND `BackgroundStreamWatcher` subscribed to the same agent
+    /// broadcast channel and every CLI-initiated (orphan) turn's text and
+    /// thinking rows were persisted twice.
+    #[tokio::test]
+    async fn build_cron_state_reuses_app_conversation_service() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = AppConfig {
+            data_dir: tmp.path().join("data"),
+            work_dir: tmp.path().join("work"),
+            ..Default::default()
+        };
+        let db = aionui_db::init_database_memory().await.unwrap();
+        let services = AppServices::from_config(db, &config).await.unwrap();
+
+        let cron = build_cron_state(&services);
+
+        assert!(
+            Arc::ptr_eq(
+                cron.conversation_service.conversation_repo(),
+                services.conversation_service.conversation_repo(),
+            ),
+            "cron's ConversationService must be a clone of AppServices' instance, \
+             not an independently constructed one"
+        );
+
+        services.database.close().await;
+    }
+
     #[tokio::test]
     async fn build_extension_states_uses_host_app_version_for_engine_filtering() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -1444,14 +1529,5 @@ mod tests {
         assert_eq!(loaded[0].name, "demo-ext");
 
         services.database.close().await;
-    }
-
-    #[test]
-    fn file_watch_init_error_maps_to_bootstrap_server_failed() {
-        let err = file_watch_init_error(aionui_file::FileError::Internal("watch backend unavailable".into()));
-
-        assert_eq!(err.stage(), "router.file_watch");
-        assert_eq!(err.message(), "failed to initialize file watch service");
-        assert!(!err.to_string().contains("watch backend unavailable"));
     }
 }

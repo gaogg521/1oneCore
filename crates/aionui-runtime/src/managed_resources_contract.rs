@@ -5,14 +5,6 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MANAGED_RESOURCES_CONTRACT_FILE: &str = "manifest.json";
 pub const MANAGED_RESOURCES_CONTRACT_SCHEMA_VERSION: u8 = 2;
-const REQUIRED_CLI_NAMES: [&str; 2] = ["claude", "codex"];
-/// The ACP wrapper layers this fork spawns for Claude / Codex sessions. They are
-/// npm packages materialized under `acp/` at packaging time, and are NOT
-/// interchangeable with the native `cli/claude` + `cli/codex` binaries above:
-/// `factory/acp.rs` resolves sessions through `acp_tool_runtime`, which requires
-/// this subtree. A bundle missing it fails hard at runtime on any machine whose
-/// user-data cache has not already materialized these versions.
-const REQUIRED_ACP_TOOL_SLUGS: [&str; 2] = ["claude-agent-acp", "codex-acp"];
 const SUPPORTED_RUNTIME_KEYS: [&str; 6] = [
     "win32-x64",
     "win32-arm64",
@@ -21,6 +13,29 @@ const SUPPORTED_RUNTIME_KEYS: [&str; 6] = [
     "linux-x64",
     "linux-arm64",
 ];
+const REQUIRED_CLI_NAMES: [&str; 2] = ["claude", "codex"];
+/// The ACP wrapper layers this fork spawns for Claude / Codex sessions. They are
+/// npm packages materialized under `acp/` at packaging time, and are NOT
+/// interchangeable with the native `cli/claude` + `cli/codex` binaries above:
+/// `factory/acp.rs` resolves sessions through `acp_tool_runtime`, which requires
+/// this subtree. A bundle missing it fails hard at runtime on any machine whose
+/// user-data cache has not already materialized these versions.
+const REQUIRED_ACP_TOOL_SLUGS: [&str; 2] = ["claude-agent-acp", "codex-acp"];
+
+/// The runtime key (`<os>-<arch>`) identifying the current platform's managed
+/// resources subtree. Lives beside `SUPPORTED_RUNTIME_KEYS` — the values must
+/// stay in sync, and the bundled-CLI module that used to own this is gone.
+pub fn current_runtime_key() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("darwin-arm64"),
+        ("macos", "x86_64") => Some("darwin-x64"),
+        ("linux", "aarch64") => Some("linux-arm64"),
+        ("linux", "x86_64") => Some("linux-x64"),
+        ("windows", "x86_64") => Some("win32-x64"),
+        ("windows", "aarch64") => Some("win32-arm64"),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

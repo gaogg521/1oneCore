@@ -27,11 +27,11 @@ use tokio::sync::{Mutex, broadcast, oneshot};
 
 use super::argv::{ArgvInput, build_argv};
 use super::mcp_config::write_mcp_config;
-use super::models::{probe_models, probe_version};
+use super::models::probe_models;
 use super::skills::scan_skill_commands;
 use super::translate::Translator;
-use super::version::drift_notice;
 use super::wire::parse_line;
+use crate::backend::cli_version::session_drift_notice;
 use crate::backend::types::{
     Admission, BackendError, CancelTarget, Command, CommandReceipt, ContentBlock, PendingPermissionView,
     PermissionDecision, SessionEnvelope, SessionSpec,
@@ -84,16 +84,6 @@ fn store_models(models: &[ModelInfo]) {
     }
 }
 
-/// Whether the agy version has already been reported in this process.
-///
-/// The installed binary cannot change under a running app, so repeating the
-/// notice on every session would just be noise.
-static VERSION_REPORTED: AtomicBool = AtomicBool::new(false);
-
-fn version_already_reported() -> bool {
-    VERSION_REPORTED.swap(true, Ordering::SeqCst)
-}
-
 /// How long a permission card may stay unanswered before we answer `deny` for
 /// the user.
 ///
@@ -118,6 +108,32 @@ fn final_turn_text(is_error: bool, result_text: &str, buffered: &str) -> Option<
     authoritative
         .or_else(|| (!buffered.is_empty()).then(|| buffered.to_owned()))
         .filter(|t| !t.is_empty())
+}
+
+/// Append one `text_delta` to the turn's buffered reply, collapsing the
+/// U+FFFD run agy leaves at the join.
+///
+/// A multi-byte character agy cuts across two deltas arrives as a U+FFFD run —
+/// a suffix on one delta plus a prefix on the next — that together stand for
+/// exactly ONE lost character (measured against agy 1.1.14:
+/// samples/antigravity-cli/1.1.14/print_stream-json_long_chinese_fffd.ndjson,
+/// 49 of 49 splits are a 1+2 or 2+1 suffix/prefix pair, never mid-delta).
+/// The bytes are gone before agy serializes the frame, so the character cannot
+/// be restored — but it can be shown as one U+FFFD instead of three. Only the
+/// join case is touched: a U+FFFD away from a boundary passes through, since
+/// only the buffered fallback of a failed or cancelled turn ever renders this
+/// text (a successful turn is replaced wholesale by `result.response`).
+fn append_delta(buffered: &mut String, delta: &str) {
+    const REPLACEMENT: char = '\u{FFFD}';
+    let mut delta = delta;
+    if buffered.ends_with(REPLACEMENT) && delta.starts_with(REPLACEMENT) {
+        while buffered.ends_with(REPLACEMENT) {
+            buffered.pop();
+        }
+        delta = delta.trim_start_matches(REPLACEMENT);
+        buffered.push(REPLACEMENT);
+    }
+    buffered.push_str(delta);
 }
 
 /// agy's declared capability surface.
@@ -435,9 +451,6 @@ impl AntigravitySessionBackend {
     /// Reported once per process: the answer cannot change while agy's binary
     /// stays put, and repeating it on every session would be noise.
     fn spawn_version_check(self: &Arc<Self>) {
-        if version_already_reported() {
-            return;
-        }
         let spawner = Arc::clone(&self.spawner);
         let session_id = self.session_id.clone();
         let program = self
@@ -447,23 +460,29 @@ impl AntigravitySessionBackend {
             .unwrap_or_else(|| std::path::PathBuf::from("agy"));
         let weak = self.weak_self.get().cloned();
         tokio::spawn(async move {
-            let Some(reported) = probe_version(&spawner, &program, &session_id).await else {
+            let Some((level, message, localized)) = session_drift_notice(&spawner, "agy", &program, &session_id).await
+            else {
                 return;
             };
-            tracing::info!(session_id = %session_id, version = %reported, "antigravity: agy version detected");
-            let Some((level, message, localized)) = drift_notice(&reported) else {
-                return;
-            };
-            tracing::warn!(session_id = %session_id, version = %reported, "antigravity: agy version drift");
             if let Some(backend) = weak.and_then(|w| w.upgrade()) {
-                backend.emit(
-                    backend.turn_gen.load(Ordering::SeqCst),
-                    SessionEvent::Notice {
-                        level,
-                        message,
-                        localized: Some(localized),
+                // Not `emit`: that drops the value when nobody is subscribed
+                // yet, which is fine for a turn frame (another one follows) but
+                // loses this notice outright — the check runs once per session.
+                crate::backend::cli_version::broadcast_notice(
+                    &backend.event_tx,
+                    SessionEnvelope {
+                        session_id: backend.session_id.clone(),
+                        turn_gen: backend.turn_gen.load(Ordering::SeqCst),
+                        event: SessionEvent::Notice {
+                            level,
+                            message,
+                            localized: Some(localized),
+                            supersedes_key: None,
+                        },
                     },
-                );
+                    "agy",
+                )
+                .await;
             }
         });
     }
@@ -640,6 +659,18 @@ impl AntigravitySessionBackend {
             model: self.effective_model(),
             mode: self.effective_mode(),
         };
+        let mut spawn_env = self.config.spawn_env.clone();
+        if let Some(cwd) = self.config.cwd.as_deref() {
+            // agy 1.1.13 resolves its primary customization workspace from PWD,
+            // not only the process cwd/--add-dir. A stale inherited PWD made it
+            // scan the host app directory and skip this session's MCP plugin
+            // (verified: ~/.gemini/antigravity-cli/log/cli-20260814_135824.log:48,51).
+            spawn_env.retain(|entry| entry.name != "PWD");
+            spawn_env.push(aionui_common::EnvVar {
+                name: "PWD".to_owned(),
+                value: cwd.to_owned(),
+            });
+        }
         let spec = CommandSpec {
             command: self
                 .config
@@ -647,7 +678,7 @@ impl AntigravitySessionBackend {
                 .clone()
                 .unwrap_or_else(|| std::path::PathBuf::from("agy")),
             args: build_argv(&input),
-            env: self.config.spawn_env.clone(),
+            env: spawn_env,
             cwd: self.config.cwd.clone(),
         };
 
@@ -703,7 +734,7 @@ impl AntigravitySessionBackend {
                                 if text_item_id.is_empty() {
                                     text_item_id = item_id;
                                 }
-                                buffered_text.push_str(&text);
+                                append_delta(&mut buffered_text, &text);
                             }
                             SessionEvent::TurnResult {
                                 ref is_error,
@@ -1158,6 +1189,14 @@ mod tests {
         assert!(spec.args.contains(&"hello".to_string()));
         assert!(spec.args.contains(&"--dangerously-skip-permissions".to_string()));
         assert_eq!(spec.cwd.as_deref(), Some("/w"));
+        assert_eq!(
+            spec.env
+                .iter()
+                .filter(|entry| entry.name == "PWD")
+                .map(|entry| entry.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/w"]
+        );
     }
 
     #[tokio::test]
@@ -1935,6 +1974,43 @@ mod tests {
         // A tool-only turn must not produce an empty assistant bubble.
         assert_eq!(final_turn_text(false, "", ""), None);
         assert_eq!(final_turn_text(true, "", ""), None);
+    }
+
+    #[test]
+    fn a_split_character_collapses_to_one_replacement_at_the_join() {
+        // agy 1.1.14 splits a 3-byte character into a 2-U+FFFD suffix plus a
+        // 1-U+FFFD prefix, or the 1+2 mirror (samples/antigravity-cli/1.1.14/
+        // print_stream-json_long_chinese_fffd.ndjson). One lost character must
+        // render as ONE marker, not three.
+        let mut buf = String::from("报告概述与背\u{fffd}\u{fffd}");
+        append_delta(&mut buf, "\u{fffd}\n\n在现代");
+        assert_eq!(buf, "报告概述与背\u{fffd}\n\n在现代");
+
+        let mut buf = String::from("性能\u{fffd}");
+        append_delta(&mut buf, "\u{fffd}\u{fffd}优化");
+        assert_eq!(buf, "性能\u{fffd}优化");
+    }
+
+    #[test]
+    fn a_replacement_on_only_one_side_of_the_join_is_kept() {
+        // A marker without a counterpart across the join is not a split
+        // character — it must survive untouched.
+        let mut buf = String::from("结尾\u{fffd}");
+        append_delta(&mut buf, "继续");
+        assert_eq!(buf, "结尾\u{fffd}继续");
+
+        let mut buf = String::from("结尾");
+        append_delta(&mut buf, "\u{fffd}继续");
+        assert_eq!(buf, "结尾\u{fffd}继续");
+    }
+
+    #[test]
+    fn a_replacement_away_from_the_join_passes_through() {
+        // Only join runs are collapsed; anything mid-delta is the model's own
+        // text, and the capture shows agy never mangles mid-delta.
+        let mut buf = String::from("前文");
+        append_delta(&mut buf, "中间\u{fffd}\u{fffd}还在");
+        assert_eq!(buf, "前文中间\u{fffd}\u{fffd}还在");
     }
 
     #[test]

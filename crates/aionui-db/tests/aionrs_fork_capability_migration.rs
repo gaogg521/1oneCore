@@ -1,14 +1,8 @@
 use aionui_db::{IAgentMetadataRepository, SqliteAgentMetadataRepository, init_database_memory};
 
-/// Migration 049 (upstream 038; renumbered — 038 is taken on this fork): the
-/// builtin aionrs agent (Aion CLI, seed id `632f31d2`) carries a constructed
-/// at-turn fork capability. Turn anchors are stamped by the aionrs manager +
-/// engine, so a mid-history fork can resolve a cut point.
-///
-/// aionrs is the only builtin seeded this way here: upstream also seeds
-/// claude/codex in its 036, but this fork routes those through the ACP
-/// handshake (`route_for_backend` → `AcpManager`), which replaces
-/// `agent_capabilities` wholesale — see `048_conversation_fork.sql`.
+/// Migration 038: the builtin aionrs agent (Aion CLI, seed id `632f31d2`)
+/// carries a constructed at-turn fork capability — the same shape 036 wrote
+/// for codex (turn anchors are stamped by the aionrs manager + engine).
 #[tokio::test]
 async fn aionrs_builtin_agent_declares_at_turn_fork_capability() {
     let db = init_database_memory().await.unwrap();

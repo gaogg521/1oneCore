@@ -18,8 +18,9 @@ pub mod manager;
 /// clean-slate `aionui-agent-context::mcp_resolve` — the SSOT that turns a
 /// conversation's configured MCP servers into the SDK-free `SessionMcpServer`
 /// shape the `SessionBackend` stack carries in `SessionConfig.init.mcp_servers`.
-pub(crate) mod mcp_resolve;
+pub mod mcp_resolve;
 pub mod model_policy;
+pub mod media;
 pub(crate) mod persistence;
 pub mod protocol;
 pub mod registry;
@@ -31,6 +32,7 @@ pub mod session_agent;
 pub mod session_context;
 pub mod shared_kernel;
 pub mod task_manager;
+pub mod terminal;
 pub mod types;
 mod workflow_progress;
 
@@ -44,6 +46,7 @@ pub use aionui_api_types::{AcpBuildExtra, AcpModelInfo, AionrsBuildExtra, SlashC
 // re-exported so the conversation layer can read the mid-turn bit for a
 // conversation whose agent task is not currently live.
 pub use aionui_session::backend_supports_midturn_delivery;
+pub use aionui_session::effective_agent_capabilities;
 pub use capability::skill_manager::{
     AcpSkillManager, SkillDefinition, SkillIndex, build_skills_index_text, build_system_instructions,
     build_system_instructions_with_skills_index, detect_skill_load_request, prepare_first_message,

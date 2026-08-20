@@ -174,8 +174,24 @@ impl AgentAvailabilityService {
     }
 }
 
+/// The program name for a direct-CLI backend, or `None` for anything that is
+/// not version-gated (ACP agents run their vendor's own protocol and are not
+/// pinned to a verified release here).
+///
+/// Keyed on `backend` rather than `agent_type` because that is what identifies
+/// the vendor; the returned name is what `cli_version::verified_version`
+/// expects and what the drift text names to the user.
+fn direct_cli_program(meta: &AgentMetadata) -> Option<&'static str> {
+    match meta.backend.as_deref() {
+        Some("antigravity") => Some("agy"),
+        Some("claude") => Some("claude"),
+        Some("codex") => Some("codex"),
+        _ => None,
+    }
+}
+
 async fn run_probe(
-    _registry: &Arc<AgentRegistry>,
+    registry: &Arc<AgentRegistry>,
     provider_repo: &Arc<dyn IProviderRepository>,
     meta: &AgentMetadata,
     user_id: &str,
@@ -200,24 +216,23 @@ async fn run_probe(
         // the user is explicitly waiting and large Node CLIs load slowly.
         match crate::cli_probe::validate_with_budget(meta, crate::cli_probe::CLI_VERSION_RECHECK_TIMEOUT).await {
             Ok(success) => {
-                // agy is the only one of these whose version is out of our
-                // hands: claude and codex are pinned into managed-resources, so
-                // which version is installed is our own decision and there is
-                // nothing to warn about. The probe already ran `--version` for
+                // Every direct-CLI backend runs the user's own install, so the
+                // installed version is out of our hands for all of them. claude
+                // and codex were exempt only while the app bundled a pinned
+                // copy of each; that bundling is gone, so they get the same
+                // check agy always had. The probe already ran `--version` for
                 // the integrity check and used to discard the output, so this
                 // costs no extra process.
                 //
                 // Reported HERE and not only mid-conversation: this is where the
                 // user is deciding whether to rely on the agent, and the
                 // session-time notice arrives long after that choice is made.
-                let drift = (meta.backend.as_deref() == Some("antigravity"))
-                    .then(|| {
-                        success
-                            .reported_version
-                            .as_deref()
-                            .and_then(aionui_session::version_drift)
-                    })
-                    .flatten();
+                let drift = direct_cli_program(meta).and_then(|cli| {
+                    success
+                        .reported_version
+                        .as_deref()
+                        .and_then(|reported| aionui_session::version_drift(cli, reported))
+                });
                 match drift {
                     // Status stays ONLINE — the agent works. The code rides the
                     // error_code column because that is what the UI translates,
@@ -252,26 +267,43 @@ async fn run_probe(
                 Some("package_lock_invalid".to_owned()),
                 Some(error),
             ),
-            Ok(args) => match custom_agent_probe::try_connect_custom_agent(command, &args, &env, None).await {
-                TryConnectCustomAgentResponse::Success => (AgentSnapshotCheckStatus::Online, None, None),
-                TryConnectCustomAgentResponse::FailCli { error } => (
-                    AgentSnapshotCheckStatus::Offline,
-                    Some("command_not_found".to_owned()),
-                    Some(error),
-                ),
-                TryConnectCustomAgentResponse::FailAcp { error } => (
-                    AgentSnapshotCheckStatus::Offline,
-                    Some("acp_init_failed".to_owned()),
-                    Some(error),
-                ),
-                // Reachable but not authorized: still offline (unusable), but a
-                // dedicated code lets the UI guide the user to log in.
-                TryConnectCustomAgentResponse::FailAuth { error } => (
-                    AgentSnapshotCheckStatus::Offline,
-                    Some("auth_required".to_owned()),
-                    Some(error),
-                ),
-            },
+            Ok(args) => {
+                match custom_agent_probe::try_connect_custom_agent_with_catalog(command, &args, &env, None).await {
+                    // The probe opened a real session to reach this verdict, so its
+                    // `session/new` already carried whatever modes / models / config
+                    // options the agent advertises. Persist them through the same
+                    // channel a live conversation uses, so the pickers are populated
+                    // before the user ever opens one. Best-effort and additive:
+                    // `apply_handshake` skips `None` fields, so this never blanks a
+                    // catalog a real session had filled in, and an agent that
+                    // advertises nothing sends nothing.
+                    (TryConnectCustomAgentResponse::Success, catalog) => {
+                        if let Some(partial) = catalog {
+                            registry
+                                .catalog_sender()
+                                .send_partial(user_id.to_owned(), meta.id.clone(), *partial);
+                        }
+                        (AgentSnapshotCheckStatus::Online, None, None)
+                    }
+                    (TryConnectCustomAgentResponse::FailCli { error }, _) => (
+                        AgentSnapshotCheckStatus::Offline,
+                        Some("command_not_found".to_owned()),
+                        Some(error),
+                    ),
+                    (TryConnectCustomAgentResponse::FailAcp { error }, _) => (
+                        AgentSnapshotCheckStatus::Offline,
+                        Some("acp_init_failed".to_owned()),
+                        Some(error),
+                    ),
+                    // Reachable but not authorized: still offline (unusable), but a
+                    // dedicated code lets the UI guide the user to log in.
+                    (TryConnectCustomAgentResponse::FailAuth { error }, _) => (
+                        AgentSnapshotCheckStatus::Offline,
+                        Some("auth_required".to_owned()),
+                        Some(error),
+                    ),
+                }
+            }
         }
     } else if meta.backend.is_some() {
         // Commandless builtin fallback: same PATH + `--version` treatment as
@@ -655,9 +687,6 @@ mod tests {
         pi.agent_source_info.binary_name = Some("pi".into());
         pi.agent_source_info.bridge_binary = Some("npx".into());
         pi.args = vec!["-y".into(), "pi-acp".into()];
-        // Version tracks `acp-registry-npx-lock.json` — bumped to 0.0.33 by
-        // upstream 9c35aa6a. The assertion's point is that the pinned version
-        // gets appended from the lock at all, so it has to move with the lock.
         assert_eq!(explicit_probe_args(&pi).unwrap(), ["-y", "pi-acp@0.0.33"]);
     }
 
@@ -771,7 +800,16 @@ mod tests {
 
         assert_eq!(row.status, AgentManagementStatus::Online);
         assert_eq!(row.last_check_kind, Some(AgentSnapshotCheckKind::Manual));
-        assert!(row.last_check_error_code.is_none());
+        // Same as the restore test: a direct CLI now runs from the developer's
+        // own install, so a version-drift code may ride along on an otherwise
+        // healthy check. Only a real failure code would falsify "online".
+        assert!(
+            row.last_check_error_code
+                .as_deref()
+                .is_none_or(|code| code.starts_with("version_drift_")),
+            "a healthy direct CLI may only carry a version-drift code, got {:?}",
+            row.last_check_error_code
+        );
     }
 
     /// Manual health check must reach its real probe even when the binary is
@@ -955,6 +993,17 @@ mod tests {
             .unwrap();
         assert_eq!(row.status, AgentManagementStatus::Online);
         assert_eq!(row.last_check_kind, Some(AgentSnapshotCheckKind::Manual));
-        assert!(row.last_check_error_code.is_none());
+        // claude runs from the developer's own install now, so whichever
+        // version is on this machine decides whether a drift code rides along.
+        // The restore itself is what this test pins: status back to Online, and
+        // no FAILURE code. A drift code is informational and must not be read as
+        // a failed check (`last_success_at` keys off status, not the code).
+        assert!(
+            row.last_check_error_code
+                .as_deref()
+                .is_none_or(|code| code.starts_with("version_drift_")),
+            "a restored agent may only carry a version-drift code, got {:?}",
+            row.last_check_error_code
+        );
     }
 }
