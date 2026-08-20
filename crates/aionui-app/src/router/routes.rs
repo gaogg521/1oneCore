@@ -304,6 +304,22 @@ impl one_org::CompanySeatSync for CompanySeatSyncAdapter {
             tracing::warn!(%error, user_id, enterprise_id, "company seat sync failed; project-group join continues");
         }
     }
+
+    async fn release_company_member(&self, user_id: &str, enterprise_id: &str) {
+        if let Err(error) = self.0.leave_company(enterprise_id, user_id).await {
+            // MemberNotFound is expected and not worth a warning: not every
+            // project-group joiner ever synced into the company (the hook
+            // this mirrors is best-effort too), and LastCompanyAdmin is a
+            // real, intentional refusal — the seat is deliberately kept
+            // occupied rather than leaving the company with no admin.
+            if !matches!(
+                error,
+                one_enterprise::EnterpriseError::MemberNotFound | one_enterprise::EnterpriseError::LastCompanyAdmin
+            ) {
+                tracing::warn!(%error, user_id, enterprise_id, "company seat release failed; project-group leave continues");
+            }
+        }
+    }
 }
 
 /// Adapts one-enterprise's `EnterpriseService::is_company_admin` to the
@@ -315,6 +331,10 @@ struct CompanyAdminCheckAdapter(std::sync::Arc<one_enterprise::EnterpriseService
 impl one_sso::CompanyAdminCheck for CompanyAdminCheckAdapter {
     async fn is_company_admin(&self, user_id: &str) -> bool {
         self.0.is_company_admin(user_id).await.unwrap_or(false)
+    }
+
+    async fn company_exists(&self) -> bool {
+        self.0.company_exists().await.unwrap_or(false)
     }
 }
 

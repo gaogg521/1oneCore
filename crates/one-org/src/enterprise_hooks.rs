@@ -35,4 +35,20 @@ pub trait CompanySeatSync: Send + Sync {
     /// company-side sync cannot complete. Implementations swallow their own
     /// errors.
     async fn ensure_company_member(&self, user_id: &str, enterprise_id: &str, display_name: Option<&str>);
+
+    /// The other direction of `ensure_company_member`: called when leaving
+    /// or being removed from a project group empties out the user's LAST
+    /// group under `enterprise_id` — the seat this company issued them
+    /// (via project-group invite, not SSO) has nothing left to be attached
+    /// to. Without this, self-service "退出项目组" never released the seat:
+    /// `OrgService::leave`/`remove_member` only ever touched `one_user_org`,
+    /// so a company kept billing/counting someone who had quietly left every
+    /// group under it, until an admin happened to notice and remove them
+    /// separately from the company console.
+    ///
+    /// Best-effort and **must never fail the caller's leave/removal** — same
+    /// contract as `ensure_company_member`. Implementations swallow their
+    /// own errors, including "this user was never a company member" (they
+    /// may have joined by invite code with no SSO identity at all).
+    async fn release_company_member(&self, user_id: &str, enterprise_id: &str);
 }

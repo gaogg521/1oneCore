@@ -423,6 +423,19 @@ impl EnterpriseService {
         )
     }
 
+    /// Whether this deployment has a company set up at all (v1: at most one).
+    /// Used by `one_sso::CompanyAdminCheck` to tell "no company yet — fall
+    /// back to project-group role, same as the personal/standalone case" from
+    /// "a company exists — only ITS admin may touch company-level SSO
+    /// config, not any random project group's org_admin". Without this
+    /// distinction the SSO admin gate could not tell those two cases apart.
+    pub async fn company_exists(&self) -> Result<bool, EnterpriseError> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_enterprises")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(count > 0)
+    }
+
     /// True when the caller is an admin of ANY company (for one-sso gating and
     /// the RequireCompanyAdmin extractor — v1 hosts a single company).
     pub async fn is_company_admin(&self, user_id: &str) -> Result<bool, EnterpriseError> {
@@ -668,6 +681,29 @@ impl EnterpriseService {
                 "cannot remove yourself from the company".into(),
             ));
         }
+        self.release_member(enterprise_id, target_user_id).await
+    }
+
+    /// Self-service company departure — the same seat release as
+    /// `remove_member`, minus the "can't target yourself" guard that exists
+    /// specifically to keep that admin-initiated path from being used for
+    /// self-service. There was previously no way for an ordinary company
+    /// member to leave on their own: `remove_member` refuses `actor ==
+    /// target`, and the only company-side UI action was "解散企业"
+    /// (disband), an admin-only action that deletes the whole company.
+    /// Also the primitive `one_org::CompanySeatSync`'s release hook calls
+    /// when a project-group leave/removal empties out someone's last group
+    /// under this company.
+    pub async fn leave_company(&self, enterprise_id: &str, user_id: &str) -> Result<(), EnterpriseError> {
+        self.release_member(enterprise_id, user_id).await
+    }
+
+    /// Shared seat-release primitive behind `remove_member` and
+    /// `leave_company` — delete the `one_enterprise_members` row (the seat
+    /// reclamation, see the doc comment above) and revoke the departing
+    /// member's sessions, guarded by the same "can't leave a company with
+    /// zero admins" rule regardless of who initiated the departure.
+    async fn release_member(&self, enterprise_id: &str, target_user_id: &str) -> Result<(), EnterpriseError> {
         let current: Option<String> =
             sqlx::query_scalar("SELECT role FROM one_enterprise_members WHERE user_id = ? AND enterprise_id = ?")
                 .bind(target_user_id)
@@ -1425,6 +1461,59 @@ mod tests {
         // Removing yourself is refused too.
         assert!(svc.remove_member(&ent, "u1", "u1").await.is_err());
         assert!(revoker.0.lock().unwrap().is_empty());
+    }
+
+    /// The self-service counterpart to `remove_member` — there was
+    /// previously no way for an ordinary member to leave a company on their
+    /// own. Unlike `remove_member`, `actor == target` is exactly the point
+    /// here, not something to reject.
+    #[tokio::test]
+    async fn leave_company_releases_the_members_own_seat() {
+        let revoker = std::sync::Arc::new(RecordingRevoker::default());
+        let db = aionui_db::init_database_memory().await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        let svc = EnterpriseService::new(db.pool().clone()).with_session_revoker(revoker.clone());
+
+        svc.sync_member("u1", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
+        svc.sync_member("u2", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
+        let ent: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap();
+
+        svc.leave_company(&ent, "u2").await.unwrap();
+        assert_eq!(revoker.0.lock().unwrap().as_slice(), ["u2"]);
+        let members = svc.list_members(&ent).await.unwrap();
+        assert!(!members.iter().any(|m| m.user_id == "u2"), "u2's seat must be gone");
+        assert!(members.iter().any(|m| m.user_id == "u1"), "u1 untouched");
+    }
+
+    /// The last-admin guard applies to self-service departure too — a
+    /// company cannot be left with zero admins just because the person
+    /// leaving is leaving voluntarily rather than being removed.
+    #[tokio::test]
+    async fn leave_company_refuses_the_last_admin() {
+        let db = aionui_db::init_database_memory().await.unwrap();
+        crate::migrate::run_one_enterprise_migrations(db.pool()).await.unwrap();
+        let svc = EnterpriseService::new(db.pool().clone());
+
+        svc.sync_member("u1", "feishu", "co", "", None, None, None)
+            .await
+            .unwrap();
+        let ent: String = sqlx::query_scalar("SELECT id FROM one_enterprises LIMIT 1")
+            .fetch_one(&svc.pool)
+            .await
+            .unwrap();
+        // sync_member always inserts as plain 'member' — promote u1 so
+        // there is exactly one admin to test the guard against.
+        svc.set_member_role(&ent, "u1", ROLE_COMPANY_ADMIN).await.unwrap();
+
+        let err = svc.leave_company(&ent, "u1").await.unwrap_err();
+        assert_eq!(err.code(), "LAST_COMPANY_ADMIN");
     }
 
     /// Records the enterprise ids it was asked to disband, so a test can tell

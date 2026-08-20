@@ -23,6 +23,11 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait CompanyAdminCheck: Send + Sync {
     async fn is_company_admin(&self, user_id: &str) -> bool;
+    /// Whether this deployment has a company set up at all. Lets a caller
+    /// tell "no company yet, standalone fallback applies" from "a company
+    /// exists and this caller just isn't its admin" — the two cases `RequireSsoAdmin`
+    /// must not treat the same way (see its own doc comment).
+    async fn company_exists(&self) -> bool;
 }
 
 /// Where a completed directory pull goes (T6). Implemented by the app layer

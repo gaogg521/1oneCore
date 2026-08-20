@@ -460,10 +460,27 @@ impl OrgService {
         let org_profile_synced_at = org_profile_source.as_ref().map(|_| now);
 
         let mut tx = self.pool.begin().await?;
-        sqlx::query("UPDATE one_tenant_invites SET use_count = use_count + 1 WHERE id = ?")
-            .bind(&invite.id)
-            .execute(&mut *tx)
-            .await?;
+        // Re-check every condition `is_active()` checked above, atomically
+        // with the increment: the SELECT above ran outside this transaction,
+        // so two concurrent joins could both pass that check and both land
+        // here. Without the WHERE conditions this UPDATE is unconditional —
+        // a `max_uses=1` invite could be consumed by two people at once.
+        // `rows_affected() == 0` means this request lost the race (someone
+        // else's concurrent join just exhausted it), so it fails exactly
+        // like an invite that was already inactive when read.
+        let claimed = sqlx::query(
+            "UPDATE one_tenant_invites SET use_count = use_count + 1 \
+             WHERE id = ? AND revoked = 0 \
+               AND (expires_at IS NULL OR expires_at >= ?) \
+               AND (max_uses IS NULL OR use_count < max_uses)",
+        )
+        .bind(&invite.id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        if claimed.rows_affected() == 0 {
+            return Err(OrgError::InvalidCode);
+        }
         sqlx::query(
             "INSERT INTO one_user_org \
              (user_id, tenant_id, role, display_name, org_unit_path, job_title, org_profile_source, \
@@ -910,18 +927,17 @@ impl OrgService {
                 "Only system administrators can create an enterprise".into(),
             ));
         }
-        // D3: one server = one enterprise. The one-devops registries and
-        // collaboration boards carry no tenant_id, so a second tenant on the
-        // same instance would share every skill / MCP / requirement with the
-        // first. Reject creation once any tenant exists; members join the
-        // existing enterprise via invite instead.
-        let existing_tenants: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_tenants")
-            .fetch_one(&self.pool)
-            .await?;
-        if existing_tenants > 0 {
-            return Err(OrgError::AlreadyHostsEnterprise);
-        }
-
+        // Formerly "D3: one server = one enterprise" — rejected a second
+        // standalone tenant because the one-devops registries and
+        // collaboration boards carried no tenant_id, so a second tenant on
+        // the same instance would have shared every skill / MCP /
+        // requirement with the first. Direction B (`create_tenant_for_enterprise`
+        // below) already lets one server host many tenants under a company,
+        // and migration `one-devops/012_collaboration_tenant_scope.sql`
+        // closed the isolation gap that justified the block (skills/MCP/RAG
+        // never had it — they carried scope/team_id/visibility from day
+        // one). The gate is gone; a server may now host multiple standalone
+        // tenants the same way it already hosts multiple company-owned ones.
         let tenant_id = short_id("tenant");
         let now = now_ms() as i64;
         // Same SSO-profile snapshot as join_with_invite — see its comment.
@@ -990,10 +1006,7 @@ impl OrgService {
     }
 
     /// Create a project group OWNED by a company (Direction B). Unlike
-    /// `create_tenant` (the standalone invite-code path, left byte-for-byte
-    /// intact), this:
-    /// - does NOT enforce the global "one server = one enterprise" D3 limit — a
-    ///   company legitimately owns many project groups;
+    /// `create_tenant` (the standalone invite-code path), this:
     /// - does NOT auto-join the creator (the group starts empty);
     /// - optionally seeds `initial_admin_user_id` as the group's org_admin —
     ///   Phase 2 multi-membership allows this even when that user already
@@ -1061,6 +1074,19 @@ impl OrgService {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    /// Whether `tenant_id` is one of `enterprise_id`'s project groups.
+    /// Company-scoped invite routes check this before delegating to the
+    /// tenant-generic `create_invite`/`list_invites`/`revoke_invite` below,
+    /// so a company admin can't read or mint invite codes for a project
+    /// group owned by a different company by guessing its id.
+    pub async fn tenant_belongs_to_enterprise(&self, tenant_id: &str, enterprise_id: &str) -> Result<bool, OrgError> {
+        let owner: Option<String> = sqlx::query_scalar("SELECT enterprise_id FROM one_tenants WHERE id = ?")
+            .bind(tenant_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(owner.as_deref() == Some(enterprise_id))
     }
 
     /// The project groups a company owns, with per-group member counts.
@@ -1202,12 +1228,13 @@ impl OrgService {
         Ok(tenant_ids)
     }
 
-    /// Archive and wipe all local tenant/membership data, so a stale/orphaned
-    /// tenant left behind on this machine (from a prior test or a reinstall
-    /// that never went through a clean `leave`) no longer blocks
-    /// `create_tenant`'s "one server = one enterprise" gate. Self-service
-    /// escape hatch for the scenario the D3 comment above didn't account
-    /// for: a tenant row surviving with no one able to administer it.
+    /// Archive and wipe all local tenant/membership data. Self-service escape
+    /// hatch for a stale/orphaned tenant left behind on this machine (from a
+    /// prior test or a reinstall that never went through a clean `leave`) —
+    /// a tenant row surviving with no one able to administer it.
+    /// `create_tenant` no longer blocks on such a row (a server may host
+    /// several standalone tenants), but the row itself is still clutter an
+    /// admin may want to clear out.
     pub async fn reset_local_enterprise(&self, user_id: &str) -> Result<ResetLocalResult, OrgError> {
         let role = self.effective_role(user_id).await?;
         if !is_system_admin_role(&role) {
@@ -1298,7 +1325,17 @@ impl OrgService {
     /// Leave a project group. `tenant_id` selects which group to leave;
     /// `None` leaves the user's currently-active group. Scoped delete so a
     /// user who belongs to several groups only leaves the one named.
-    pub async fn leave(&self, user_id: &str, tenant_id: Option<&str>, exit_code: &str) -> Result<(), OrgError> {
+    /// Leave a project group. Returns `Some(enterprise_id)` when this was
+    /// the user's last group under a company — the caller (route layer)
+    /// should then also release the company seat via
+    /// `CompanySeatSync::release_company_member`. `None` for a standalone
+    /// group, or when other memberships under the same company remain.
+    pub async fn leave(
+        &self,
+        user_id: &str,
+        tenant_id: Option<&str>,
+        exit_code: &str,
+    ) -> Result<Option<String>, OrgError> {
         let target = match tenant_id {
             Some(t) => t.to_string(),
             None => self.active_tenant_id(user_id).await?,
@@ -1337,7 +1374,8 @@ impl OrgService {
             None,
         )
         .await;
-        Ok(())
+        let release_enterprise_id = self.enterprise_seat_to_release(user_id, &membership.tenant_id).await?;
+        Ok(release_enterprise_id)
     }
 
     // --- backup / restore (P1-1) ---
@@ -1400,12 +1438,15 @@ impl OrgService {
     ///
     /// Differs from `leave()` in that no exit password is required (the admin
     /// is the authority here, not the member) and three guards apply instead.
+    /// Remove a member from a project group. Returns `Some(enterprise_id)`
+    /// when this was their last group under a company — see `leave`'s doc
+    /// comment for what the caller should do with it.
     pub async fn remove_member(
         &self,
         tenant_id: &str,
         actor_user_id: &str,
         target_user_id: &str,
-    ) -> Result<(), OrgError> {
+    ) -> Result<Option<String>, OrgError> {
         // Removing yourself would let an admin bypass the exit-password gate
         // that `leave()` enforces. Send them through the front door.
         if actor_user_id == target_user_id {
@@ -1458,7 +1499,42 @@ impl OrgService {
             Some(target_user_id),
         )
         .await;
-        Ok(())
+        let release_enterprise_id = self.enterprise_seat_to_release(target_user_id, tenant_id).await?;
+        Ok(release_enterprise_id)
+    }
+
+    /// After removing `user_id` from `left_tenant_id` (row already deleted),
+    /// whether the company-side seat should also be released: `Some(enterprise_id)`
+    /// when the group belonged to a company AND the user has no other
+    /// membership left under that same company; `None` when the group was
+    /// standalone (no `enterprise_id`) or the user still belongs to another
+    /// group under it. Shared by `leave` and `remove_member` — see
+    /// `CompanySeatSync::release_company_member`'s doc comment for why this
+    /// check exists.
+    async fn enterprise_seat_to_release(
+        &self,
+        user_id: &str,
+        left_tenant_id: &str,
+    ) -> Result<Option<String>, OrgError> {
+        let enterprise_id: Option<String> =
+            sqlx::query_scalar::<_, Option<String>>("SELECT enterprise_id FROM one_tenants WHERE id = ?")
+                .bind(left_tenant_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
+        let Some(enterprise_id) = enterprise_id else {
+            return Ok(None);
+        };
+        let still_has_another: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM one_user_org uo \
+             JOIN one_tenants t ON t.id = uo.tenant_id \
+             WHERE uo.user_id = ? AND t.enterprise_id = ?",
+        )
+        .bind(user_id)
+        .bind(&enterprise_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(if still_has_another { None } else { Some(enterprise_id) })
     }
 
     /// After leaving `left_tenant`, if the active pointer named it, move the
@@ -3428,9 +3504,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_server_hosts_only_one_enterprise() {
+    async fn a_server_can_host_multiple_standalone_tenants() {
+        // Formerly "D3: one server hosts only one enterprise" — that block
+        // was lifted once one-devops/012_collaboration_tenant_scope.sql
+        // closed the isolation gap it existed to prevent (see the comment on
+        // `create_tenant`). A server should now be able to host a second,
+        // independent standalone tenant exactly the way it already hosts
+        // multiple company-owned ones via `create_tenant_for_enterprise`.
         let (_db, service, _user_repo) = setup().await;
-        service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let (first_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
 
         // Simulate the creator having exited (org row gone) so they are once
         // more an implicit system_admin not in any enterprise — the only way
@@ -3441,12 +3523,48 @@ mod tests {
             .await
             .unwrap();
 
-        // A tenant still exists → D3 guard rejects a second enterprise.
-        let err = service
+        let (second_id, second_name) = service
             .create_tenant(SYSTEM_DEFAULT_USER_ID, "SecondCorp")
             .await
-            .unwrap_err();
-        assert_eq!(err.code(), "ALREADY_HOSTS_ENTERPRISE");
+            .unwrap();
+        assert_ne!(second_id, first_id);
+        assert_eq!(second_name, "SecondCorp");
+
+        let tenant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_tenants")
+            .fetch_one(&service.pool)
+            .await
+            .unwrap();
+        assert_eq!(tenant_count, 2);
+    }
+
+    #[tokio::test]
+    async fn tenant_belongs_to_enterprise_matches_only_its_own_owner() {
+        let (_db, service, _user_repo) = setup().await;
+        let (tenant_id, _, _) = service
+            .create_tenant_for_enterprise("ent-a", "Group A", "creator", None)
+            .await
+            .unwrap();
+
+        assert!(service.tenant_belongs_to_enterprise(&tenant_id, "ent-a").await.unwrap());
+        // A different company guessing this tenant id must not match — this
+        // is the check that keeps one company's invite-code routes from
+        // reaching another company's project group.
+        assert!(!service.tenant_belongs_to_enterprise(&tenant_id, "ent-b").await.unwrap());
+        // A standalone tenant (no owning company at all) belongs to none.
+        let (standalone_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Solo").await.unwrap();
+        assert!(
+            !service
+                .tenant_belongs_to_enterprise(&standalone_id, "ent-a")
+                .await
+                .unwrap()
+        );
+        // An id nobody created at all.
+        assert!(
+            !service
+                .tenant_belongs_to_enterprise("tenant_nonexistent", "ent-a")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -3461,20 +3579,13 @@ mod tests {
         let _ = invite;
         service.join_with_invite(&member, &code).await.unwrap();
 
-        // Simulate the same stale-data scenario as
-        // `one_server_hosts_only_one_enterprise`: the creator's own
-        // membership row is gone, but the tenant (and the other member) are
-        // still there, so `create_tenant` is blocked.
+        // Simulate a stale/orphaned tenant: the creator's own membership row
+        // is gone, but the tenant (and the other member) are still there.
         sqlx::query("DELETE FROM one_user_org WHERE user_id = ?")
             .bind(SYSTEM_DEFAULT_USER_ID)
             .execute(&service.pool)
             .await
             .unwrap();
-        let err = service
-            .create_tenant(SYSTEM_DEFAULT_USER_ID, "SecondCorp")
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), "ALREADY_HOSTS_ENTERPRISE");
 
         let result = service.reset_local_enterprise(SYSTEM_DEFAULT_USER_ID).await.unwrap();
         assert_eq!(result.archived_tenant_count, 1);
@@ -3495,7 +3606,7 @@ mod tests {
             .unwrap();
         assert_eq!(memberships_left, 0);
 
-        // The gate is clear again — creating a fresh enterprise now succeeds.
+        // The stale tenant is gone — creating a fresh one succeeds as normal.
         let (new_tenant_id, new_name) = service
             .create_tenant(SYSTEM_DEFAULT_USER_ID, "SecondCorp")
             .await
@@ -3558,6 +3669,54 @@ mod tests {
         let listed = service.list_invites(&tenant_id).await.unwrap();
         assert_eq!(listed.len(), 2);
         let _ = invite;
+        db.close().await;
+    }
+
+    /// The validity check (`find_active_invite_by_code`) runs outside the
+    /// transaction that increments `use_count`, so two concurrent joins can
+    /// both pass it before either commits. Without a conditional WHERE on the
+    /// UPDATE, both would succeed and a `max_uses=1` invite would be consumed
+    /// twice. Fires both joins genuinely concurrently (not sequentially) so
+    /// this actually exercises the race window rather than just re-testing
+    /// the already-covered "second call sees it exhausted" sequential case.
+    #[tokio::test]
+    async fn concurrent_joins_cannot_exceed_max_uses() {
+        let (db, service, user_repo) = setup().await;
+        let (tenant_id, _) = service.create_tenant(SYSTEM_DEFAULT_USER_ID, "Acme").await.unwrap();
+        let (_, code) = service
+            .create_invite(&tenant_id, SYSTEM_DEFAULT_USER_ID, Some(1), None)
+            .await
+            .unwrap();
+        let u1 = create_user(&user_repo, "racer1").await;
+        let u2 = create_user(&user_repo, "racer2").await;
+
+        let svc1 = service.clone();
+        let svc2 = service.clone();
+        let code1 = code.clone();
+        let code2 = code.clone();
+        let (r1, r2) = tokio::join!(
+            tokio::spawn(async move { svc1.join_with_invite(&u1, &code1).await }),
+            tokio::spawn(async move { svc2.join_with_invite(&u2, &code2).await }),
+        );
+        let (r1, r2) = (r1.unwrap(), r2.unwrap());
+
+        // Exactly one wins and one loses — never both succeeding.
+        let successes = [&r1, &r2].iter().filter(|r| r.is_ok()).count();
+        assert_eq!(
+            successes, 1,
+            "expected exactly one join to succeed, got r1={r1:?} r2={r2:?}"
+        );
+        let loser = if r1.is_ok() { &r2 } else { &r1 };
+        assert_eq!(loser.as_ref().unwrap_err().code(), "INVALID_CODE");
+
+        let member_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_user_org WHERE tenant_id = ?")
+            .bind(&tenant_id)
+            .fetch_one(&service.pool)
+            .await
+            .unwrap();
+        // The creator (system_admin) plus exactly one racer — not two.
+        assert_eq!(member_count, 2);
+
         db.close().await;
     }
 

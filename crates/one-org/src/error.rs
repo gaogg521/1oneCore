@@ -24,11 +24,6 @@ pub enum OrgError {
     #[error("{0}")]
     Forbidden(String),
 
-    #[error(
-        "This server already hosts an enterprise; a server can host only one. Members should join via invite code."
-    )]
-    AlreadyHostsEnterprise,
-
     #[error("Enterprise name is required")]
     NameRequired,
 
@@ -65,7 +60,6 @@ impl OrgError {
             Self::NotInEnterprise => "NOT_IN_ENTERPRISE",
             Self::TenantNotFound => "TENANT_NOT_FOUND",
             Self::Forbidden(_) => "FORBIDDEN",
-            Self::AlreadyHostsEnterprise => "ALREADY_HOSTS_ENTERPRISE",
             Self::NameRequired => "NAME_REQUIRED",
             Self::NoExitPasswordSet => "NO_EXIT_PASSWORD_SET",
             Self::WrongExitCode => "WRONG_EXIT_CODE",
@@ -80,7 +74,6 @@ impl OrgError {
     fn status(&self) -> StatusCode {
         match self {
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
-            Self::AlreadyHostsEnterprise => StatusCode::FORBIDDEN,
             Self::TenantNotFound | Self::DepartmentNotFound | Self::RuntimeNodeNotFound => StatusCode::NOT_FOUND,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::BAD_REQUEST,

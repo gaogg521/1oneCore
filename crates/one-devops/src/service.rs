@@ -856,6 +856,16 @@ impl DevopsService {
         let team_id = self
             .validate_resource_scope(created_by, scope, team_id, visibility)
             .await?;
+        // The INCOMING team_id, checked on every write (create and update
+        // alike): without this, an actor who legitimately owns some resource
+        // could re-scope it INTO a team they don't administer in the same
+        // call the current-row check below guards against re-scoping OUT of
+        // one they don't own.
+        if !self.actor_can_touch_team(created_by, team_id).await? {
+            return Err(DevopsError::Forbidden(
+                "cannot assign this skill to a different project group".into(),
+            ));
+        }
         // D7: names must be unique. A duplicate team skill name would
         // materialize two SKILL.md dirs on every member and shadow each other
         // (and can mask a built-in skill) — last-write-wins is unsafe for a
@@ -1011,6 +1021,13 @@ impl DevopsService {
         let team_id = self
             .validate_resource_scope(created_by, scope, team_id, visibility)
             .await?;
+        // See the identical comment in `upsert_skill` — guards both creating
+        // into, and re-scoping into, a team the actor doesn't administer.
+        if !self.actor_can_touch_team(created_by, team_id).await? {
+            return Err(DevopsError::Forbidden(
+                "cannot assign this MCP server to a different project group".into(),
+            ));
+        }
         if !matches!(r#type, "stdio" | "sse") {
             return Err(DevopsError::BadRequest(format!(
                 "invalid type: {type} (allowed: stdio/sse)",
@@ -1166,6 +1183,13 @@ impl DevopsService {
         let team_id = self
             .validate_resource_scope(created_by, scope, team_id, visibility)
             .await?;
+        // See the identical comment in `upsert_skill`. This function has no
+        // update-existing mode, so this is the only guard registration needs.
+        if !self.actor_can_touch_team(created_by, team_id).await? {
+            return Err(DevopsError::Forbidden(
+                "cannot register this document to a different project group".into(),
+            ));
+        }
         let id = new_id("orag");
         let now = now_ms();
         sqlx::query(
@@ -2161,6 +2185,7 @@ impl DevopsService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dlp_service::UpsertDlpRule;
     use crate::migrate::run_one_devops_migrations;
 
     async fn service() -> DevopsService {
@@ -2552,8 +2577,8 @@ mod tests {
              CREATE TABLE one_user_org (user_id TEXT NOT NULL, tenant_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, tenant_id));
              CREATE TABLE one_active_tenant (user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
              INSERT INTO one_tenants (id, name) VALUES ('tA', 'Group A'), ('tB', 'Group B');
-             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('memberA', 'tA', 'member'), ('memberB', 'tB', 'member'), ('admin1', 'tA', 'org_admin');
-             INSERT INTO one_active_tenant (user_id, tenant_id) VALUES ('memberA', 'tA'), ('memberB', 'tB'), ('admin1', 'tA');",
+             INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('memberA', 'tA', 'member'), ('memberB', 'tB', 'member'), ('admin1', 'tA', 'org_admin'), ('admin2', 'tB', 'org_admin');
+             INSERT INTO one_active_tenant (user_id, tenant_id) VALUES ('memberA', 'tA'), ('memberB', 'tB'), ('admin1', 'tA'), ('admin2', 'tB');",
         )
         .execute(&svc.pool)
         .await
@@ -2566,22 +2591,26 @@ mod tests {
         seed_two_group_enterprise(&svc).await;
 
         // Four resources per registry: org-wide, Group-A-only, Group-B-only,
-        // and admin-only (org-wide but visibility='admin'). admin1 authors them.
-        for (name, scope, team, vis) in [
-            ("org-skill", "org", None, "all"),
-            ("a-skill", "team", Some("tA"), "all"),
-            ("b-skill", "team", Some("tB"), "all"),
-            ("secret-skill", "org", None, "admin"),
+        // and admin-only (org-wide but visibility='admin'). Each team's own
+        // admin authors its team-scoped resource — admin1 (org_admin of tA
+        // only) creating a tB-scoped resource is exactly the cross-tenant
+        // write the ownership check exists to reject, so admin2 (tB's admin)
+        // creates that one instead.
+        for (name, scope, team, vis, author) in [
+            ("org-skill", "org", None, "all", "admin1"),
+            ("a-skill", "team", Some("tA"), "all", "admin1"),
+            ("b-skill", "team", Some("tB"), "all", "admin2"),
+            ("secret-skill", "org", None, "admin", "admin1"),
         ] {
-            svc.upsert_skill(None, name, "", "", true, false, scope, team, vis, "admin1")
+            svc.upsert_skill(None, name, "", "", true, false, scope, team, vis, author)
                 .await
                 .unwrap();
         }
-        for (name, scope, team, vis) in [
-            ("org-mcp", "org", None, "all"),
-            ("a-mcp", "team", Some("tA"), "all"),
-            ("b-mcp", "team", Some("tB"), "all"),
-            ("secret-mcp", "org", None, "admin"),
+        for (name, scope, team, vis, author) in [
+            ("org-mcp", "org", None, "all", "admin1"),
+            ("a-mcp", "team", Some("tA"), "all", "admin1"),
+            ("b-mcp", "team", Some("tB"), "all", "admin2"),
+            ("secret-mcp", "org", None, "admin", "admin1"),
         ] {
             svc.upsert_mcp_registry(
                 None,
@@ -2594,18 +2623,18 @@ mod tests {
                 scope,
                 team,
                 vis,
-                "admin1",
+                author,
             )
             .await
             .unwrap();
         }
-        for (title, scope, team, vis) in [
-            ("org-doc", "org", None, "all"),
-            ("a-doc", "team", Some("tA"), "all"),
-            ("b-doc", "team", Some("tB"), "all"),
-            ("secret-doc", "org", None, "admin"),
+        for (title, scope, team, vis, author) in [
+            ("org-doc", "org", None, "all", "admin1"),
+            ("a-doc", "team", Some("tA"), "all", "admin1"),
+            ("b-doc", "team", Some("tB"), "all", "admin2"),
+            ("secret-doc", "org", None, "admin", "admin1"),
         ] {
-            svc.register_rag_document(title, None, None, None, scope, team, vis, "admin1")
+            svc.register_rag_document(title, None, None, None, scope, team, vis, author)
                 .await
                 .unwrap();
         }
@@ -2664,14 +2693,16 @@ mod tests {
         // and assert which documents a member can retrieve chunks from.
         let svc = service().await;
         seed_two_group_enterprise(&svc).await;
-        for (title, scope, team, vis) in [
-            ("org-doc", "org", None, "all"),
-            ("a-doc", "team", Some("tA"), "all"),
-            ("b-doc", "team", Some("tB"), "all"),
-            ("secret-doc", "org", None, "admin"),
+        // Each team's own admin authors its team-scoped document — see the
+        // identical comment in `registry_read_acl_filters_by_team_and_role`.
+        for (title, scope, team, vis, author) in [
+            ("org-doc", "org", None, "all", "admin1"),
+            ("a-doc", "team", Some("tA"), "all", "admin1"),
+            ("b-doc", "team", Some("tB"), "all", "admin2"),
+            ("secret-doc", "org", None, "admin", "admin1"),
         ] {
             let doc = svc
-                .register_rag_document(title, None, None, None, scope, team, vis, "admin1")
+                .register_rag_document(title, None, None, None, scope, team, vis, author)
                 .await
                 .unwrap();
             sqlx::query("INSERT INTO one_rag_chunks (id, document_id, chunk_index, content, embedding, created_at) VALUES (?, ?, 0, ?, ?, 0)")
@@ -2794,15 +2825,10 @@ mod tests {
     #[tokio::test]
     async fn registry_write_is_rejected_across_project_groups() {
         let svc = service().await;
+        // admin2 (org_admin of Group B, active tenant tB) is the cross-group
+        // attacker this test exists for — `seed_two_group_enterprise` sets
+        // it up.
         seed_two_group_enterprise(&svc).await;
-        // admin2: org_admin of Group B, active tenant tB — the cross-group attacker.
-        sqlx::raw_sql(
-            "INSERT INTO one_user_org (user_id, tenant_id, role) VALUES ('admin2', 'tB', 'org_admin');
-             INSERT INTO one_active_tenant (user_id, tenant_id) VALUES ('admin2', 'tB');",
-        )
-        .execute(&svc.pool)
-        .await
-        .unwrap();
 
         let skill = svc
             .upsert_skill(
@@ -2968,6 +2994,224 @@ mod tests {
             .await
             .unwrap();
         svc.delete_skill("nobody", &personal_skill.id).await.unwrap();
+    }
+
+    /// The gap `registry_write_is_rejected_across_project_groups` doesn't
+    /// cover: that test only exercises editing/deleting a row that already
+    /// belongs to another team. This covers the two ways a write can target
+    /// a team the actor doesn't own from the START — CREATING a new
+    /// resource under it, and re-scoping the actor's OWN resource INTO it
+    /// (a legitimate tA admin "donating" content into tB without tB's
+    /// admin ever consenting).
+    #[tokio::test]
+    async fn cannot_create_or_rescope_into_a_team_the_actor_does_not_own() {
+        let svc = service().await;
+        seed_two_group_enterprise(&svc).await;
+
+        // admin1 (org_admin of tA only) tries to author a brand-new
+        // tB-scoped resource in each registry.
+        assert!(matches!(
+            svc.upsert_skill(None, "s", "", "", true, false, "team", Some("tB"), "all", "admin1")
+                .await
+                .unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+        assert!(matches!(
+            svc.upsert_mcp_registry(
+                None,
+                "m",
+                "sse",
+                "https://x/sse",
+                true,
+                false,
+                None,
+                "team",
+                Some("tB"),
+                "all",
+                "admin1",
+            )
+            .await
+            .unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+        assert!(matches!(
+            svc.register_rag_document("d", None, None, None, "team", Some("tB"), "all", "admin1")
+                .await
+                .unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+
+        // admin1 legitimately creates a tA skill, then tries to re-scope it
+        // into tB in the same edit that also changes its content — neither
+        // half should apply.
+        let skill = svc
+            .upsert_skill(None, "mine", "d", "c", true, false, "team", Some("tA"), "all", "admin1")
+            .await
+            .unwrap();
+        assert!(matches!(
+            svc.upsert_skill(
+                Some(&skill.id),
+                "mine",
+                "d",
+                "c",
+                true,
+                false,
+                "team",
+                Some("tB"),
+                "all",
+                "admin1",
+            )
+            .await
+            .unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+        let unchanged = svc.list_skills("admin1").await.unwrap();
+        assert_eq!(
+            unchanged.iter().find(|s| s.id == skill.id).unwrap().team_id.as_deref(),
+            Some("tA"),
+            "must not have been re-scoped to tB"
+        );
+    }
+
+    /// Model channels carry a live credential (`api_key_encrypted`) and DLP
+    /// rules gate content compliance — neither is covered by the
+    /// skill/MCP/RAG tests above, and both had NO ownership check at all
+    /// before this fix (unlike skill/MCP, which at least checked the
+    /// current row on update).
+    #[tokio::test]
+    async fn provider_channels_and_dlp_rules_reject_cross_team_writes() {
+        // Provider channels encrypt the credential at write time, so this
+        // test (unlike the others in this module) needs the deployment data
+        // key — `provider_channel.rs`'s own test module sets one up the
+        // same way.
+        let svc = service().await.with_encryption_key([7u8; 32]);
+        seed_two_group_enterprise(&svc).await;
+
+        // Create into another team.
+        assert!(matches!(
+            svc.upsert_provider_channel(
+                None,
+                "chan",
+                "openai",
+                "https://gateway.example",
+                Some("sk-real"),
+                "[]",
+                None,
+                true,
+                "team",
+                Some("tB"),
+                "all",
+                "admin1",
+            )
+            .await
+            .unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+        assert!(matches!(
+            svc.upsert_dlp_rule(UpsertDlpRule {
+                id: None,
+                name: "rule",
+                matcher: "keyword",
+                pattern: "secret",
+                action: "block",
+                enabled: true,
+                scope: "team",
+                team_id: Some("tB"),
+                created_by: "admin1",
+            })
+            .await
+            .unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+
+        // admin2 (tB's own admin) legitimately creates one, then admin1
+        // (tA's admin) cannot update its base_url/key, re-scope it, or
+        // delete it — the credential-hijack and rule-tampering scenarios.
+        let channel = svc
+            .upsert_provider_channel(
+                None,
+                "b-chan",
+                "openai",
+                "https://real-gateway.example",
+                Some("sk-real"),
+                "[]",
+                None,
+                true,
+                "team",
+                Some("tB"),
+                "all",
+                "admin2",
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            svc.upsert_provider_channel(
+                Some(&channel.id),
+                "b-chan",
+                "openai",
+                "https://attacker.example",
+                Some("sk-stolen"),
+                "[]",
+                None,
+                true,
+                "team",
+                Some("tB"),
+                "all",
+                "admin1",
+            )
+            .await
+            .unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+        assert!(matches!(
+            svc.delete_provider_channel("admin1", &channel.id).await.unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+        let still_real = svc.list_provider_channels("admin2").await.unwrap();
+        assert_eq!(
+            still_real
+                .iter()
+                .find(|c| c.id == channel.id)
+                .unwrap()
+                .upstream_base_url,
+            "https://real-gateway.example",
+            "base_url must not have been hijacked"
+        );
+
+        let rule = svc
+            .upsert_dlp_rule(UpsertDlpRule {
+                id: None,
+                name: "b-rule",
+                matcher: "keyword",
+                pattern: "secret",
+                action: "block",
+                enabled: true,
+                scope: "team",
+                team_id: Some("tB"),
+                created_by: "admin2",
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            svc.upsert_dlp_rule(UpsertDlpRule {
+                id: Some(&rule.id),
+                name: "b-rule",
+                matcher: "keyword",
+                pattern: "secret",
+                action: "log", // weakened from block
+                enabled: true,
+                scope: "team",
+                team_id: Some("tB"),
+                created_by: "admin1",
+            })
+            .await
+            .unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
+        assert!(matches!(
+            svc.delete_dlp_rule("admin1", &rule.id).await.unwrap_err(),
+            DevopsError::Forbidden(_)
+        ));
     }
 
     #[tokio::test]

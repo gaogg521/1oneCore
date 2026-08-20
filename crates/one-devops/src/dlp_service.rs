@@ -204,10 +204,36 @@ impl DevopsService {
         // `list_dlp_rules_for_member`), so validate the scope with the shared
         // helper's own default for it.
         let team_id = self.validate_resource_scope(created_by, scope, team_id, "all").await?;
+        // The INCOMING team_id, checked on every write (create and update
+        // alike): without this, an actor who legitimately owns some rule
+        // could re-scope it INTO a team they don't administer in the same
+        // call the current-row check below guards against re-scoping OUT of
+        // one they don't own. Same pattern as skill/MCP/RAG registries.
+        if !self.actor_can_touch_team(created_by, team_id).await? {
+            return Err(DevopsError::Forbidden(
+                "cannot assign this DLP rule to a different project group".into(),
+            ));
+        }
 
         let now = now_ms();
         let id = match id {
             Some(existing) => {
+                // The row's CURRENT team_id, not the incoming one — same
+                // reasoning as the skill/MCP/RAG registries.
+                let current_team_id: Option<String> =
+                    sqlx::query_scalar("SELECT team_id FROM one_dlp_rules WHERE id = ?")
+                        .bind(existing)
+                        .fetch_optional(&self.pool)
+                        .await?
+                        .ok_or_else(|| DevopsError::NotFound(format!("dlp rule {existing}")))?;
+                if !self
+                    .actor_can_touch_team(created_by, current_team_id.as_deref())
+                    .await?
+                {
+                    return Err(DevopsError::Forbidden(
+                        "this DLP rule belongs to a different project group".into(),
+                    ));
+                }
                 let updated = sqlx::query(
                     "UPDATE one_dlp_rules SET name = ?, matcher = ?, pattern = ?, action = ?, enabled = ?, \
                      scope = ?, team_id = ?, updated_at = ? WHERE id = ?",
@@ -259,7 +285,17 @@ impl DevopsService {
             .map_err(Into::into)
     }
 
-    pub async fn delete_dlp_rule(&self, id: &str) -> Result<(), DevopsError> {
+    pub async fn delete_dlp_rule(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
+        let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM one_dlp_rules WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("dlp rule {id}")))?;
+        if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
+            return Err(DevopsError::Forbidden(
+                "this DLP rule belongs to a different project group".into(),
+            ));
+        }
         let deleted = sqlx::query("DELETE FROM one_dlp_rules WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
@@ -551,7 +587,7 @@ mod tests {
         .await
         .unwrap();
 
-        svc.delete_dlp_rule(&rule.id).await.unwrap();
+        svc.delete_dlp_rule("admin1", &rule.id).await.unwrap();
 
         let events = svc.list_dlp_events(50).await.unwrap();
         assert_eq!(events.len(), 1);

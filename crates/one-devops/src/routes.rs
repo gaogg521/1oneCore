@@ -831,7 +831,7 @@ async fn delete_model_channel(
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
     audit(&state, &user.id, "devops.modelChannel.delete", Some(&id)).await;
-    state.service.delete_provider_channel(&id).await?;
+    state.service.delete_provider_channel(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -946,7 +946,7 @@ async fn delete_dlp_rule(
 ) -> Result<Json<ApiResponse<()>>, DevopsError> {
     require_registry_admin(&state, &user.id).await?;
     audit(&state, &user.id, "devops.dlp.delete", Some(&id)).await;
-    state.service.delete_dlp_rule(&id).await?;
+    state.service.delete_dlp_rule(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(())))
 }
 

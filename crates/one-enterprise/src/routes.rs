@@ -27,6 +27,7 @@ pub fn one_enterprise_routes(state: OneEnterpriseRouterState) -> Router {
             get(company_overview).delete(company_disband).put(company_rename),
         )
         .route("/api/one/enterprise/company/setup", post(company_setup))
+        .route("/api/one/enterprise/company/leave", post(company_leave))
         .route("/api/one/enterprise/company/members", get(company_members))
         .route(
             "/api/one/enterprise/company/members/{user_id}",
@@ -126,6 +127,23 @@ async fn company_setup(
 ) -> Result<Json<ApiResponse<CompanyOverviewDto>>, EnterpriseError> {
     let overview = state.service.setup_company(&user.id, &body.name).await?;
     Ok(Json(ApiResponse::ok(overview)))
+}
+
+/// Self-service company departure. Previously the only company-side removal
+/// was `company_remove_member` (admin-initiated, refuses `actor == target`)
+/// and `company_disband` (admin-only, deletes the whole company) — an
+/// ordinary member had no way to leave on their own. Any authenticated
+/// member may call this on themself; `RequireCompanyAdmin` would be wrong
+/// here since a non-admin member is exactly who needs this.
+async fn company_leave(
+    State(state): State<OneEnterpriseRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<()>>, EnterpriseError> {
+    let Some(enterprise_id) = state.service.company_of(&user.id).await? else {
+        return Err(EnterpriseError::MemberNotFound);
+    };
+    state.service.leave_company(&enterprise_id, &user.id).await?;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 #[derive(Debug, Deserialize)]

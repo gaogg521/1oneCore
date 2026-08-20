@@ -109,6 +109,19 @@ pub fn one_org_routes(state: OneOrgRouterState) -> Router {
             "/api/one/org/enterprise/{enterprise_id}/tenants",
             get(enterprise_list_tenants).post(enterprise_create_tenant),
         )
+        // A company admin who creates a project group via the route above is
+        // never a member of it (`create_tenant_for_enterprise` starts it
+        // empty), so `/api/one/admin/invites` — scoped to the caller's own
+        // tenant — can't reach it either. These give the company admin a way
+        // to see/mint/revoke that group's invite codes without joining it.
+        .route(
+            "/api/one/org/enterprise/{enterprise_id}/tenants/{tenant_id}/invites",
+            get(enterprise_tenant_list_invites).post(enterprise_tenant_create_invite),
+        )
+        .route(
+            "/api/one/org/enterprise/{enterprise_id}/tenants/{tenant_id}/invites/{invite_id}/revoke",
+            post(enterprise_tenant_revoke_invite),
+        )
         .with_state(state)
 }
 
@@ -180,6 +193,81 @@ async fn enterprise_create_tenant(
         name,
         invite_code,
     })))
+}
+
+/// Company-admin-or-system-admin gate for a specific project group, plus the
+/// ownership check `ensure_company_governor` alone doesn't cover: without
+/// it, an admin of enterprise A who guesses enterprise B's tenant id could
+/// read or mint invite codes for a project group that isn't theirs.
+async fn ensure_company_owns_tenant(
+    state: &OneOrgRouterState,
+    actor: &OrgActor,
+    enterprise_id: &str,
+    tenant_id: &str,
+) -> Result<(), OrgError> {
+    ensure_company_governor(state, actor, enterprise_id).await?;
+    if !state
+        .service
+        .tenant_belongs_to_enterprise(tenant_id, enterprise_id)
+        .await?
+    {
+        return Err(OrgError::TenantNotFound);
+    }
+    Ok(())
+}
+
+async fn enterprise_tenant_list_invites(
+    State(state): State<OneOrgRouterState>,
+    actor: OrgActor,
+    Path((enterprise_id, tenant_id)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<Vec<InviteDto>>>, OrgError> {
+    ensure_company_owns_tenant(&state, &actor, &enterprise_id, &tenant_id).await?;
+    let invites = state.service.list_invites(&tenant_id).await?;
+    Ok(Json(ApiResponse::ok(invites)))
+}
+
+async fn enterprise_tenant_create_invite(
+    State(state): State<OneOrgRouterState>,
+    actor: OrgActor,
+    Path((enterprise_id, tenant_id)): Path<(String, String)>,
+    Json(body): Json<CreateInviteBody>,
+) -> Result<Json<ApiResponse<CreatedInviteDto>>, OrgError> {
+    ensure_company_owns_tenant(&state, &actor, &enterprise_id, &tenant_id).await?;
+    let (invite, display_code) = state
+        .service
+        .create_invite(&tenant_id, &actor.user_id, body.max_uses, body.expires_in_days)
+        .await?;
+    state
+        .service
+        .audit(
+            &tenant_id,
+            Some(&actor.user_id),
+            Some(&actor.username),
+            "org.invite.create",
+            Some(&invite.id),
+        )
+        .await;
+    Ok(Json(ApiResponse::ok(CreatedInviteDto { invite, display_code })))
+}
+
+async fn enterprise_tenant_revoke_invite(
+    State(state): State<OneOrgRouterState>,
+    actor: OrgActor,
+    Path((enterprise_id, tenant_id, invite_id)): Path<(String, String, String)>,
+) -> Result<Json<ApiResponse<()>>, OrgError> {
+    ensure_company_owns_tenant(&state, &actor, &enterprise_id, &tenant_id).await?;
+    state.service.revoke_invite(&tenant_id, &invite_id).await?;
+    state
+        .service
+        .audit(
+            &tenant_id,
+            Some(&actor.user_id),
+            Some(&actor.username),
+            "org.invite.revoke",
+            Some(&invite_id),
+        )
+        .await;
+    Ok(Json(ApiResponse::ok(())))
 }
 
 // --- org (member-facing) ---
@@ -338,10 +426,15 @@ async fn org_exit(
     actor: OrgActor,
     Json(body): Json<ExitBody>,
 ) -> Result<Json<ApiResponse<()>>, OrgError> {
-    state
+    let release_enterprise_id = state
         .service
         .leave(&actor.user_id, body.tenant_id.as_deref(), &body.exit_code)
         .await?;
+    // This was the caller's last project group under a company — also
+    // release the seat it issued them. See `enterprise_hooks` module docs.
+    if let (Some(sync), Some(eid)) = (state.company_seat_sync.as_ref(), release_enterprise_id.as_deref()) {
+        sync.release_company_member(&actor.user_id, eid).await;
+    }
     Ok(Json(ApiResponse::ok(())))
 }
 
@@ -743,10 +836,19 @@ async fn admin_remove_user(
     RequireOrgAdmin(actor): RequireOrgAdmin,
     Path(user_id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, OrgError> {
-    state
+    let release_enterprise_id = state
         .service
         .remove_member(&actor.tenant_id, &actor.user_id, &user_id)
         .await?;
+    // This was their last project group under a company — also release the
+    // seat, so removing someone from their only group actually offboards
+    // them instead of leaving a stale company membership behind (previously
+    // only the separate project-group admin's OffboardMemberModal flow did
+    // this explicitly, by calling two endpoints; this makes it automatic
+    // and correct for the multi-group case too — see `enterprise_hooks`).
+    if let (Some(sync), Some(eid)) = (state.company_seat_sync.as_ref(), release_enterprise_id.as_deref()) {
+        sync.release_company_member(&user_id, eid).await;
+    }
     Ok(Json(ApiResponse::ok(())))
 }
 

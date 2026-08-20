@@ -153,6 +153,16 @@ impl DevopsService {
         let team_id = self
             .validate_resource_scope(created_by, scope, team_id, visibility)
             .await?;
+        // The INCOMING team_id, checked on every write (create and update
+        // alike): without this, an actor who legitimately owns some channel
+        // could re-scope it INTO a team they don't administer in the same
+        // call the current-row check below guards against re-scoping OUT of
+        // one they don't own.
+        if !self.actor_can_touch_team(created_by, team_id).await? {
+            return Err(DevopsError::Forbidden(
+                "cannot assign this model channel to a different project group".into(),
+            ));
+        }
 
         // Encrypt before touching the database, so a missing deployment key
         // fails the write instead of quietly storing an empty credential that
@@ -168,6 +178,25 @@ impl DevopsService {
         let now = now_ms();
         let id = match id {
             Some(existing) => {
+                // The row's CURRENT team_id, not the incoming one: an actor
+                // editing must already own what the row belongs to today,
+                // otherwise they could both rewrite another team's channel
+                // (base_url + rotate the key) and re-scope it away from that
+                // team in the same call. Same pattern as skill/MCP registries.
+                let current_team_id: Option<String> =
+                    sqlx::query_scalar("SELECT team_id FROM one_provider_registry WHERE id = ?")
+                        .bind(existing)
+                        .fetch_optional(&self.pool)
+                        .await?
+                        .ok_or_else(|| DevopsError::NotFound(format!("model channel {existing}")))?;
+                if !self
+                    .actor_can_touch_team(created_by, current_team_id.as_deref())
+                    .await?
+                {
+                    return Err(DevopsError::Forbidden(
+                        "this model channel belongs to a different project group".into(),
+                    ));
+                }
                 let updated = match &encrypted {
                     Some(secret) => {
                         sqlx::query(
@@ -256,7 +285,17 @@ impl DevopsService {
     /// Leaving tokens behind would let a member keep reaching a channel an
     /// admin believes they deleted — and, worse, a recycled id would silently
     /// re-authorize them.
-    pub async fn delete_provider_channel(&self, id: &str) -> Result<(), DevopsError> {
+    pub async fn delete_provider_channel(&self, actor_user_id: &str, id: &str) -> Result<(), DevopsError> {
+        let team_id: Option<String> = sqlx::query_scalar("SELECT team_id FROM one_provider_registry WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| DevopsError::NotFound(format!("model channel {id}")))?;
+        if !self.actor_can_touch_team(actor_user_id, team_id.as_deref()).await? {
+            return Err(DevopsError::Forbidden(
+                "this model channel belongs to a different project group".into(),
+            ));
+        }
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM one_provider_channel_tokens WHERE channel_id = ?")
             .bind(id)
@@ -559,7 +598,7 @@ mod tests {
         let channel = make_channel(&svc, "corp-gateway").await;
         let token = svc.issue_channel_token("admin1", &channel.id).await.unwrap();
 
-        svc.delete_provider_channel(&channel.id).await.unwrap();
+        svc.delete_provider_channel("admin1", &channel.id).await.unwrap();
 
         let orphans: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_provider_channel_tokens WHERE channel_id = ?")
             .bind(&channel.id)
