@@ -244,14 +244,26 @@ pub fn validate_workspace_path_availability(workspace: &str) -> Result<String, W
         return Err(WorkspacePathValidationError::Empty);
     }
 
-    // Windows silently strips trailing spaces/tabs/dots from a path component at
-    // every Win32 boundary (creation AND `fs::metadata`), so a requested path
-    // whose final component ends in one can never be stored as typed — it always
-    // resolves to the stripped path instead. `fs::metadata` below would then
-    // report the stripped directory as "available", masking the mismatch. Reject
-    // it up front so behaviour matches Unix, where such a path literally does not
-    // exist. (`.`/`..` are relative dir refs, not names with a stray trailing
-    // dot, so they are exempt.)
+    // Windows silently strips trailing spaces/tabs/dots from a path component
+    // at the Win32 boundary, on BOTH creation and lookup — which means
+    // "workspace" and "workspace " name the exact same on-disk entry there;
+    // there is no way to create the two as distinct directories via the
+    // ordinary (non-verbatim) API this uses. That aliasing cuts both ways and
+    // is NOT reliably distinguishable from here:
+    //   - a directory actually created via a trailing-space path (e.g.
+    //     `fs::create_dir("...\\Archive ")`) round-trips fine through this
+    //     same `fs::metadata` call, since both ends alias identically; and
+    //   - a request for "...\\workspace " ALSO resolves successfully if a
+    //     directory literally named "...\\workspace" (no space) exists,
+    //     because Windows treats them as the same path — even though the
+    //     caller's typed string does not match anything that was ever
+    //     deliberately created.
+    // Given metadata-based lookup cannot tell these apart, reject up front so
+    // behavior matches Unix, where such a path literally does not exist. Any
+    // caller that legitimately wants a directory whose real, on-disk name
+    // happens to end in whitespace is directed to omit it (Windows would map
+    // both to the same place regardless). (`.`/`..` are relative dir refs, not
+    // names with a stray trailing dot, so they are exempt.)
     #[cfg(windows)]
     {
         let without_seps = workspace.trim_end_matches(['/', '\\']);

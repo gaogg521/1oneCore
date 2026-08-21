@@ -366,6 +366,14 @@ async fn tc6_missing_name_returns_error() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
+// Unix-only: a directory whose name literally ends in whitespace cannot exist
+// on Windows as a distinct entity from its space-less counterpart (Win32
+// aliases the two at every path boundary) — see
+// `aionui_common::validate_workspace_path_availability` and its paired
+// `create_accepts_existing_workspace_with_trailing_whitespace_in_name` /
+// `create_rejects_unavailable_workspace_with_trailing_whitespace_in_request`
+// tests in `aionui-conversation`.
+#[cfg(not(windows))]
 #[tokio::test]
 async fn tc6b_workspace_with_whitespace_segment_is_accepted() {
     let (mut app, services) = build_app().await;
@@ -1745,10 +1753,16 @@ async fn context_reset_requires_csrf() {
     let team_id = data["id"].as_str().unwrap();
     let slot_id = data["assistants"][1]["slot_id"].as_str().unwrap();
     let path = format!("/api/teams/{team_id}/agents/{slot_id}/context/reset");
+    // Cookie-based session auth (what a browser client presents ambiently) is
+    // exactly the CSRF threat model this middleware guards, so this must use
+    // the session cookie rather than `Authorization: Bearer` — a bearer token
+    // is deliberately CSRF-exempt (it cannot be attached by a forged
+    // cross-site request), which is what lets a cookie-less desktop client
+    // talk to a remote server at all; see `csrf_middleware`'s `has_bearer_auth`.
     let missing_csrf = axum::http::Request::builder()
         .method("POST")
         .uri(path)
-        .header("authorization", format!("Bearer {token}"))
+        .header("cookie", format!("aionui-session={token}"))
         .header("content-type", "application/json")
         .body(axum::body::Body::from("{}"))
         .unwrap();

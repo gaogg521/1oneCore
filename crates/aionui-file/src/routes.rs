@@ -15,11 +15,11 @@ use aionui_api_types::{
     ApiResponse, BrowseDirectoryQuery, BrowseDirectoryResponse, CancelZipRequest, ContentMetadataRequest,
     CopyFilesRequest, CopyFilesResponse, CreateTempFileRequest, DirOrFileResponse, FetchRemoteImageRequest,
     FileChangeInfoResponse, FileMetadataResponse, FileWatchRequest, GetFileMetadataRequest, GetFilesByDirRequest,
-    GetImageBase64Request, ListWorkspaceFilesRequest, OpenSystemFileRequest, ReadContentRequest,
-    ReadFileBufferRequest, ReadFileRequest, RemoveEntryRequest, RenameRequest, RenameResponse, RevealItemRequest,
-    SnapshotBaselineRequest, SnapshotCompareResponse, SnapshotDiscardRequest, SnapshotInfoResponse,
-    SnapshotStageRequest, SnapshotWorkspaceRequest, StreamQuery, WorkspaceFlatFileResponse,
-    WorkspaceOfficeWatchRequest, WriteContentRequest, WriteFileRequest, ZipRequest,
+    GetImageBase64Request, ListWorkspaceFilesRequest, OpenSystemFileRequest, ReadContentRequest, ReadFileBufferRequest,
+    ReadFileRequest, RemoveEntryRequest, RenameRequest, RenameResponse, RevealItemRequest, SnapshotBaselineRequest,
+    SnapshotCompareResponse, SnapshotDiscardRequest, SnapshotInfoResponse, SnapshotStageRequest,
+    SnapshotWorkspaceRequest, StreamQuery, WorkspaceFlatFileResponse, WorkspaceOfficeWatchRequest, WriteContentRequest,
+    WriteFileRequest, ZipRequest,
 };
 use aionui_auth::CurrentUser;
 use aionui_common::ApiError;

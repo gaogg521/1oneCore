@@ -3762,7 +3762,13 @@ impl ConversationService {
                 // The bundled Claude/Codex ACP bridges acknowledge by
                 // completing the steer request instead, so close the same
                 // persisted receipt here as a reliable fallback. Duplicate
-                // native echoes are idempotent.
+                // native echoes are idempotent. This runs synchronously for
+                // every backend (not gated by `AgentInstance` variant) — the
+                // "pending" status is therefore only ever observable to a
+                // caller racing this exact call, never to a client reading
+                // back after this response returns; see
+                // `midturn_send_delivers_into_the_active_turn` for the locked
+                // contract (immediate "finish", not a delayed echo).
                 if persisted {
                     apply_message_receipt(
                         &self.conversation_repo,

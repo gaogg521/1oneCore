@@ -19,8 +19,8 @@ pub mod manager;
 /// conversation's configured MCP servers into the SDK-free `SessionMcpServer`
 /// shape the `SessionBackend` stack carries in `SessionConfig.init.mcp_servers`.
 pub mod mcp_resolve;
-pub mod model_policy;
 pub mod media;
+pub mod model_policy;
 pub(crate) mod persistence;
 pub mod protocol;
 pub mod registry;

@@ -879,7 +879,6 @@ impl ClaudeSessionBackend {
             last_raw: 0.0,
         }));
 
-
         let reader_state = ClaudeReaderState {
             session_id: session_id.clone(),
             turn_gen: turn_gen.clone(),

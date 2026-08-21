@@ -491,6 +491,18 @@ pub(crate) async fn run_server(
         ),
     }
 
+    // Same contract as the scanner above: it wakes on the shutdown watch. Both
+    // must be joined before the pool closes, or a sync mid-write would find the
+    // database gone.
+    if let Err(e) = directory_sync_handle.await {
+        warn!(
+            code = "BOOTSTRAP_DEGRADED_DIRECTORY_SYNC",
+            stage = "directory_sync.join",
+            error = %e,
+            "directory sync scheduler join failed"
+        );
+    }
+
     // `sqlx::Pool::close()` waits for all checked-out connections to be
     // returned, which is unbounded if a detached task still holds one.
     match tokio::time::timeout(SHUTDOWN_DB_CLOSE_TIMEOUT, services.database.close()).await {

@@ -17,6 +17,13 @@ fn init_repo(dir: &Path) -> Repository {
     let mut cfg = repo.config().expect("config");
     cfg.set_str("user.name", "scm test").expect("set name");
     cfg.set_str("user.email", "scm@test.local").expect("set email");
+    // Pin this repo's own line-ending behavior instead of inheriting the host's
+    // global `core.autocrlf`. These fixtures write and read back content with
+    // `\n` directly; on a machine with `core.autocrlf=true`, git2's checkout/
+    // index smudge-and-clean would translate that to `\r\n` on write-out,
+    // making every content-equality assertion below platform-dependent for a
+    // reason that has nothing to do with the discard/revert logic under test.
+    cfg.set_bool("core.autocrlf", false).expect("set autocrlf");
     repo
 }
 

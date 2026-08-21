@@ -216,10 +216,16 @@ async fn update_agent_model_requires_csrf() {
     let team = create_team(&mut app, &services, &token, &csrf).await;
     let team_id = team["id"].as_str().unwrap();
     let slot_id = team["assistants"][1]["slot_id"].as_str().unwrap();
+    // Cookie-based session auth (what a browser client presents ambiently) is
+    // exactly the CSRF threat model this middleware guards, so this must use
+    // the session cookie rather than `Authorization: Bearer` — a bearer token
+    // is deliberately CSRF-exempt (it cannot be attached by a forged
+    // cross-site request), which is what lets a cookie-less desktop client
+    // talk to a remote server at all; see `csrf_middleware`'s `has_bearer_auth`.
     let req = axum::http::Request::builder()
         .method("PATCH")
         .uri(format!("/api/teams/{team_id}/agents/{slot_id}/model"))
-        .header("authorization", format!("Bearer {token}"))
+        .header("cookie", format!("aionui-session={token}"))
         .header("content-type", "application/json")
         .body(axum::body::Body::from(r#"{"model_id":"gpt-5.6-sol"}"#))
         .unwrap();
@@ -312,12 +318,18 @@ async fn set_team_config_option_requires_csrf() {
     let team = create_team(&mut app, &services, &token, &csrf).await;
     let team_id = team["id"].as_str().unwrap();
     let conversation_id = team["assistants"][1]["conversation_id"].as_str().unwrap();
+    // Cookie-based session auth (what a browser client presents ambiently) is
+    // exactly the CSRF threat model this middleware guards, so this must use
+    // the session cookie rather than `Authorization: Bearer` — a bearer token
+    // is deliberately CSRF-exempt (it cannot be attached by a forged
+    // cross-site request), which is what lets a cookie-less desktop client
+    // talk to a remote server at all; see `csrf_middleware`'s `has_bearer_auth`.
     let req = axum::http::Request::builder()
         .method("PUT")
         .uri(format!(
             "/api/teams/{team_id}/conversations/{conversation_id}/config-options/model"
         ))
-        .header("authorization", format!("Bearer {token}"))
+        .header("cookie", format!("aionui-session={token}"))
         .header("content-type", "application/json")
         .body(axum::body::Body::from(r#"{"value":"gpt-5.6-sol"}"#))
         .unwrap();

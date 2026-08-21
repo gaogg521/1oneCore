@@ -201,8 +201,13 @@ async fn midturn_send_returns_200_with_the_active_turn_id() {
         "the message must go through the mid-turn delivery path"
     );
 
-    // The user message is persisted with the pending-receipt status and the
-    // list view shows it.
+    // The user message is persisted and the list view shows it. Its receipt
+    // starts "pending" at insert, but `deliver_midturn_message`'s reliable
+    // fallback synchronously closes it to "finish" before this HTTP response
+    // was even returned (see `midturn_send_delivers_into_the_active_turn` in
+    // `aionui-conversation`, which locks that immediate-close contract) — so
+    // by the time this GET runs, "finish" is the only status ever observable
+    // here, for any backend.
     let resp = app
         .clone()
         .oneshot(get_with_token(
@@ -218,8 +223,8 @@ async fn midturn_send_returns_200_with_the_active_turn_id() {
         .find(|m| m["content"]["content"] == "midturn interjection")
         .expect("mid-turn user message persisted");
     assert_eq!(
-        row["status"], "pending",
-        "a mid-turn message starts in the pending-receipt state"
+        row["status"], "finish",
+        "the reliable-fallback receipt close already ran by the time this response is read"
     );
 }
 

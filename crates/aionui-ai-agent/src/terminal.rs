@@ -490,20 +490,27 @@ mod tests {
         // A private temp dir per run: the old fixed, shared path
         // (`temp_dir()/aionui-term-cwd-test`) was raced by every parallel test
         // process on the machine, which made this test flaky.
+        //
+        // Verify via a directory listing rather than comparing `pwd`'s printed
+        // path against `fs::canonicalize()`: on Windows a `pwd` binary resolved
+        // off PATH (there is no native `pwd`) reports the directory through an
+        // MSYS/Cygwin mount translation (e.g. `/tmp/...`), which is never going
+        // to string-match `canonicalize()`'s `\\?\`-prefixed Win32 form even
+        // though both name the same directory. A marker file's name survives
+        // that translation intact.
         let dir = tempfile::TempDir::new().unwrap();
+        let marker = "cwd-marker-file";
+        std::fs::write(dir.path().join(marker), b"x").unwrap();
         let reg = TerminalRegistry::new("conv-t", Some(dir.path().to_path_buf()));
-        let id = reg.create(params("pwd", &[])).await.unwrap();
+        #[cfg(unix)]
+        let id = reg.create(params("ls", &[])).await.unwrap();
+        #[cfg(windows)]
+        let id = reg.create(params("cmd", &["/C", "dir", "/B"])).await.unwrap();
         reg.wait_for_exit(&id).await.unwrap();
-        // `pwd` prints the resolved path (on macOS temp_dir lives under
-        // /var -> /private/var), so compare against the canonicalized full path
-        // rather than only the trailing directory name.
-        let canonical = std::fs::canonicalize(dir.path()).unwrap();
-        let expected = canonical.to_str().unwrap();
-        let snap = wait_for_output_contains(&reg, &id, expected).await;
-        assert_eq!(
-            snap.output.trim(),
-            expected,
-            "pwd should report the default cwd; output: {}",
+        let snap = wait_for_output_contains(&reg, &id, marker).await;
+        assert!(
+            snap.output.contains(marker),
+            "directory listing should include the marker file created in the default cwd; output: {}",
             snap.output
         );
     }

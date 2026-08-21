@@ -20,12 +20,12 @@ use aionui_cron::{CronEventEmitter, CronRouterState, service::CronServiceDeps};
 use aionui_db::{
     IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantMarketplaceRepository,
     IAssistantOverlayRepository, IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository,
-    IConversationRepository, IProviderRepository, SqliteAgentMetadataRepository,
-    SqliteAssistantDefinitionRepository, SqliteAssistantMarketplaceRepository, SqliteAssistantOverlayRepository,
-    SqliteAssistantOverrideRepository, SqliteAssistantPreferenceRepository, SqliteAssistantRepository,
-    SqliteClaudeBridgeConfigRepository, SqliteClientPreferenceRepository, SqliteCodexBridgeConfigRepository,
-    SqliteConversationRepository, SqliteFeedbackDiagnosticsRepository, SqliteProviderRepository,
-    SqliteRemoteAgentRepository, SqliteSettingsRepository,
+    IConversationRepository, IProviderRepository, SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository,
+    SqliteAssistantMarketplaceRepository, SqliteAssistantOverlayRepository, SqliteAssistantOverrideRepository,
+    SqliteAssistantPreferenceRepository, SqliteAssistantRepository, SqliteClaudeBridgeConfigRepository,
+    SqliteClientPreferenceRepository, SqliteCodexBridgeConfigRepository, SqliteConversationRepository,
+    SqliteFeedbackDiagnosticsRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
+    SqliteSettingsRepository,
 };
 use aionui_extension::{
     AssistantRuleDispatcher, ExtensionRegistry, ExtensionRouterState, ExtensionStateStore, ExternalPathsManager,

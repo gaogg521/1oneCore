@@ -60,10 +60,9 @@ pub use repository::{
     SqliteAssistantMarketplaceRepository, SqliteAssistantOverlayRepository, SqliteAssistantOverrideRepository,
     SqliteAssistantPreferenceRepository, SqliteAssistantRepository, SqliteChannelRepository,
     SqliteClaudeBridgeConfigRepository, SqliteClientPreferenceRepository, SqliteCodexBridgeConfigRepository,
-    SqliteConversationRepository, SqliteCronRepository, SqliteFeedbackDiagnosticsRepository,
-    SqliteMcpServerRepository, SqliteOAuthTokenRepository, SqliteProjectStore, SqliteProviderRepository,
-    SqliteRemoteAgentRepository, SqliteSettingsRepository, SqliteSkillRepository, SqliteTeamRepository,
-    SqliteUserRepository,
+    SqliteConversationRepository, SqliteCronRepository, SqliteFeedbackDiagnosticsRepository, SqliteMcpServerRepository,
+    SqliteOAuthTokenRepository, SqliteProjectStore, SqliteProviderRepository, SqliteRemoteAgentRepository,
+    SqliteSettingsRepository, SqliteSkillRepository, SqliteTeamRepository, SqliteUserRepository,
 };
 
 // Re-export sqlx pool type for downstream crates

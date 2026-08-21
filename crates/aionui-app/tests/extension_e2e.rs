@@ -830,11 +830,17 @@ async fn extension_enablement_and_contributions_are_isolated_by_user() {
     let (token_a, csrf_a) = setup_and_login(&mut app, &services, "extension-user-a", "pass-a").await;
     let (token_b, csrf_b) = setup_and_login(&mut app, &services, "extension-user-b", "pass-b").await;
 
+    // Cookie-based session auth (what a browser client presents ambiently) is
+    // exactly the CSRF threat model this middleware guards, so this must use
+    // the session cookie rather than `Authorization: Bearer` — a bearer token
+    // is deliberately CSRF-exempt (it cannot be attached by a forged
+    // cross-site request), which is what lets a cookie-less desktop client
+    // talk to a remote server at all; see `csrf_middleware`'s `has_bearer_auth`.
     let missing_csrf = Request::builder()
         .method("POST")
         .uri("/api/extensions/disable")
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token_a}"))
+        .header("cookie", format!("aionui-session={token_a}"))
         .body(Body::from(r#"{"name":"legacy-suite"}"#))
         .unwrap();
     let response = app.clone().oneshot(missing_csrf).await.unwrap();
@@ -1429,8 +1435,10 @@ async fn skill_batch_import_reports_partial_failures_without_rolling_back_succes
         .await
         .unwrap()
         .expect("imported skill row should exist for the importing user");
+    // `join` uses the platform separator, so normalize before matching a
+    // slash-written segment — otherwise this only ever passes on Unix.
     assert!(
-        alpha_row.path.contains("/skills/users/"),
+        alpha_row.path.replace('\\', "/").contains("/skills/users/"),
         "import must use user-scoped storage: {}",
         alpha_row.path
     );

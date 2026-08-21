@@ -304,6 +304,15 @@ async fn cj3_create_missing_required_fields() {
     }
 }
 
+// A directory whose name literally ends in whitespace cannot exist on Windows
+// as a distinct entity from its space-less counterpart (Win32 aliases the
+// two at every path boundary), so "accept the as-typed trailing-space path"
+// is only achievable on Unix — see
+// `aionui_common::validate_workspace_path_availability` and its paired
+// `create_accepts_existing_workspace_with_trailing_whitespace_in_name` /
+// `create_rejects_unavailable_workspace_with_trailing_whitespace_in_request`
+// tests in `aionui-conversation`.
+#[cfg(not(windows))]
 #[tokio::test]
 async fn cj3b_create_accepts_workspace_with_whitespace_segment() {
     let (mut app, services) = build_app().await;
@@ -412,6 +421,8 @@ async fn cj5_get_nonexistent() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
+// Unix-only: see the comment on `cj3b_create_accepts_workspace_with_whitespace_segment`.
+#[cfg(not(windows))]
 #[tokio::test]
 async fn cj5b_run_now_legacy_workspace_with_whitespace_succeeds() {
     let (mut app, services) = build_app_with_mock_agents().await;

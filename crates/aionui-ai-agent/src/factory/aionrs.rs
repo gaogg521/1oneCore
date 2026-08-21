@@ -2128,9 +2128,15 @@ mod tests {
             ..Default::default()
         };
         let mut assembled = resolve_mcp_servers(&overrides);
-        for (name, config) in
-            load_user_mcp_servers(&repo, None, TEST_USER_ID, "conv-assembly", "/tmp/workspace", test_broadcaster())
-                .await
+        for (name, config) in load_user_mcp_servers(
+            &repo,
+            None,
+            TEST_USER_ID,
+            "conv-assembly",
+            "/tmp/workspace",
+            test_broadcaster(),
+        )
+        .await
         {
             assembled.entry(name).or_insert(config);
         }

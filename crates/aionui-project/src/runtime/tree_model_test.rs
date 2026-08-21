@@ -221,6 +221,10 @@ async fn apply_is_idempotent_when_nothing_changed() {
     );
 }
 
+// Unix-only: `local_provider::inode_of` is a documented, permanent `#[cfg(not(unix))] -> 0`
+// on Windows (see `EntryFact::inode`'s doc comment) — same-inode rename synthesis
+// is a deliberate degrade-to-remove-plus-add there, not a gap to close.
+#[cfg(unix)]
 #[tokio::test]
 async fn apply_synthesizes_rename_for_same_inode() {
     let (mut tree, dir) = real_tree();
