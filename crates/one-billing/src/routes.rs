@@ -15,8 +15,8 @@ use aionui_common::now_ms;
 
 use crate::error::BillingError;
 use crate::models::{
-    CheckoutResultDto, DepartmentBudgetDto, LicenseInfoDto, MediaAssetDto, MediaLedgerSettingsDto, PlanDto,
-    UsageSummaryDto,
+    CheckoutResultDto, ConversationCostDto, DepartmentBudgetDto, LicenseInfoDto, MediaAssetDto,
+    MediaLedgerSettingsDto, PlanDto, UsageSummaryDto,
 };
 use crate::service::{MediaAssetFilters, MediaUsage};
 use crate::state::OneBillingRouterState;
@@ -25,6 +25,7 @@ pub fn one_billing_routes(state: OneBillingRouterState) -> Router {
     Router::new()
         .route("/api/one/billing/plan", get(billing_plan))
         .route("/api/one/billing/usage", get(billing_usage))
+        .route("/api/one/billing/conversation-cost", get(billing_conversation_cost))
         .route("/api/one/billing/tier", put(billing_set_tier))
         .route("/api/one/billing/model-control", put(billing_set_model_control))
         .route(
@@ -225,6 +226,29 @@ async fn billing_usage(
     const THIRTY_DAYS_MS: i64 = 30 * 24 * 3600 * 1000;
     let since = q.since.unwrap_or_else(|| now_ms() - THIRTY_DAYS_MS);
     Ok(Json(ApiResponse::ok(state.service.usage_summary(&eid, since).await?)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationCostQuery {
+    conversation_id: String,
+}
+
+/// Self-scoped: any authenticated member may query the cumulative cost of
+/// one of their own conversations (aionrs conversations have no other way
+/// to surface this — see `ContextUsageIndicator`'s aionrs wiring). No admin
+/// gate, unlike `billing_usage` above: `conversation_cost` filters by the
+/// caller's own `user_id`, so there is nothing to leak.
+async fn billing_conversation_cost(
+    State(state): State<OneBillingRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<ConversationCostQuery>,
+) -> Result<Json<ApiResponse<ConversationCostDto>>, BillingError> {
+    let estimated_cost_micros = state.service.conversation_cost(&user.id, &q.conversation_id).await?;
+    Ok(Json(ApiResponse::ok(ConversationCostDto {
+        conversation_id: q.conversation_id,
+        estimated_cost_micros,
+    })))
 }
 
 #[derive(Deserialize)]

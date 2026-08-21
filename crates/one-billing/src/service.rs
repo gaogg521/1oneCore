@@ -477,6 +477,28 @@ impl BillingService {
         Ok(used)
     }
 
+    /// Cumulative estimated spend (USD-micros) for one conversation, summed
+    /// across every `one_usage_events` row `record_turn`/`record_media_usage`
+    /// wrote for it. Self-scoped by `user_id` — the caller can only ever sum
+    /// rows they themselves generated, so no separate "is this conversation
+    /// yours" ownership check is needed (unlike the enterprise-wide
+    /// `budget_used_micros` above, this is meant to be called by any
+    /// authenticated member for their own conversation, not just billing
+    /// admins). Backends that never write a row here (a brand-new
+    /// conversation with no turns yet) return 0, not an error.
+    pub async fn conversation_cost(&self, user_id: &str, conversation_id: &str) -> Result<i64, BillingError> {
+        let used: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(estimated_cost_micros), 0) FROM one_usage_events \
+             WHERE user_id = ? AND conversation_id = ?",
+        )
+        .bind(user_id)
+        .bind(conversation_id)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+        Ok(used)
+    }
+
     /// Set (or, with `None`, clear) a department's spend cap (T7). Same
     /// rolling-30-day window as the company-level cap; a department cap is a
     /// tighter constraint layered UNDER the company one, never a replacement
@@ -1354,6 +1376,41 @@ mod tests {
         assert_eq!(summary.by_user.len(), 1);
         assert_eq!(summary.by_user[0].key, "alice");
         assert_eq!(summary.by_model[0].key, "claude-opus-4-8");
+    }
+
+    /// aionrs conversations have no other way to surface a session cost (the
+    /// ACP-only `/usage` snapshot structurally never fires for them — see
+    /// `AgentInstance::get_usage`), so the frontend sums this directly.
+    /// Personal/no-enterprise users must work too: `conversation_cost` is
+    /// scoped by `user_id`, not by company membership.
+    #[tokio::test]
+    async fn conversation_cost_sums_every_turn_for_that_conversation() {
+        let svc = service().await;
+        svc.record_turn("solo", Some("conv_x"), Some("claude-opus-4-8"), Some(100), Some(200))
+            .await
+            .unwrap();
+        svc.record_turn("solo", Some("conv_x"), Some("claude-opus-4-8"), Some(50), Some(50))
+            .await
+            .unwrap();
+        // A different conversation for the same user must not bleed in.
+        svc.record_turn("solo", Some("conv_y"), Some("claude-opus-4-8"), Some(9_999), Some(9_999))
+            .await
+            .unwrap();
+
+        let cost = svc.conversation_cost("solo", "conv_x").await.unwrap();
+        assert!(cost > 0);
+
+        let single_turn_cost = svc.conversation_cost("solo", "conv_y").await.unwrap();
+        // conv_y's lone turn has far more tokens than conv_x's two turns
+        // combined; if the query were not scoping by conversation_id, conv_x's
+        // total would exceed it instead of the other way around.
+        assert!(single_turn_cost > cost);
+    }
+
+    #[tokio::test]
+    async fn conversation_cost_is_zero_for_a_conversation_with_no_turns_yet() {
+        let svc = service().await;
+        assert_eq!(svc.conversation_cost("solo", "brand_new_conv").await.unwrap(), 0);
     }
 
     /// The dashboard has to name the models nothing priced, because a zero-cost

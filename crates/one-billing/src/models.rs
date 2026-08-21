@@ -93,6 +93,17 @@ pub struct UsageSummaryDto {
     pub unpriced_media_models: Vec<String>,
 }
 
+/// Cumulative estimated spend for one conversation, across every backend
+/// (ACP and aionrs both write `one_usage_events` rows via `record_turn`).
+/// Self-scoped: any authenticated member can query their own conversation's
+/// cost, not just billing admins.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationCostDto {
+    pub conversation_id: String,
+    pub estimated_cost_micros: i64,
+}
+
 /// One department's spend cap and usage this window (T7). `department_id` is
 /// opaque here — one-billing does not depend on one-org, so it never resolves
 /// a name; the caller (an admin UI that already fetched the department list
